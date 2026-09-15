@@ -12,10 +12,13 @@ profiling discipline — against real exchange data rather than a simulation.
 
 **Status: early stage.** What exists: the CMake skeleton (`src/greeter.*`,
 `src/main.cpp`), throwaway Python protocol probes (`experiments/`), and the
-first slice of the feed handler in `src/feed_handler/` — the `MessageSink`
-seam, the v1 capture journal (writer + reader), and the Kraken REST auth /
-`AssetPairs` client. No WebSocket client, order book, or strategy code has
-landed yet. `decisions/` holds the locked-in ADRs; the rest of the design is
+first vertical slice of the feed handler in `src/feed_handler/` — the
+`MessageSink` seam, the v1 capture journal (writer + reader), the Kraken REST
+auth / `AssetPairs` client, the Kraken `level3` WebSocket client, and the
+`kraken_feed_handler` binary that captures live market data to a journal
+(`KRAKEN_API_KEY`/`KRAKEN_API_SECRET` from the environment, journals into
+`./journal/`, runs until SIGINT). No order book or strategy code has landed
+yet. `decisions/` holds the locked-in ADRs; the rest of the design is
 intentionally unspecified and will be worked out in future sessions — don't
 assume unwritten components exist.
 

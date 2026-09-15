@@ -242,6 +242,57 @@ offset, shared by writer and reader). The choices worth recording here:
   rather than by a check: `journal_writer` is a pure sink with no outbound
   path at all, so there is nothing for the WS client to accidentally call.
 
+### WebSocket client v1: as implemented (2026-09-16)
+
+`src/feed_handler/kraken/kraken_ws_client.*` plus the `kraken_feed_handler`
+binary. The choices worth recording:
+
+- **IXWebSocket's own automatic reconnection is used as-is** rather than a
+  hand-rolled retry loop: it already implements exponential backoff with
+  jitter, which is what `exchanges/kraken.md` asks for. Its *defaults* are
+  not used, though — the default minimum wait between retries is 1ms, which
+  would retry the signed `GetWebSocketsToken` REST call far faster than
+  Kraken's rate limits allow. Bounds are set explicitly (1s/30s).
+- **Every connection setup is rate-limited by this client, not by the
+  library.** Confirmed live: IXWebSocket's reconnect bounds only apply
+  between *failed* connection attempts, so a connection that succeeds and is
+  then torn down (by the staleness watchdog, or by the exchange) is
+  re-established instantly, with no backoff at all — and each one costs a
+  fresh signed `GetWebSocketsToken` call. A watchdog flapping against a
+  half-broken connection would therefore hammer REST through a socket that
+  keeps connecting fine. The client keeps its own floor (the same minimum
+  wait) on how often it will set a connection up, and a failure *after* the
+  socket connects (token fetch or subscribe send) additionally backs off
+  exponentially.
+- **Forcing a reconnect is `close()`, never `stop()`.** `stop()` joins the
+  library's thread and ends automatic reconnection permanently — it is
+  correct exactly once, at process shutdown. The staleness watchdog uses
+  `close()` so the library's own reconnect path resumes.
+- **The watchdog disarms itself the moment it fires**, and rearms on the
+  first inbound frame of the next connection. Otherwise it stays stale for
+  the whole reconnect and tears down each new connection before it has had
+  a chance to deliver anything.
+- Both liveness mechanisms are on: `setPingInterval` (off by default in the
+  library, hence set deliberately) *and* the independent application-level
+  timeout this ADR requires. Transport-level ping/pong frames count as
+  proof of life for the watchdog but are **not journaled** — they are
+  IXWebSocket protocol frames, not Kraken wire messages, and the journal
+  holds the exchange's own encoding verbatim.
+- **Inbound messages are journaled before they are classified.** Classification
+  is the barest minimum needed to log a rejected subscribe (a real failure
+  mode: `exchanges/kraken.md` confirms the connection stays open and just
+  never delivers data), and nothing about a message this build fails to
+  understand may cost it a journal record.
+- **Failing to open a journal file is fatal to the process**, unlike a
+  failed connection. Staying connected while unable to capture would
+  silently discard the data the process exists to collect.
+- Incarnation bookkeeping lives in `capture_session` rather than in the
+  WebSocket callback, so the rotation logic (new file, incremented
+  incarnation, marker record, reset sequence numbering) is testable without a
+  socket. Files are named `<exchange>-<incarnation>-<UTC timestamp>.journal`:
+  the incarnation is what the format cares about, the timestamp keeps
+  separate process runs (which all start counting at 1) from colliding.
+
 ## Consequences
 
 - Kraken-first, Deribit-second implementation order is intentional: it
