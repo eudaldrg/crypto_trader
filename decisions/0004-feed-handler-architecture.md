@@ -170,11 +170,15 @@ tag=value bytes:
 - **Backpressure policy**: the journal write happens synchronously on the
   connection's own thread (see threading model above), so a slow disk stalls
   that connection's reads. v1 accepts this rather than dropping messages —
-  buffered, non-per-record-fsync'd writes to a preallocated file should keep
-  up at Kraken single-symbol message rates. This is a real risk if message
+  a buffered (1 MiB userspace buffer), non-per-record-fsync'd `ofstream`
+  should keep up at Kraken single-symbol message rates as implemented. File
+  preallocation (`fallocate`) is **not** implemented in v1, despite earlier
+  drafts of this ADR describing it as part of the policy — deferred
+  deliberately until there are real throughput measurements to justify it,
+  same as everything else in this bullet. This is a real risk if message
   volume grows (a stalled read can make Kraken treat the client as a slow
   consumer and drop it) and should be revisited with actual measurements
-  once the writer exists, not assumed away.
+  once there's traffic to measure, not assumed away.
 
 ### Per-exchange snapshot/recovery/gap handling
 
