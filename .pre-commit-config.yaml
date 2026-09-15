@@ -1,5 +1,6 @@
-# Requires build/compile_commands.json to already exist (run `cmake --preset
-# default` at least once) before clang-tidy/cppcheck hooks can analyze anything.
+# Requires build/debug/compile_commands.json to already exist (run
+# `cmake --preset debug` at least once) before clang-tidy/cppcheck hooks can
+# analyze anything.
 # Install into this repo with: pre-commit install
 # After first install, run `pre-commit autoupdate` to repin the clang-format
 # mirror's `rev` to a tag matching the installed clang-format-21 exactly.
@@ -14,7 +15,7 @@ repos:
     hooks:
       - id: clang-tidy
         name: clang-tidy
-        entry: clang-tidy -p build --quiet
+        entry: clang-tidy -p build/debug --quiet
         language: system
         types_or: [c++, c]
         pass_filenames: true
