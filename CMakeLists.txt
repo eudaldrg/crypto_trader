@@ -239,9 +239,11 @@ find_package(OpenSSL REQUIRED)
 find_package(ZLIB REQUIRED)
 
 add_library(feed_handler STATIC
+  src/feed_handler/capture_session.cpp
   src/feed_handler/journal_format.cpp
   src/feed_handler/journal_reader.cpp
   src/feed_handler/journal_writer.cpp
+  src/feed_handler/logging.cpp
   src/feed_handler/message_sink.cpp
   src/feed_handler/kraken/kraken_rest_client.cpp
   src/feed_handler/kraken/kraken_signing.cpp
@@ -261,8 +263,10 @@ if(BUILD_TESTING)
   target_link_libraries(dependency_smoke_test PRIVATE ixwebsocket::ixwebsocket simdjson::simdjson)
 
   add_project_test(feed_handler_tests
+    src/feed_handler/tests/capture_session_test.cpp
     src/feed_handler/tests/journal_test.cpp
     src/feed_handler/tests/kraken_rest_client_test.cpp
+    src/feed_handler/tests/staleness_watchdog_test.cpp
   )
   target_link_libraries(feed_handler_tests PRIVATE feed_handler)
 endif()
