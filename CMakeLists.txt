@@ -231,6 +231,24 @@ add_project_executable(crypto_trader
   src/main.cpp
 )
 
+#### Feed handler ####
+# zlib already arrives transitively through IXWebSocket (USE_ZLIB), but relying
+# on that leakage from a subdirectory scope is fragile -- ask for it explicitly
+# for the target that actually uses it.
+find_package(ZLIB REQUIRED)
+
+add_library(feed_handler STATIC
+  src/feed_handler/journal_format.cpp
+  src/feed_handler/journal_reader.cpp
+  src/feed_handler/journal_writer.cpp
+  src/feed_handler/message_sink.cpp
+)
+target_include_directories(feed_handler PUBLIC ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(feed_handler
+  PUBLIC project_options project_warnings
+  PRIVATE ZLIB::ZLIB
+)
+
 if(BUILD_TESTING)
   # Proves the FetchContent wiring for IXWebSocket/simdjson/GoogleTest
   # actually works end-to-end -- not feed handler behavior.
@@ -238,4 +256,9 @@ if(BUILD_TESTING)
     src/feed_handler/tests/dependency_smoke_test.cpp
   )
   target_link_libraries(dependency_smoke_test PRIVATE ixwebsocket::ixwebsocket simdjson::simdjson)
+
+  add_project_test(feed_handler_tests
+    src/feed_handler/tests/journal_test.cpp
+  )
+  target_link_libraries(feed_handler_tests PRIVATE feed_handler)
 endif()
