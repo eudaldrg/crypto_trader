@@ -247,6 +247,7 @@ add_library(feed_handler STATIC
   src/feed_handler/message_sink.cpp
   src/feed_handler/kraken/kraken_rest_client.cpp
   src/feed_handler/kraken/kraken_signing.cpp
+  src/feed_handler/kraken/kraken_ws_client.cpp
 )
 target_include_directories(feed_handler PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(feed_handler
@@ -266,6 +267,7 @@ if(BUILD_TESTING)
     src/feed_handler/tests/capture_session_test.cpp
     src/feed_handler/tests/journal_test.cpp
     src/feed_handler/tests/kraken_rest_client_test.cpp
+    src/feed_handler/tests/kraken_ws_client_test.cpp
     src/feed_handler/tests/staleness_watchdog_test.cpp
   )
   target_link_libraries(feed_handler_tests PRIVATE feed_handler)
