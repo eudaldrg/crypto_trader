@@ -57,3 +57,31 @@ now** — back to a plain `.h`/`.cpp` split. This is a tooling-immaturity
 call, not a language-support problem: the compiler and build system both
 handle modules correctly today. Revisit once clangd's modules support
 matures past experimental.
+
+## Update (2026-09-16): Networking + JSON parsing, for the feed handler
+
+Two more dependencies needed once real feed-handler work starts
+(`decisions/0004-feed-handler-architecture.md`):
+
+- **WebSocket/TLS transport (Kraken)**: start with **IXWebSocket** (small,
+  no Boost, TLS via OpenSSL) rather than Boost.Beast — nothing else in this
+  stack pulls in Boost, and Beast's Asio dependency is heavy for what's
+  needed here. Explicitly **not** the end state, for two reasons: a
+  hand-rolled WS client (raw sockets + OpenSSL + hand-written RFC6455
+  handshake/framing) is wanted later as a deliberate learning exercise, in
+  the same spirit as hand-rolling the Deribit FIX session layer instead of
+  using QuickFIX — and, separately, IXWebSocket owns its socket fd
+  internally on its own background thread, which blocks a Kraken connection
+  from ever joining the epoll-per-thread-group threading model that's the
+  actual end-goal there (`decisions/0004`). Tracked as a future replacement,
+  not forgotten — swap it in once the IXWebSocket-based pipeline works
+  end-to-end and there's a real book to validate the hand-rolled version
+  against.
+- **JSON parsing (Kraken message bodies)**: **simdjson** — on-demand
+  parsing (no full DOM allocation), SIMD-accelerated. Confirmed the dev
+  machine's CPU (i5-12400F) has AVX2, which simdjson uses for its primary
+  fast kernel, so this isn't a theoretical benefit. **Glaze** (reflection-based
+  compile-time (de)serialization) is a genuine alternative worth benchmarking
+  later — noted here specifically so it doesn't get forgotten as a follow-up
+  comparison once there's real message volume to benchmark against, not
+  because simdjson is currently in doubt.
