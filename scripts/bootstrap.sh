@@ -15,19 +15,28 @@ sudo apt-get install -y \
     cppcheck \
     pre-commit \
     lld \
+    llvm \
     cmake \
     ninja-build \
     git \
     gh \
     pkg-config \
     python3-venv \
-    python3-pip
+    python3-pip \
+    libgoogle-perftools-dev
 
 # Point the version-less clang-format/clang-tidy names at the -21 binaries
 # (matching the installed clang toolchain) so the pre-commit config and any
 # editor integration can just call `clang-format`/`clang-tidy` directly.
 sudo update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-21 100
 sudo update-alternatives --install /usr/bin/clang-tidy clang-tidy /usr/bin/clang-tidy-21 100
+
+# The `llvm` package installs its own unversioned llvm-ar/llvm-ranlib symlinks
+# directly (no update-alternatives needed) -- CMakeLists.txt picks them up
+# via find_program() and falls back to GNU ar/ranlib if `llvm` isn't installed.
+
+# libgoogle-perftools-dev provides both libprofiler (CPU profiler, see
+# ENABLE_GPERFTOOLS in CMakeLists.txt) and libtcmalloc (see ENABLE_TCMALLOC).
 
 # Abseil: prefer the distro package if present; otherwise it's pulled via
 # CMake FetchContent in the top-level CMakeLists.txt (not yet written).
@@ -50,3 +59,4 @@ clang-format --version
 clang-tidy --version
 cppcheck --version
 pre-commit --version
+llvm-ar --version
