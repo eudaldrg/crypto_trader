@@ -22,6 +22,13 @@ files elsewhere) and record *why* choices were made, not just what they are.
 Add a new ADR there for any future non-obvious architectural decision instead
 of leaving the rationale only in a commit message or chat.
 
+**`exchanges/*.md` holds raw per-exchange protocol reference** (endpoints,
+auth flow, message shapes, confirmed wire quirks) — facts, not rationale.
+When an ADR references an exchange behavior, the *why* stays in the ADR and
+the *what* (exact fields, endpoints) belongs in `exchanges/`; update it
+whenever a probe in `experiments/` confirms something new about the wire
+format. See `exchanges/README.md` for the index.
+
 - `decisions/0001-feed-source-selection.md` — why Kraken's public L3 `level3`
   WS feed (genuine order-by-order `add`/`modify`/`delete` by `order_id`) is
   the primary feed, with Deribit's L2 `book` channel (real `change_id`/
@@ -47,6 +54,16 @@ of leaving the rationale only in a commit message or chat.
   specifically because `perf c2c`/PMU access is unreliable under WSL2's
   Hyper-V. Until dual-boot exists, any profiling that specifically needs
   `perf c2c` should go to a disposable cloud VPS, not WSL2.
+- `decisions/0004-feed-handler-architecture.md` — the three execution modes
+  (LiveTrading/Replay/Simulation) and the `MessageSink` interface (with its
+  frame-ownership contract) that keeps strategy-facing code identical across
+  them; the v1 journal format (raw wire bytes + capture metadata, framed and
+  versioned, one file per exchange+connection-incarnation — not per symbol);
+  the threading model (epoll-per-thread-group is the end-goal, but
+  IXWebSocket owning its own fd/thread keeps Kraken a standalone exception
+  until it's replaced) and where the future SPSC fan-in seam goes; and the
+  per-exchange snapshot/recovery/gap-handling recap (detailed wire facts
+  live in `exchanges/`, not here).
 
 ## Commands
 
