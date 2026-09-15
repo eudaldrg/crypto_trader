@@ -206,6 +206,38 @@ tag=value bytes:
   once at startup via REST and cached in memory — not part of the streaming
   journal.
 
+### Journal format v1: as implemented (2026-09-16)
+
+The byte layout was left to the implementation; what landed is documented in
+full in `src/feed_handler/journal_format.h` (the single definition of every
+offset, shared by writer and reader). The choices worth recording here:
+
+- 64-byte file header: magic `CTJOURNL`, `uint16` format version, header
+  size, the `CLOCK_REALTIME`/`CLOCK_MONOTONIC` anchor *pair* (sampled
+  together, so per-record monotonic readings convert to wall clock), a
+  16-byte exchange tag, the incarnation ordinal, and a CRC-32 over the
+  header itself. All integers little-endian, written shift-by-shift rather
+  than by struct punning.
+- 24-byte record header (type, payload length, capture sequence, monotonic
+  timestamp) + payload + 4-byte CRC-32 **trailer covering header and payload
+  together**. Chose a checksum over a bare length trailer: it catches a
+  corrupted body, not just a torn length field, and zlib's `crc32()` was
+  already a transitive dependency via IXWebSocket's `USE_ZLIB` so it cost no
+  new dependency.
+- The reconnect marker is a distinct `record_type`
+  (`connection_incarnation`), payload = a free-form reason string. It is
+  written through the same stamped-frame path as wire data, so it takes its
+  place in the same capture sequence rather than sitting outside the
+  ordering.
+- The writer **refuses** a frame whose capture sequence is not greater than
+  the last one written, and latches an error rather than appending it.
+  Silently writing an out-of-order record would break exactly the ordering
+  guarantee the sequence number exists to provide, and it would be
+  undetectable at replay time.
+- Keeping outbound traffic out of the journal is enforced structurally
+  rather than by a check: `journal_writer` is a pure sink with no outbound
+  path at all, so there is nothing for the WS client to accidentally call.
+
 ## Consequences
 
 - Kraken-first, Deribit-second implementation order is intentional: it

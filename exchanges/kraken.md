@@ -7,27 +7,51 @@ See `decisions/0001-feed-source-selection.md` for why this feed was chosen.
 - REST: `https://api.kraken.com`
 - WS v2 (L3 market data): `wss://ws-l3.kraken.com/v2`
 - Instrument reference data: `GET /0/public/AssetPairs` (tick size, decimals
-  — not carried inline in book messages, fetch/cache once at startup)
+  — not carried inline in book messages, fetch/cache once at startup).
+  Unauthenticated, no signing. Response is
+  `{"error":[], "result":{"<REST name>":{...}}}`; the fields that matter are
+  `altname` (`"XBTUSD"`), `wsname` (`"XBT/USD"`), `pair_decimals` (price
+  decimals), `lot_decimals` (quantity decimals) and `tick_size` (a decimal
+  *string*, e.g. `"0.1"` — keep the text, don't round-trip it through a
+  double before the order book has decided how it represents prices).
+  Confirmed live 2026-09-16: 1450 pairs returned for an unfiltered request.
+
+## Symbol naming: `XBT` (REST) vs `BTC` (WS v2)
+
+Confirmed live on 2026-09-16, and a genuine trap: REST `AssetPairs` reports
+`XXBTZUSD` with `wsname` `"XBT/USD"`, but the WS v2 `level3` channel
+subscribes to the same instrument as `"BTC/USD"` (that is what
+`experiments/kraken_l3_probe.py` actually sends, successfully). So Kraken's
+own `wsname` field does *not* give the string WS v2 wants for bitcoin.
+Anything joining reference data to feed symbols has to treat `XBT` and `BTC`
+as the same asset rather than trusting `wsname` verbatim.
 
 ## Auth (required for `level3`, not for lower-detail public channels)
 
 1. REST `POST /0/private/GetWebSocketsToken`, signed:
-   - `nonce`: current time in ms.
+   - `nonce`: a strictly increasing integer (see 3 below for what the C++
+     client actually uses).
    - `API-Sign` header = base64(HMAC-SHA512(secret, urlpath +
      SHA256(nonce + urlencoded(postdata)))), secret is base64-decoded first.
-   - Response: `result.token`, used as the `token` field in the WS
-     `subscribe` message (not a header — sent inside the WS payload).
+   - Response: `result.token` plus `result.expires`, used as the `token`
+     field in the WS `subscribe` message (not a header — sent inside the WS
+     payload).
 2. Token is passed once per `subscribe` call; a reconnect needs a fresh
-   token fetch. Kraken's docs describe the token as short-lived if unused
-   (commonly cited as ~15 minutes) — **not yet independently confirmed by
-   our own probe**, treat as short-lived and re-fetch on every (re)connect
-   rather than caching across reconnects.
+   token fetch. **Confirmed live on 2026-09-16** (`src/feed_handler/kraken`
+   signing implementation, real signed call): the response carries
+   `"expires": 900`, i.e. the commonly cited ~15 minutes is correct and is
+   stated by the API itself rather than only by the docs. Still re-fetch on
+   every (re)connect rather than caching across reconnects — the window is
+   short enough that a stale token is a live failure mode.
 3. **Nonce must be strictly increasing per API key.** The probe's
    `str(int(time.time() * 1000))` (millisecond-resolution wall clock) is
    fine for a one-off probe but will collide under a fast automated
-   reconnect loop (two calls within the same millisecond) — the real feed
-   handler needs a monotonic counter or another guaranteed-increasing
-   source, not a raw millisecond timestamp.
+   reconnect loop (two calls within the same millisecond). The C++ client
+   uses `max(current_microseconds_since_epoch, last_nonce_used + 1)`, which
+   stays strictly increasing across same-microsecond bursts *and* backwards
+   NTP steps. No cross-process high-water mark is persisted: v1 assumes one
+   continuously running process per API key, so a restart that rewinds the
+   clock, or a second process sharing the key, would still need one.
 4. **Never journal the token or any raw `subscribe` payload** — the token
    travels inside the WS message body (see `decisions/0004`'s journal-format
    section), not a header, so a naive "journal everything on this
