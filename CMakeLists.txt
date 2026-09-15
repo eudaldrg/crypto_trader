@@ -117,6 +117,10 @@ target_compile_options(project_warnings INTERFACE
       -Wno-deprecated-declarations
       -Wno-array-bounds
       -Wno-redundant-move
+      # clang-tidy's syntax-only analysis pass reports -ftime-trace (see
+      # project_options below) as unused since it never runs codegen --
+      # without this, -Werror turns that into a hard error on every file.
+      -Wno-unused-command-line-argument
       -ftemplate-backtrace-limit=0
     >
 )
