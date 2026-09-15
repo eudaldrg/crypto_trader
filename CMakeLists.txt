@@ -152,7 +152,7 @@ if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
     # Emits a per-translation-unit *.json timing trace next to each object file for ClangBuildAnalyzer
     -ftime-trace
     -ftemplate-depth=750
-    $<$<CONFIG:Release>:-O3;-fomit-frame-pointer;-DNDEBUG;-DQT_NO_DEBUG>
+    $<$<CONFIG:release,profile,production>:-O3;-fomit-frame-pointer;-DNDEBUG;-DQT_NO_DEBUG>
   )
   target_link_options(project_options INTERFACE
       -fuse-ld=lld
