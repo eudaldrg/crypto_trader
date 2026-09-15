@@ -255,6 +255,13 @@ target_link_libraries(feed_handler
   PRIVATE ixwebsocket::ixwebsocket simdjson::simdjson OpenSSL::Crypto ZLIB::ZLIB
 )
 
+# The live Kraken level3 capture binary (decisions/0004's first vertical
+# slice). Credentials come from the environment; see the file's header comment.
+add_project_executable(kraken_feed_handler
+  src/feed_handler/kraken/kraken_feed_handler_main.cpp
+)
+target_link_libraries(kraken_feed_handler PRIVATE feed_handler)
+
 if(BUILD_TESTING)
   # Proves the FetchContent wiring for IXWebSocket/simdjson/GoogleTest
   # actually works end-to-end -- not feed handler behavior.
