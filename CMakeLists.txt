@@ -170,6 +170,44 @@ if(ENABLE_GPERFTOOLS)
   set_target_properties(gperftools_profiler PROPERTIES IMPORTED_LOCATION "${GPERFTOOLS_PROFILER_LIBRARY}")
 endif()
 
+#### Third-party dependencies (decisions/0002, decisions/0004) ####
+include(FetchContent)
+
+# IXWebSocket: Kraken WSS transport. USE_TLS must be forced into the cache
+# before add_subdirectory runs (via FetchContent_MakeAvailable below) --
+# IXWebSocket's own option(USE_TLS ...) call is a no-op once the cache entry
+# already exists. Defaults to OpenSSL on Linux once TLS is on.
+set(USE_TLS ON CACHE BOOL "" FORCE)
+FetchContent_Declare(
+  ixwebsocket
+  GIT_REPOSITORY https://github.com/machinezone/IXWebSocket.git
+  GIT_TAG v12.0.1
+)
+
+# simdjson: Kraken message parsing.
+FetchContent_Declare(
+  simdjson
+  GIT_REPOSITORY https://github.com/simdjson/simdjson.git
+  GIT_TAG v4.6.11
+)
+
+FetchContent_MakeAvailable(ixwebsocket simdjson)
+
+# GoogleTest: TDD for feed-parsing/journal logic, per decisions/0002.
+option(BUILD_TESTING "Build test targets" ON)
+if(BUILD_TESTING)
+  set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+  set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+  FetchContent_Declare(
+    googletest
+    GIT_REPOSITORY https://github.com/google/googletest.git
+    GIT_TAG v1.18.0
+  )
+  FetchContent_MakeAvailable(googletest)
+  enable_testing()
+  include(GoogleTest)
+endif()
+
 # Wraps add_executable() + the standard project_options/project_warnings
 # linkage so future targets can't forget to link one -- see decisions/0002.
 function(add_project_executable name)
@@ -180,7 +218,24 @@ function(add_project_executable name)
   endif()
 endfunction()
 
+# Same, but for a GTest-based test binary registered with ctest -- see
+# decisions/0002.
+function(add_project_test name)
+  add_executable(${name} ${ARGN})
+  target_link_libraries(${name} PRIVATE project_options project_warnings GTest::gtest_main)
+  gtest_discover_tests(${name})
+endfunction()
+
 add_project_executable(crypto_trader
   src/greeter.cpp
   src/main.cpp
 )
+
+if(BUILD_TESTING)
+  # Proves the FetchContent wiring for IXWebSocket/simdjson/GoogleTest
+  # actually works end-to-end -- not feed handler behavior.
+  add_project_test(dependency_smoke_test
+    src/feed_handler/tests/dependency_smoke_test.cpp
+  )
+  target_link_libraries(dependency_smoke_test PRIVATE ixwebsocket::ixwebsocket simdjson::simdjson)
+endif()
