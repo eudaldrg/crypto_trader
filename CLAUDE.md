@@ -10,11 +10,14 @@ a portfolio piece to demonstrate HFT-style systems engineering — concurrent
 feed ingestion, deterministic replay/journaling, low-latency data structures,
 profiling discipline — against real exchange data rather than a simulation.
 
-**Status: early stage.** Only a CMake skeleton (`src/greeter.*`, `src/main.cpp`)
-and throwaway Python protocol probes (`experiments/`) exist so far. No feed
-handler, order book, or strategy code has landed yet. `decisions/` holds the
-locked-in ADRs; the rest of the design is intentionally unspecified and will
-be worked out in future sessions — don't assume unwritten components exist.
+**Status: early stage.** What exists: the CMake skeleton (`src/greeter.*`,
+`src/main.cpp`), throwaway Python protocol probes (`experiments/`), and the
+first slice of the feed handler in `src/feed_handler/` — the `MessageSink`
+seam, the v1 capture journal (writer + reader), and the Kraken REST auth /
+`AssetPairs` client. No WebSocket client, order book, or strategy code has
+landed yet. `decisions/` holds the locked-in ADRs; the rest of the design is
+intentionally unspecified and will be worked out in future sessions — don't
+assume unwritten components exist.
 
 **Always read `decisions/*.md` before making an architectural call.** They
 are the actual design doc for this project (in place of scattered markdown
@@ -117,11 +120,23 @@ pre-commit run --all-files
 
 ### Tests
 
-Not wired up yet — GoogleTest is the chosen framework (`decisions/0002`) but
-no `CMakeLists.txt` test target or `FetchContent` declaration exists yet.
-TDD is the intended workflow for feed-parsing/order-book logic once real
-code starts landing; set up the GTest target as part of that first slice of
-work rather than assuming it's already there.
+GoogleTest (`decisions/0002`), fetched via `FetchContent` and registered with
+ctest:
+
+```bash
+ctest --test-dir build/debug
+./build/debug/bin/feed_handler_tests   # or run a binary directly
+```
+
+Add new test binaries with `add_project_test(name sources...)` (the test
+equivalent of `add_project_executable`). TDD is the intended workflow for
+feed-parsing/order-book logic.
+
+One cppcheck quirk worth knowing before it costs you an hour: the pre-commit
+cppcheck hook reports `syntaxError` on a `TEST`/`TEST_F` macro that follows
+another definition inside an anonymous namespace. Keep helpers and constants
+in the anonymous namespace, close it, then define fixtures and tests at
+namespace scope — see `src/feed_handler/tests/journal_test.cpp`.
 
 ## Architecture notes
 
