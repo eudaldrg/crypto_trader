@@ -232,9 +232,10 @@ add_project_executable(crypto_trader
 )
 
 #### Feed handler ####
-# zlib already arrives transitively through IXWebSocket (USE_ZLIB), but relying
-# on that leakage from a subdirectory scope is fragile -- ask for it explicitly
-# for the target that actually uses it.
+# OpenSSL and zlib both already arrive transitively through IXWebSocket
+# (USE_TLS/USE_ZLIB), but relying on that leakage from a subdirectory scope is
+# fragile -- ask for them explicitly for the targets that actually use them.
+find_package(OpenSSL REQUIRED)
 find_package(ZLIB REQUIRED)
 
 add_library(feed_handler STATIC
@@ -242,11 +243,13 @@ add_library(feed_handler STATIC
   src/feed_handler/journal_reader.cpp
   src/feed_handler/journal_writer.cpp
   src/feed_handler/message_sink.cpp
+  src/feed_handler/kraken/kraken_rest_client.cpp
+  src/feed_handler/kraken/kraken_signing.cpp
 )
 target_include_directories(feed_handler PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(feed_handler
   PUBLIC project_options project_warnings
-  PRIVATE ZLIB::ZLIB
+  PRIVATE ixwebsocket::ixwebsocket simdjson::simdjson OpenSSL::Crypto ZLIB::ZLIB
 )
 
 if(BUILD_TESTING)
@@ -259,6 +262,7 @@ if(BUILD_TESTING)
 
   add_project_test(feed_handler_tests
     src/feed_handler/tests/journal_test.cpp
+    src/feed_handler/tests/kraken_rest_client_test.cpp
   )
   target_link_libraries(feed_handler_tests PRIVATE feed_handler)
 endif()
