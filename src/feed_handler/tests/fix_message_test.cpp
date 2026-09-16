@@ -30,6 +30,7 @@ using feed_handler::fix::format_utc_timestamp;
 using feed_handler::fix::framer;
 using feed_handler::fix::kSoh;
 using feed_handler::fix::parse_message;
+using feed_handler::fix::parsed_message;
 using feed_handler::fix::read_group;
 using feed_handler::fix::session_header;
 namespace tag = feed_handler::fix::tag;
@@ -702,6 +703,60 @@ TEST(FixGroup, ReadsTheOtherGroupsAMarketDataRequestCarries) {
     ASSERT_TRUE(symbols.has_value()) << symbols.error();
     ASSERT_EQ(symbols->size(), 1U);
     EXPECT_EQ(symbols->entries.front().get(tag::symbol), "BTC-PERPETUAL");
+}
+
+TEST(FixGroup, ReadsFromAParsedMessageHeldInANamedVariable) {
+    // The lifetime-safe spelling, pinned so the rvalue overload of read_group
+    // being `= delete`d cannot quietly cost the legitimate idiom anything.
+    //
+    // A repeating_group is spans all the way down: into the parsed_message's
+    // field list, which is views into the parsed bytes. Both have to outlive
+    // the group, so both are named variables here and the group is read and
+    // then used across later statements -- long after the full expression that
+    // built it would have destroyed a temporary.
+    const std::array<md_entry, 2> entries = {
+        md_entry{.update_action = "0",
+                 .entry_type = "0",
+                 .price = "64000.5",
+                 .size = "10",
+                 .date = "20260916"},
+        md_entry{.update_action = "2",
+                 .entry_type = "1",
+                 .price = "64001.0",
+                 .size = "0",
+                 .date = "20260916"},
+    };
+    const std::string raw = md_message("X", entries);
+    const auto parsed = parse_message(raw);
+    ASSERT_TRUE(parsed.has_value()) << parsed.error();
+
+    // Both lvalue spellings a call site can reach for: straight through the
+    // expected, and through a named parsed_message reference.
+    const parsed_message& message = *parsed;
+    const auto group = read_group(message, tag::no_md_entries, kIncrementalEntryTags);
+    const auto same_group = read_group(*parsed, tag::no_md_entries,
+                                       {tag::md_update_action, tag::md_entry_type, tag::md_entry_px,
+                                        tag::md_entry_size, tag::md_entry_date});
+    ASSERT_TRUE(group.has_value()) << group.error();
+    ASSERT_TRUE(same_group.has_value()) << same_group.error();
+    ASSERT_EQ(group->size(), entries.size());
+    ASSERT_EQ(same_group->size(), entries.size());
+    EXPECT_FALSE(group->truncated());
+
+    for (std::size_t index = 0; index < entries.size(); ++index) {
+        const auto& entry = (*group)[index];
+        EXPECT_EQ(entry.get(tag::md_update_action), entries[index].update_action) << "at " << index;
+        EXPECT_EQ(entry.get(tag::md_entry_type), entries[index].entry_type) << "at " << index;
+        EXPECT_EQ(entry.get(tag::md_entry_px), entries[index].price) << "at " << index;
+        EXPECT_EQ(entry.get(tag::md_entry_size), entries[index].size) << "at " << index;
+        EXPECT_EQ((*same_group)[index].get(tag::md_entry_px), entries[index].price)
+            << "at " << index;
+    }
+
+    // Still readable here, several statements on: the views point into `raw`
+    // and `parsed`, both of which are still alive.
+    EXPECT_EQ(group->entries.front().fields().front().tag, tag::md_update_action);
+    EXPECT_EQ((*group)[1].get_int(tag::md_entry_size), 0);
 }
 
 TEST(FixGroup, FailsOnlyWhenThereIsNoGroupToRead) {
