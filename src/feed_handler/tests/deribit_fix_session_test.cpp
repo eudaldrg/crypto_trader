@@ -269,7 +269,8 @@ TEST(DeribitSession, ConsumesOneOutboundSequenceNumberPerMessageInBuildOrder) {
     ASSERT_FALSE(session.BuildHeartbeat().empty());
     EXPECT_EQ(session.NextOutboundSeqNum(), 4U);
 
-    const auto parsed = ParseMessage(session.BuildLogout("done"));
+    const std::string logout = session.BuildLogout("done");
+    const auto parsed = ParseMessage(logout);
     ASSERT_TRUE(parsed.has_value()) << parsed.error();
     EXPECT_EQ(parsed->Get(tag::kMsgSeqNum), "4");
     EXPECT_EQ(parsed->Get(tag::kText), "done");
@@ -287,20 +288,23 @@ TEST(DeribitHeartbeat, EchoesTheTestRequestId) {
     // Deribit's HeartBtInt=30 means an unanswered TestRequest ends the
     // session, and the answer is only accepted if it echoes TestReqID(112).
     FixSession session(TestConfig());
-    const auto parsed = ParseMessage(session.BuildHeartbeatResponse("TEST-42"));
+    const std::string response = session.BuildHeartbeatResponse("TEST-42");
+    const auto parsed = ParseMessage(response);
     ASSERT_TRUE(parsed.has_value()) << parsed.error();
     EXPECT_EQ(parsed->MsgType(), "0");
     EXPECT_EQ(parsed->Get(tag::kTestReqId), "TEST-42");
 
     // A heartbeat we originate carries no TestReqID at all.
-    const auto unsolicited = ParseMessage(session.BuildHeartbeat());
+    const std::string heartbeat = session.BuildHeartbeat();
+    const auto unsolicited = ParseMessage(heartbeat);
     ASSERT_TRUE(unsolicited.has_value()) << unsolicited.error();
     EXPECT_FALSE(unsolicited->Get(tag::kTestReqId).has_value());
 }
 
 TEST(DeribitTestRequest, CarriesTheIdItExpectsBack) {
     FixSession session(TestConfig());
-    const auto parsed = ParseMessage(session.BuildTestRequest("PING-1"));
+    const std::string test_request = session.BuildTestRequest("PING-1");
+    const auto parsed = ParseMessage(test_request);
     ASSERT_TRUE(parsed.has_value()) << parsed.error();
     EXPECT_EQ(parsed->MsgType(), "1");
     EXPECT_EQ(parsed->Get(tag::kTestReqId), "PING-1");
@@ -382,7 +386,8 @@ TEST(DeribitSequence, ReportsAMessageWithNoUsableMsgSeqNum) {
 
     for (const auto& fields : {without_seq_num, with_garbage_seq_num}) {
         FixSession session(TestConfig());
-        const auto parsed = ParseMessage(BuildMessage(fields));
+        const std::string raw = BuildMessage(fields);
+        const auto parsed = ParseMessage(raw);
         ASSERT_TRUE(parsed.has_value()) << parsed.error();
 
         const auto check = session.OnInbound(*parsed);

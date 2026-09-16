@@ -230,7 +230,8 @@ TEST(FixParser, GetReturnsTheFirstOccurrenceOfARepeatedTag) {
         Field{.tag = tag::kMdEntryType, .value = "0"},
         Field{.tag = tag::kMdEntryType, .value = "1"},
     };
-    const auto parsed = ParseMessage(BuildMessage(HeaderFor("V", 1), body));
+    const std::string message = BuildMessage(HeaderFor("V", 1), body);
+    const auto parsed = ParseMessage(message);
     ASSERT_TRUE(parsed.has_value()) << parsed.error();
     EXPECT_EQ(parsed->Count(tag::kMdEntryType), 2U);
     EXPECT_EQ(parsed->Get(tag::kMdEntryType), "0");
@@ -244,14 +245,16 @@ TEST(FixParser, SplitsOnlyTheTagOnEqualsSoBase64ValuesSurvive) {
     const std::array<Field, 1> body = {
         Field{.tag = tag::kRawData, .value = std::string(kRawData)},
     };
-    const auto parsed = ParseMessage(BuildMessage(HeaderFor("A", 1), body));
+    const std::string message = BuildMessage(HeaderFor("A", 1), body);
+    const auto parsed = ParseMessage(message);
     ASSERT_TRUE(parsed.has_value()) << parsed.error();
     EXPECT_EQ(parsed->Get(tag::kRawData), kRawData);
 }
 
 TEST(FixParser, ParsesIntegerFieldsAndRejectsNonIntegers) {
     const std::array<Field, 1> body = {Field{.tag = tag::kText, .value = "12abc"}};
-    const auto parsed = ParseMessage(BuildMessage(HeaderFor("0", 4242), body));
+    const std::string message = BuildMessage(HeaderFor("0", 4242), body);
+    const auto parsed = ParseMessage(message);
     ASSERT_TRUE(parsed.has_value()) << parsed.error();
     EXPECT_EQ(parsed->GetInt(tag::kMsgSeqNum), 4242);
     EXPECT_FALSE(parsed->GetInt(tag::kText).has_value());
@@ -277,16 +280,25 @@ TEST(FixParser, RejectsAWrongBodyLength) {
 }
 
 TEST(FixParser, RejectsMalformedEnvelopes) {
+    // Each buffer is named: ParseMessage does not copy, so a temporary would
+    // be gone before the ParsedMessage it produced was even looked at.
+    const std::string no_begin_string = Wire("35=0|49=A|10=000|");
+    const std::string wrong_version = Wire("8=FIX.4.2|9=45|35=0|10=052|");
+    const std::string no_body_length = Wire("8=FIX.4.4|35=0|49=A|10=052|");
+    const std::string msg_type_not_first = Wire("8=FIX.4.4|9=10|49=A|35=0|10=000|");
+    const std::string no_check_sum = Wire("8=FIX.4.4|9=5|35=0|");
+    const std::string trailing_bytes = Wire(kHandVerified) + "junk";
+
     EXPECT_FALSE(ParseMessage("").has_value());
-    EXPECT_FALSE(ParseMessage(Wire("35=0|49=A|10=000|")).has_value());
-    EXPECT_FALSE(ParseMessage(Wire("8=FIX.4.2|9=45|35=0|10=052|")).has_value());
-    EXPECT_FALSE(ParseMessage(Wire("8=FIX.4.4|35=0|49=A|10=052|")).has_value());
+    EXPECT_FALSE(ParseMessage(no_begin_string).has_value());
+    EXPECT_FALSE(ParseMessage(wrong_version).has_value());
+    EXPECT_FALSE(ParseMessage(no_body_length).has_value());
     // MsgType must lead the body.
-    EXPECT_FALSE(ParseMessage(Wire("8=FIX.4.4|9=10|49=A|35=0|10=000|")).has_value());
+    EXPECT_FALSE(ParseMessage(msg_type_not_first).has_value());
     // No CheckSum at all.
-    EXPECT_FALSE(ParseMessage(Wire("8=FIX.4.4|9=5|35=0|")).has_value());
+    EXPECT_FALSE(ParseMessage(no_check_sum).has_value());
     // Trailing bytes after CheckSum.
-    EXPECT_FALSE(ParseMessage(Wire(kHandVerified) + "junk").has_value());
+    EXPECT_FALSE(ParseMessage(trailing_bytes).has_value());
 }
 
 TEST(FixFramer, SplitsSeveralMessagesOutOfOneChunk) {
@@ -427,7 +439,8 @@ TEST(FixGroup, ReadsEveryEntryOfASnapshotInOrder) {
                 .size = "7",
                 .date = "20260916"},
     };
-    const auto parsed = ParseMessage(MdMessage("W", entries));
+    const std::string raw = MdMessage("W", entries);
+    const auto parsed = ParseMessage(raw);
     ASSERT_TRUE(parsed.has_value()) << parsed.error();
 
     const auto group = ReadGroup(*parsed, tag::kNoMdEntries, kSnapshotEntryTags);
@@ -469,7 +482,8 @@ TEST(FixGroup, ReadsIncrementalEntriesWithTheirUpdateActions) {
                 .size = "0",
                 .date = "20260916"},
     };
-    const auto parsed = ParseMessage(MdMessage("X", entries));
+    const std::string raw = MdMessage("X", entries);
+    const auto parsed = ParseMessage(raw);
     ASSERT_TRUE(parsed.has_value()) << parsed.error();
 
     const auto group = ReadGroup(*parsed, tag::kNoMdEntries, kIncrementalEntryTags);
@@ -507,7 +521,8 @@ TEST(FixGroup, FindsBoundariesByTheDelimiterTagNotByAFixedStride) {
                 .size = "3",
                 .date = "20260916"},
     };
-    const auto parsed = ParseMessage(MdMessage("W", entries));
+    const std::string raw = MdMessage("W", entries);
+    const auto parsed = ParseMessage(raw);
     ASSERT_TRUE(parsed.has_value()) << parsed.error();
 
     const auto group = ReadGroup(*parsed, tag::kNoMdEntries, kSnapshotEntryTags);
@@ -530,7 +545,8 @@ TEST(FixGroup, ReadsASingleEntryGroup) {
                 .size = "12",
                 .date = "20260916"},
     };
-    const auto parsed = ParseMessage(MdMessage("X", entries));
+    const std::string raw = MdMessage("X", entries);
+    const auto parsed = ParseMessage(raw);
     ASSERT_TRUE(parsed.has_value()) << parsed.error();
 
     const auto group = ReadGroup(*parsed, tag::kNoMdEntries, kIncrementalEntryTags);
@@ -541,7 +557,8 @@ TEST(FixGroup, ReadsASingleEntryGroup) {
 }
 
 TEST(FixGroup, ReadsAZeroEntryGroupAsEmptyRatherThanAnError) {
-    const auto parsed = ParseMessage(MdMessage("X", std::span<const MdEntry>{}));
+    const std::string raw = MdMessage("X", std::span<const MdEntry>{});
+    const auto parsed = ParseMessage(raw);
     ASSERT_TRUE(parsed.has_value()) << parsed.error();
     EXPECT_EQ(parsed->Get(tag::kNoMdEntries), "0");
 
@@ -566,7 +583,8 @@ TEST(FixGroup, StopsAtTheFirstTagThatIsNotAGroupMember) {
                 .date = "20260916"},
     };
     const std::array<Field, 1> trailing = {Field{.tag = tag::kText, .value = "after the group"}};
-    const auto parsed = ParseMessage(MdMessage("W", entries, std::nullopt, trailing));
+    const std::string raw = MdMessage("W", entries, std::nullopt, trailing);
+    const auto parsed = ParseMessage(raw);
     ASSERT_TRUE(parsed.has_value()) << parsed.error();
 
     const auto group = ReadGroup(*parsed, tag::kNoMdEntries, kSnapshotEntryTags);
@@ -592,7 +610,8 @@ TEST(FixGroup, SalvagesTheEntriesAMessageActuallyCarriesWhenNumInGroupLies) {
                 .size = "0",
                 .date = "20260916"},
     };
-    const auto parsed = ParseMessage(MdMessage("X", entries, 5));
+    const std::string raw = MdMessage("X", entries, 5);
+    const auto parsed = ParseMessage(raw);
     ASSERT_TRUE(parsed.has_value()) << parsed.error();
 
     const auto group = ReadGroup(*parsed, tag::kNoMdEntries, kIncrementalEntryTags);
@@ -614,7 +633,8 @@ TEST(FixGroup, SurvivesAnAbsurdNumInGroupWithoutAllocatingForIt) {
                 .size = "1",
                 .date = "20260916"},
     };
-    const auto parsed = ParseMessage(MdMessage("W", entries, 1'000'000'000));
+    const std::string raw = MdMessage("W", entries, 1'000'000'000);
+    const auto parsed = ParseMessage(raw);
     ASSERT_TRUE(parsed.has_value()) << parsed.error();
 
     const auto group = ReadGroup(*parsed, tag::kNoMdEntries, kSnapshotEntryTags);
@@ -643,7 +663,8 @@ TEST(FixGroup, TreatsNumInGroupAsAuthoritativeWhenMoreEntriesAreOnTheWire) {
                 .size = "3",
                 .date = "20260916"},
     };
-    const auto parsed = ParseMessage(MdMessage("W", entries, 2));
+    const std::string raw = MdMessage("W", entries, 2);
+    const auto parsed = ParseMessage(raw);
     ASSERT_TRUE(parsed.has_value()) << parsed.error();
 
     const auto group = ReadGroup(*parsed, tag::kNoMdEntries, kSnapshotEntryTags);
@@ -669,7 +690,8 @@ TEST(FixGroup, ReadsNothingWhenAskedForTheWrongEntryShape) {
                 .size = "2",
                 .date = "20260916"},
     };
-    const auto parsed = ParseMessage(MdMessage("X", entries));
+    const std::string raw = MdMessage("X", entries);
+    const auto parsed = ParseMessage(raw);
     ASSERT_TRUE(parsed.has_value()) << parsed.error();
 
     const auto group = ReadGroup(*parsed, tag::kNoMdEntries, kSnapshotEntryTags);
@@ -689,7 +711,8 @@ TEST(FixGroup, ReadsTheOtherGroupsAMarketDataRequestCarries) {
         Field{.tag = tag::kNoRelatedSym, .value = "1"},
         Field{.tag = tag::kSymbol, .value = "BTC-PERPETUAL"},
     };
-    const auto parsed = ParseMessage(BuildMessage(HeaderFor("V", 3), body));
+    const std::string message = BuildMessage(HeaderFor("V", 3), body);
+    const auto parsed = ParseMessage(message);
     ASSERT_TRUE(parsed.has_value()) << parsed.error();
 
     const auto types = ReadGroup(*parsed, tag::kNoMdEntryTypes, {tag::kMdEntryType});
@@ -759,7 +782,8 @@ TEST(FixGroup, ReadsFromAParsedMessageHeldInANamedVariable) {
 }
 
 TEST(FixGroup, FailsOnlyWhenThereIsNoGroupToRead) {
-    const auto parsed = ParseMessage(Wire(kHandVerified));
+    const std::string message = Wire(kHandVerified);
+    const auto parsed = ParseMessage(message);
     ASSERT_TRUE(parsed.has_value()) << parsed.error();
 
     const auto missing = ReadGroup(*parsed, tag::kNoMdEntries, kSnapshotEntryTags);
@@ -770,7 +794,8 @@ TEST(FixGroup, FailsOnlyWhenThereIsNoGroupToRead) {
         Field{.tag = tag::kNoMdEntries, .value = "two"},
         Field{.tag = tag::kMdEntryType, .value = "0"},
     };
-    const auto bad_count = ParseMessage(BuildMessage(HeaderFor("X", 1), body));
+    const std::string bad_count_raw = BuildMessage(HeaderFor("X", 1), body);
+    const auto bad_count = ParseMessage(bad_count_raw);
     ASSERT_TRUE(bad_count.has_value()) << bad_count.error();
     const auto unparsable = ReadGroup(*bad_count, tag::kNoMdEntries, kSnapshotEntryTags);
     ASSERT_FALSE(unparsable.has_value());
