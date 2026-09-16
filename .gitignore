@@ -32,3 +32,13 @@ Thumbs.db
 # Local secrets/config (API keys etc. — never commit these)
 *.env
 secrets.*
+
+# Captured market data journals (real exchange data, written by
+# kraken_feed_handler into ./journal by default — never commit these)
+journal/
+*.journal
+
+# Local runtime state (the Kraken nonce high-water mark, written into ./state
+# by default) — per-machine, per-API-key, never committed
+state/
+*.state

@@ -10,17 +10,36 @@ a portfolio piece to demonstrate HFT-style systems engineering — concurrent
 feed ingestion, deterministic replay/journaling, low-latency data structures,
 profiling discipline — against real exchange data rather than a simulation.
 
-**Status: early stage.** Only a CMake skeleton (`src/greeter.*`, `src/main.cpp`)
-and throwaway Python protocol probes (`experiments/`) exist so far. No feed
-handler, order book, or strategy code has landed yet. `decisions/` holds the
-locked-in ADRs; the rest of the design is intentionally unspecified and will
-be worked out in future sessions — don't assume unwritten components exist.
+**Status: early stage.** What exists: the CMake skeleton (`src/greeter.*`,
+`src/main.cpp`), throwaway Python protocol probes (`experiments/`), and the
+first vertical slice of the feed handler in `src/feed_handler/` — the
+`MessageSink` seam, the v1 capture journal (writer + reader), the Kraken REST
+auth / `AssetPairs` client, the Kraken `level3` WebSocket client, and the
+`kraken_feed_handler` binary that captures live market data to a journal
+(`KRAKEN_API_KEY`/`KRAKEN_API_SECRET` from the environment, journals into
+`./journal/`, runs until SIGINT). The second exchange backend is
+complete to the same depth: `src/feed_handler/fix/` (generic hand-rolled
+FIX.4.4 builder/parser/framer), `src/feed_handler/deribit/` (session
+mechanics plus a raw-POSIX-socket client on its own thread) and the
+`deribit_feed_handler` binary, which logs on to Deribit's FIX testnet
+(`DERIBIT_TESTNET_CLIENT_ID`/`DERIBIT_TESTNET_CLIENT_SECRET` from the
+environment), subscribes to `BTC-PERPETUAL` and journals into the same
+`./journal/` until SIGINT. No order book or strategy code has landed yet. `decisions/` holds the locked-in ADRs; the rest of the design is
+intentionally unspecified and will be worked out in future sessions — don't
+assume unwritten components exist.
 
 **Always read `decisions/*.md` before making an architectural call.** They
 are the actual design doc for this project (in place of scattered markdown
 files elsewhere) and record *why* choices were made, not just what they are.
 Add a new ADR there for any future non-obvious architectural decision instead
 of leaving the rationale only in a commit message or chat.
+
+**`exchanges/*.md` holds raw per-exchange protocol reference** (endpoints,
+auth flow, message shapes, confirmed wire quirks) — facts, not rationale.
+When an ADR references an exchange behavior, the *why* stays in the ADR and
+the *what* (exact fields, endpoints) belongs in `exchanges/`; update it
+whenever a probe in `experiments/` confirms something new about the wire
+format. See `exchanges/README.md` for the index.
 
 - `decisions/0001-feed-source-selection.md` — why Kraken's public L3 `level3`
   WS feed (genuine order-by-order `add`/`modify`/`delete` by `order_id`) is
@@ -47,6 +66,23 @@ of leaving the rationale only in a commit message or chat.
   specifically because `perf c2c`/PMU access is unreliable under WSL2's
   Hyper-V. Until dual-boot exists, any profiling that specifically needs
   `perf c2c` should go to a disposable cloud VPS, not WSL2.
+- `decisions/0004-feed-handler-architecture.md` — the three execution modes
+  (LiveTrading/Replay/Simulation) and the `MessageSink` interface (with its
+  frame-ownership contract) that keeps strategy-facing code identical across
+  them; the v1 journal format (raw wire bytes + capture metadata, framed and
+  versioned, one file per exchange+connection-incarnation — not per symbol);
+  the threading model (epoll-per-thread-group is the end-goal, but
+  IXWebSocket owning its own fd/thread keeps Kraken a standalone exception
+  until it's replaced) and where the future SPSC fan-in seam goes; and the
+  per-exchange snapshot/recovery/gap-handling recap (detailed wire facts
+  live in `exchanges/`, not here).
+- `decisions/0005-quality-gates-and-release-process.md` — the commit-time
+  (must compile) and push-time (full suite under ASan+UBSan and TSan)
+  enforcement tiers, why MemorySanitizer is deferred rather than added, why a
+  local git hook isn't a real (unbypassable) gate, and the still-open
+  questions around a release process (branching strategy, coverage
+  thresholds, perf/simulation checks) — don't assume any of those were
+  decided, read the ADR's open-questions section first.
 
 ## Commands
 
@@ -78,33 +114,60 @@ Useful CMake options (pass as `-D<OPTION>=ON` or add to a preset's
 `ENABLE_GPERFTOOLS` (already on in the `profile` preset), `ENABLE_COVERAGE`,
 `USE_CLOCK_MANAGER`.
 
-### Lint / format
+### Lint / format / quality gates
 
-Enforced via pre-commit (`pre-commit install` once per clone):
+Two `pre-commit` framework hook stages — see `decisions/0005` for the full
+reasoning behind the split and what's deliberately not enforced yet:
 
 ```bash
-pre-commit run --all-files
+pre-commit install                      # commit-time hooks
+pre-commit install --hook-type pre-push # push-time hooks (sanitizers)
+pre-commit run --all-files              # commit-time hooks, on demand
 ```
 
+Commit-time (`.pre-commit-config.yaml`, default stage):
 - `clang-format` (Google-based, 100-col, 4-space indent, left-aligned
   pointers — see `.clang-format`) runs standalone.
-- `clang-tidy -p build --quiet` and `cppcheck` both need
-  `build/compile_commands.json` to exist first (configure any preset once).
+- `clang-tidy -p build/debug --quiet` and `cppcheck` both need
+  `build/debug/compile_commands.json` to exist first (`cmake --preset debug`
+  once).
 - `.clang-tidy` enables `bugprone-*`, `performance-*`, `modernize-*`,
   `readability-*`, `cppcoreguidelines-*`, `clang-analyzer-*` (with a short
-  explicit exclude list already tuned — e.g. magic-numbers and trailing
-  return type checks are off). **Prefer tightening `.clang-format`/
-  `.clang-tidy` over adding prose style docs** when a stylistic preference
-  comes up — that's the intended mechanism for keeping LLM-authored code
-  consistent here, not more markdown.
+  explicit exclude list already tuned) plus `readability-identifier-naming`
+  (Google-style: `CamelCase` types/functions/methods, `lower_case`
+  variables/params/namespaces, `k`-prefixed constants, trailing-underscore
+  private members). **Prefer tightening `.clang-format`/`.clang-tidy` over
+  adding prose style docs** when a stylistic preference comes up — that's
+  the intended mechanism for keeping LLM-authored code consistent here, not
+  more markdown.
+- `scripts/check_build.sh` — an actual incremental `cmake --build build/debug`.
+  A commit must at least compile.
+
+Push-time (`stages: [pre-push]`):
+- `scripts/run_sanitizers.sh` — the full test suite under ASan+UBSan, then
+  again under ThreadSanitizer, each in its own build directory. Slow by
+  design; catches exactly the bug classes (use-after-free, data races) that
+  went unnoticed in this codebase until sanitizers were actually run.
 
 ### Tests
 
-Not wired up yet — GoogleTest is the chosen framework (`decisions/0002`) but
-no `CMakeLists.txt` test target or `FetchContent` declaration exists yet.
-TDD is the intended workflow for feed-parsing/order-book logic once real
-code starts landing; set up the GTest target as part of that first slice of
-work rather than assuming it's already there.
+GoogleTest (`decisions/0002`), fetched via `FetchContent` and registered with
+ctest:
+
+```bash
+ctest --test-dir build/debug
+./build/debug/bin/feed_handler_tests   # or run a binary directly
+```
+
+Add new test binaries with `add_project_test(name sources...)` (the test
+equivalent of `add_project_executable`). TDD is the intended workflow for
+feed-parsing/order-book logic.
+
+One cppcheck quirk worth knowing before it costs you an hour: the pre-commit
+cppcheck hook reports `syntaxError` on a `TEST`/`TEST_F` macro that follows
+another definition inside an anonymous namespace. Keep helpers and constants
+in the anonymous namespace, close it, then define fixtures and tests at
+namespace scope — see `src/feed_handler/tests/journal_test.cpp`.
 
 ## Architecture notes
 

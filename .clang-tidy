@@ -1,3 +1,13 @@
+# ==========================================================================
+#  GENERATED FILE - do not edit by hand.
+#  Edit this project's .claude/workflows.json under `cpp`, then run
+#  the sync-lint-rules skill (/core:sync-lint-rules) to regenerate.
+# ==========================================================================
+# wf-rules:            cpp-rules/2026.09.2
+# wf-source:           rules/cpp/base.clang-tidy.json
+# wf-base-sha256:      e76e3b02b3008053d41191d4b38feda929f376c3c966c14d94e1b261f4d6b352
+# wf-overrides-sha256: 664142e3d3be2c37f500a5533a030be934628a49ff7de6ca061749c48a6e9367
+# wf-generated-sha256: c6d6730617530b3ffaf77f33ef0cc106c74266c6e6f8bbc72c71e53dfa396fc6
 Checks: >
   -*,
   bugprone-*,
@@ -12,6 +22,38 @@ Checks: >
   -cppcoreguidelines-non-private-member-variables-in-classes,
   -cppcoreguidelines-avoid-c-arrays,
   -modernize-use-nodiscard
-WarningsAsErrors: ''
-HeaderFilterRegex: '^.*/(src|include)/.*'
+ExcludeHeaderFilterRegex: '/(build|_deps|third_party|external|vendor)/'
 FormatStyle: file
+HeaderFilterRegex: '^.*/(src|include)/.*'
+WarningsAsErrors: ''
+CheckOptions:
+  readability-identifier-naming.ClassCase: CamelCase
+  readability-identifier-naming.ClassConstantCase: CamelCase
+  readability-identifier-naming.ClassConstantPrefix: k
+  readability-identifier-naming.ConstexprVariableCase: CamelCase
+  readability-identifier-naming.ConstexprVariablePrefix: k
+  readability-identifier-naming.EnumCase: CamelCase
+  readability-identifier-naming.EnumConstantCase: CamelCase
+  readability-identifier-naming.EnumConstantPrefix: k
+  readability-identifier-naming.FunctionCase: CamelCase
+  readability-identifier-naming.FunctionIgnoredRegexp: '^(begin|end|swap)$'
+  readability-identifier-naming.GlobalConstantCase: CamelCase
+  readability-identifier-naming.GlobalConstantPrefix: k
+  readability-identifier-naming.MacroDefinitionCase: UPPER_CASE
+  readability-identifier-naming.MethodCase: CamelCase
+  readability-identifier-naming.MethodIgnoredRegexp: '^(begin|end|cbegin|cend|rbegin|rend|crbegin|crend|size|empty|data|swap)$'
+  readability-identifier-naming.NamespaceCase: lower_case
+  readability-identifier-naming.ParameterCase: lower_case
+  readability-identifier-naming.PrivateMemberCase: lower_case
+  readability-identifier-naming.PrivateMemberSuffix: _
+  readability-identifier-naming.ProtectedMemberCase: lower_case
+  readability-identifier-naming.ProtectedMemberSuffix: _
+  readability-identifier-naming.PublicMemberCase: lower_case
+  readability-identifier-naming.StaticConstantCase: CamelCase
+  readability-identifier-naming.StaticConstantPrefix: k
+  readability-identifier-naming.StructCase: CamelCase
+  readability-identifier-naming.TemplateParameterCase: CamelCase
+  readability-identifier-naming.TypeAliasCase: CamelCase
+  readability-identifier-naming.TypedefCase: CamelCase
+  readability-identifier-naming.UnionCase: CamelCase
+  readability-identifier-naming.VariableCase: lower_case
