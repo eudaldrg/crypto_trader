@@ -7,13 +7,15 @@
 // exercise (a gap, a peer-initiated Logout, a rejected subscribe on an
 // otherwise healthy session), so they are pulled out into pure functions.
 //
-// The socket half: two paths where acting on that decision is the whole point
+// The socket half: the paths where acting on that decision is the whole point
 // and a pure function cannot prove it happened -- answering a TestRequest with
-// a correctly echoed TestReqID, and turning a sequence gap into an actual
-// reconnect. Both run the real fix_client, on its real thread, over a real
-// loopback TCP socket against a scripted FIX peer (loopback_server below).
-// The 45s live testnet run proved neither: no TestRequest arrived in that
-// window and no gap occurred (exchanges/deribit.md).
+// a correctly echoed TestReqID, turning a sequence gap into an actual
+// reconnect, stamping captured frames with this client's own wire shape, and
+// leaving each incarnation's journal complete on disk however the connection
+// ended. All run the real fix_client, on its real thread, over a real loopback
+// TCP socket against a scripted FIX peer (loopback_server below). The 45s live
+// testnet run proved none of them: no TestRequest arrived in that window and no
+// gap occurred (exchanges/deribit.md).
 //
 // The loopback peer is deliberately single-purpose and lives here rather than
 // growing into a reusable fake exchange -- that is Simulation mode
@@ -31,13 +33,17 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <format>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
+#include <thread>
 #include <utility>
 
 #include "feed_handler/capture_session.h"
+#include "feed_handler/journal_reader.h"
 #include "feed_handler/message_sink.h"
 #include "feed_handler/tests/recording_sink.h"
 
@@ -266,6 +272,15 @@ class loopback_server {
         return port_;
     }
 
+    /// Stops accepting, so the client's next connect() is refused instead of
+    /// queued. What that buys a test: the client leaves run_one_connection()
+    /// and stays out of it, rather than immediately opening the next
+    /// incarnation -- which would close the previous one anyway and hide
+    /// whether the path under test closed it.
+    void stop_listening() {
+        listener_.reset();
+    }
+
     /// The next client connection, or a disconnected peer if none arrived in
     /// time.
     peer accept_one(int timeout_ms) {
@@ -320,6 +335,65 @@ class loopback_server {
         return ::testing::AssertionFailure() << "could not send the accepted Logon";
     }
     return expect_next(exchange, msg_type::market_data_request, raw);
+}
+
+/// The journal file one incarnation of `exchange` wrote into `directory`, found
+/// by the ordinal the file name carries (capture_session.h). Empty if the
+/// incarnation never opened a file.
+std::filesystem::path journal_of(const std::filesystem::path& directory,
+                                 std::uint64_t incarnation) {
+    // Only the exchange and ordinal are predictable; the rest of the name is a
+    // UTC timestamp taken when the file was created (capture_session.h).
+    const std::string prefix = std::format("deribit-{:06}-", incarnation);
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(directory, ec)) {
+        if (entry.path().filename().string().starts_with(prefix)) {
+            return entry.path();
+        }
+    }
+    return {};
+}
+
+/// Waits for one incarnation's journal file to be complete on disk: present,
+/// readable, holding exactly `expected_records` records and ending at clean
+/// EOF rather than on a torn tail.
+///
+/// That is the observable form of "the capture session was closed": records sit
+/// in a 1 MiB userspace buffer until something flushes it, so a file that reads
+/// back in full is a file that was flushed and closed. Polled because the
+/// closing happens on the client's own connection thread.
+::testing::AssertionResult expect_closed_journal(const std::filesystem::path& directory,
+                                                 std::uint64_t incarnation,
+                                                 std::uint64_t expected_records) {
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(kStepTimeoutMs);
+    std::string last_problem = "no journal file for incarnation " + std::to_string(incarnation);
+    while (std::chrono::steady_clock::now() < deadline) {
+        const std::filesystem::path path = journal_of(directory, incarnation);
+        if (!path.empty()) {
+            auto reader = feed_handler::journal_reader::open(path);
+            if (!reader) {
+                last_problem = "journal unreadable: " + reader.error();
+            } else {
+                std::uint64_t records = 0;
+                while (reader->next().has_value()) {
+                    ++records;
+                }
+                if (records == expected_records && !reader->stopped_early()) {
+                    return ::testing::AssertionSuccess();
+                }
+                last_problem = "journal holds " + std::to_string(records) + " of " +
+                               std::to_string(expected_records) + " records" +
+                               (reader->stopped_early()
+                                    ? ", stopped early: " + std::string(reader->stop_reason())
+                                    : "");
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return ::testing::AssertionFailure()
+           << "incarnation " << incarnation << "'s journal was never flushed and closed ("
+           << last_problem << ")";
 }
 
 }  // namespace
@@ -625,6 +699,59 @@ TEST_F(DeribitFixLoopback, StampsEveryCapturedFrameWithItsOwnWireShape) {
     ASSERT_EQ(incarnations.size(), 1U);
     EXPECT_EQ(incarnations[0].incarnation, 1U);
     EXPECT_NE(incarnations[0].reason.find("deribit fix"), std::string::npos);
+
+    client.stop();
+}
+
+TEST_F(DeribitFixLoopback, ClosesTheJournalWhenAGapDropsTheConnection) {
+    // The bug this covers: every exit from the read loop used to leave the
+    // journal file open with up to a full 1 MiB write buffer unflushed, until
+    // the *next* successful connection's begin_incarnation() closed it -- which
+    // can be a whole reconnect backoff later, or never.
+    capture_session capture({.directory = dir_, .exchange = "deribit"});
+    fix_client client(test_config(), capture, loopback_config());
+    client.start();
+
+    peer first = server_.accept_one(kStepTimeoutMs);
+    ASSERT_TRUE(first.connected()) << "the client never connected";
+    ASSERT_TRUE(complete_handshake(first));
+
+    // Nothing to reconnect to from here on, so incarnation 1's file can only be
+    // closed by the path that drops the connection -- not by incarnation 2.
+    server_.stop_listening();
+    // MsgSeqNum jumps 1 -> 5: three messages the session will never see again.
+    ASSERT_TRUE(first.send(inbound(msg_type::market_data_incremental_refresh, 5)));
+
+    // The marker, the Logon and the gapped incremental: journaling happens
+    // before classification, so the message that ended the session is in the
+    // file too.
+    EXPECT_TRUE(expect_closed_journal(dir_, 1, 3));
+
+    client.stop();
+}
+
+TEST_F(DeribitFixLoopback, ClosesTheJournalWhenTheStalenessWatchdogFires) {
+    // The same guarantee on the other reconnect trigger, which leaves the loop
+    // through a different return: a half-open connection produces silence, and
+    // the file has to be complete on disk before the client goes looking for a
+    // new connection.
+    capture_session capture({.directory = dir_, .exchange = "deribit"});
+    fix_client_config cfg = loopback_config();
+    // Far shorter than the 5s the other loopback tests use, because here the
+    // watchdog firing IS the test rather than something that must not happen.
+    cfg.staleness_timeout_ns = 200ULL * 1'000'000ULL;
+    fix_client client(test_config(), capture, cfg);
+    client.start();
+
+    peer exchange = server_.accept_one(kStepTimeoutMs);
+    ASSERT_TRUE(exchange.connected()) << "the client never connected";
+    ASSERT_TRUE(complete_handshake(exchange));
+    server_.stop_listening();
+
+    // Then simply say nothing: no heartbeats, no data. The marker and the
+    // Logon are what the file must contain by the time the watchdog fires.
+    EXPECT_TRUE(expect_closed_journal(dir_, 1, 2));
+    EXPECT_GE(client.forced_reconnects(), 1U);
 
     client.stop();
 }

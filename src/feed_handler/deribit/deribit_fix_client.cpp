@@ -63,6 +63,29 @@ class scoped_fd {
     int fd_;
 };
 
+/// Closes the capture session on scope exit, whichever way the connection
+/// ended. run_one_connection() leaves through a dozen returns -- a gap, a peer
+/// Logout, framing loss, a recv() error, the staleness watchdog, shutdown --
+/// and the file has to be flushed and closed on every one of them rather than
+/// on the next successful connect: that can be a full max_reconnect_wait_ms
+/// away, and until then up to a whole 1 MiB write buffer is sitting in this
+/// process instead of on disk. Same rule Kraken applies on its Close event, and
+/// for the same reason: a closed file is a complete, readable one.
+class scoped_capture {
+  public:
+    explicit scoped_capture(capture_session& capture) : capture_(&capture) {}
+    scoped_capture(const scoped_capture&) = delete;
+    scoped_capture& operator=(const scoped_capture&) = delete;
+    scoped_capture(scoped_capture&&) = delete;
+    scoped_capture& operator=(scoped_capture&&) = delete;
+    ~scoped_capture() {
+        capture_->close();
+    }
+
+  private:
+    capture_session* capture_;
+};
+
 /// Thread-safe errno rendering: std::system_category() rather than strerror(),
 /// whose single static buffer would be a data race the moment a second
 /// connection thread exists.
@@ -233,6 +256,10 @@ void fix_client::run_one_connection() {
         return;
     }
     const scoped_fd socket_fd(*connected);
+    // Declared before the incarnation it closes, so no exit below can skip it.
+    // Closing a session with nothing open is a no-op, so it is also harmless if
+    // begin_incarnation() itself fails.
+    const scoped_capture capture_guard(capture_);
     log_info("connected to " + cfg_.host + ":" + std::to_string(cfg_.port));
 
     // Everything that defines a connection incarnation resets together: fresh
