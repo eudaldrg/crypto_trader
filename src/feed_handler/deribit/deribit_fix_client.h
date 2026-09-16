@@ -204,6 +204,13 @@ class fix_client {
     /// Journals one framed message verbatim, before any parsing. Returns false
     /// on a journal failure that is fatal to capture.
     bool journal_message(std::string_view raw);
+    /// Sends the scheduled Heartbeat(35=0) if HeartBtInt seconds have passed
+    /// since the last outbound byte. Returns false only when the send failed,
+    /// which ends the connection. Driven from the top of the read loop rather
+    /// than from the recv() timeout branch: what we owe the exchange is a
+    /// heartbeat every HeartBtInt of *outbound* silence (exchanges/deribit.md),
+    /// which has nothing to do with whether inbound data happens to be flowing.
+    bool send_heartbeat_if_due(int fd);
     /// Writes the whole buffer, tolerating short writes and EINTR. Outbound
     /// only -- these bytes never reach the journal.
     bool send_all(int fd, std::string_view bytes);
