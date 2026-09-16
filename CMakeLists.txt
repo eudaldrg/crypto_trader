@@ -9,6 +9,13 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON) # Export compilation database (single file
 # Set to 1 to use the sanitizers.
 option(ENABLE_ASAN "Enable AddressSanitizer" OFF)
 option(ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
+# ThreadSanitizer instruments differently than ASan/UBSan and the two runtimes
+# cannot coexist in one binary, hence the separate option and the guard below
+# rather than folding it into ENABLE_ASAN's block. See decisions/0005.
+option(ENABLE_TSAN "Enable ThreadSanitizer" OFF)
+if(ENABLE_TSAN AND ENABLE_ASAN)
+  message(FATAL_ERROR "ENABLE_TSAN and ENABLE_ASAN cannot be combined in one binary -- configure separate build directories (see scripts/run_sanitizers.sh)")
+endif()
 option(USE_CLOCK_MANAGER "Enable clock manager" OFF)
 option(ENABLE_COVERAGE "Enable code coverage instrumentation" OFF)
 option(ENABLE_TCMALLOC "Use tcmalloc" OFF)
@@ -70,6 +77,14 @@ if(ENABLE_UBSAN)
     )
     target_link_options(project_sanitizers INTERFACE
         -fsanitize=undefined
+    )
+endif()
+if(ENABLE_TSAN)
+    target_compile_options(project_sanitizers INTERFACE
+        -fsanitize=thread
+    )
+    target_link_options(project_sanitizers INTERFACE
+        -fsanitize=thread
     )
 endif()
 

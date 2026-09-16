@@ -76,6 +76,13 @@ format. See `exchanges/README.md` for the index.
   until it's replaced) and where the future SPSC fan-in seam goes; and the
   per-exchange snapshot/recovery/gap-handling recap (detailed wire facts
   live in `exchanges/`, not here).
+- `decisions/0005-quality-gates-and-release-process.md` — the commit-time
+  (must compile) and push-time (full suite under ASan+UBSan and TSan)
+  enforcement tiers, why MemorySanitizer is deferred rather than added, why a
+  local git hook isn't a real (unbypassable) gate, and the still-open
+  questions around a release process (branching strategy, coverage
+  thresholds, perf/simulation checks) — don't assume any of those were
+  decided, read the ADR's open-questions section first.
 
 ## Commands
 
@@ -107,25 +114,40 @@ Useful CMake options (pass as `-D<OPTION>=ON` or add to a preset's
 `ENABLE_GPERFTOOLS` (already on in the `profile` preset), `ENABLE_COVERAGE`,
 `USE_CLOCK_MANAGER`.
 
-### Lint / format
+### Lint / format / quality gates
 
-Enforced via pre-commit (`pre-commit install` once per clone):
+Two `pre-commit` framework hook stages — see `decisions/0005` for the full
+reasoning behind the split and what's deliberately not enforced yet:
 
 ```bash
-pre-commit run --all-files
+pre-commit install                      # commit-time hooks
+pre-commit install --hook-type pre-push # push-time hooks (sanitizers)
+pre-commit run --all-files              # commit-time hooks, on demand
 ```
 
+Commit-time (`.pre-commit-config.yaml`, default stage):
 - `clang-format` (Google-based, 100-col, 4-space indent, left-aligned
   pointers — see `.clang-format`) runs standalone.
-- `clang-tidy -p build --quiet` and `cppcheck` both need
-  `build/compile_commands.json` to exist first (configure any preset once).
+- `clang-tidy -p build/debug --quiet` and `cppcheck` both need
+  `build/debug/compile_commands.json` to exist first (`cmake --preset debug`
+  once).
 - `.clang-tidy` enables `bugprone-*`, `performance-*`, `modernize-*`,
   `readability-*`, `cppcoreguidelines-*`, `clang-analyzer-*` (with a short
-  explicit exclude list already tuned — e.g. magic-numbers and trailing
-  return type checks are off). **Prefer tightening `.clang-format`/
-  `.clang-tidy` over adding prose style docs** when a stylistic preference
-  comes up — that's the intended mechanism for keeping LLM-authored code
-  consistent here, not more markdown.
+  explicit exclude list already tuned) plus `readability-identifier-naming`
+  (Google-style: `CamelCase` types/functions/methods, `lower_case`
+  variables/params/namespaces, `k`-prefixed constants, trailing-underscore
+  private members). **Prefer tightening `.clang-format`/`.clang-tidy` over
+  adding prose style docs** when a stylistic preference comes up — that's
+  the intended mechanism for keeping LLM-authored code consistent here, not
+  more markdown.
+- `scripts/check_build.sh` — an actual incremental `cmake --build build/debug`.
+  A commit must at least compile.
+
+Push-time (`stages: [pre-push]`):
+- `scripts/run_sanitizers.sh` — the full test suite under ASan+UBSan, then
+  again under ThreadSanitizer, each in its own build directory. Slow by
+  design; catches exactly the bug classes (use-after-free, data races) that
+  went unnoticed in this codebase until sanitizers were actually run.
 
 ### Tests
 

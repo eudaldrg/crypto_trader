@@ -1,7 +1,16 @@
 # Requires build/debug/compile_commands.json to already exist (run
 # `cmake --preset debug` at least once) before clang-tidy/cppcheck hooks can
 # analyze anything.
-# Install into this repo with: pre-commit install
+#
+# Two enforcement tiers -- see decisions/0005-quality-gates-and-release-process.md
+# for the full reasoning, including what is deliberately NOT enforced yet
+# (coverage thresholds, release/perf checks):
+#   - commit-time (default stage): format, lint, and an actual incremental
+#     build -- a commit must at least compile.
+#   - push-time (pre-push stage): the full test suite under every sanitizer
+#     configuration this project uses. Install both stages with:
+#       pre-commit install
+#       pre-commit install --hook-type pre-push
 # After first install, run `pre-commit autoupdate` to repin the clang-format
 # mirror's `rev` to a tag matching the installed clang-format-21 exactly.
 repos:
@@ -29,3 +38,18 @@ repos:
         language: system
         types_or: [c++, c]
         pass_filenames: true
+
+      - id: build
+        name: incremental build (build/debug must compile)
+        entry: scripts/check_build.sh
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: sanitizer-suite
+        name: full test suite under ASan+UBSan and ThreadSanitizer
+        entry: scripts/run_sanitizers.sh
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
