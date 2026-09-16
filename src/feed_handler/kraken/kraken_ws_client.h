@@ -134,9 +134,9 @@ class ws_client {
     /// not a send path: nothing outbound goes through here.
     void handle_message(const std::string& payload);
 
-    /// True when capture cannot continue (the journal file could not be
-    /// opened). The owning process should shut down rather than stay connected
-    /// while dropping data on the floor.
+    /// True when capture cannot continue: a journal file could not be opened,
+    /// or a write into an open one failed. The owning process should shut down
+    /// rather than stay connected while dropping data on the floor.
     bool fatal() const {
         return fatal_.load(std::memory_order_acquire);
     }
@@ -160,10 +160,14 @@ class ws_client {
     /// failure cannot spin on Kraken's REST endpoint.
     void back_off_after_setup_failure();
     /// Floors how often a connection can be set up, since every setup costs a
-    /// signed REST token call. Returns true if shutdown was requested while
-    /// waiting, in which case the caller must abandon the setup.
+    /// signed REST token call. Returns true if shutdown was requested (or
+    /// capture failed) while waiting, in which case the caller must abandon the
+    /// setup.
     bool throttle_connection_setup();
-    /// Returns true if shutdown was requested while waiting.
+    /// Returns true if shutdown was requested, or capture failed, while
+    /// waiting -- both mean "stop what you were about to do". Every wait in
+    /// this client goes through here, which is what makes the notify_all() on
+    /// the fatal path actually end them.
     bool wait_for_stop(std::uint64_t millis);
 
     rest_client& rest_;

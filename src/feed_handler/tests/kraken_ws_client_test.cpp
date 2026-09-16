@@ -1,9 +1,10 @@
 // The socket-independent halves of the Kraken WS client: the outbound
 // subscribe payload, the minimal inbound classification that exists only so a
 // rejected subscribe is noticed rather than looking like a quiet connection,
-// and what handle_message() stamps onto the frames it captures.
+// and the capture half of handle_message() -- what it stamps onto a frame and
+// what it does when the journal write fails.
 //
-// The capture test drives handle_message() directly rather than over a socket.
+// The capture tests drive handle_message() directly rather than over a socket.
 // IXWebSocket owns its own thread and fd (decisions/0004), and a real
 // connection would also need a signed REST token call, so a live-socket
 // harness like the Deribit one is not available here; handle_message() is the
@@ -17,11 +18,15 @@
 #include <gtest/gtest.h>
 #include <unistd.h>
 
+#include <bit>
+#include <cstddef>
 #include <filesystem>
+#include <span>
 #include <string>
 #include <string_view>
 
 #include "feed_handler/capture_session.h"
+#include "feed_handler/journal_format.h"
 #include "feed_handler/kraken/kraken_rest_client.h"
 #include "feed_handler/message_sink.h"
 #include "feed_handler/tests/recording_sink.h"
@@ -36,6 +41,10 @@ using feed_handler::kraken::message_kind;
 using feed_handler::kraken::rest_client;
 using feed_handler::kraken::ws_client;
 using feed_handler::testing::recording_sink;
+
+std::span<const std::byte> bytes_of(std::string_view text) {
+    return {std::bit_cast<const std::byte*>(text.data()), text.size()};
+}
 
 constexpr std::string_view kSubscribeAck =
     R"({"method":"subscribe","result":{"channel":"level3","snapshot":true,"symbol":"BTC/USD"},)"
@@ -181,4 +190,40 @@ TEST_F(KrakenCapture, StampsEveryCapturedFrameWithItsOwnWireShape) {
     EXPECT_EQ(frames[1].payload, kUpdate);
     EXPECT_EQ(client.messages_received(), 2U);
     EXPECT_FALSE(client.fatal());
+}
+
+TEST_F(KrakenCapture, TreatsAFailedJournalWriteAsFatalToTheProcess) {
+    // The bug this covers: before, a failed journal write was logged and
+    // nothing else, so after a full disk the main loop's `!client.fatal()`
+    // stayed true forever and the process looked healthy while capturing
+    // nothing. Deribit's journal_message already ended the session here.
+    capture_session session({.directory = dir_, .exchange = "kraken"});
+    ASSERT_TRUE(session.begin_incarnation("connected", frame_source::kraken_json).has_value());
+
+    // Latches the writer's sticky error the way a full disk would: the record
+    // is refused and the file is unreliable from that point on. Every later
+    // write into this session now fails the same way, which is the property
+    // that makes a journal failure worth ending the process over.
+    const std::string oversized(feed_handler::journal::kMaxPayloadBytes + 1U, 'x');
+    ASSERT_FALSE(session.on_wire_message(bytes_of(oversized), frame_source::kraken_json));
+    ASSERT_FALSE(session.error().empty());
+
+    ws_client client(rest_, test_credentials(), session);
+    ASSERT_FALSE(client.fatal());
+    client.handle_message(std::string(kHeartbeat));
+    EXPECT_TRUE(client.fatal());
+}
+
+TEST_F(KrakenCapture, DoesNotEndTheProcessOverAMessageThatArrivedBeforeTheFirstIncarnation) {
+    // The other half of the same branch, and the reason it is a branch: a
+    // message arriving before handle_open() has opened a file is loud but
+    // recoverable -- the next incarnation captures normally -- so it must not
+    // be confused with a journal that has failed.
+    capture_session session({.directory = dir_, .exchange = "kraken"});
+
+    ws_client client(rest_, test_credentials(), session);
+    client.handle_message(std::string(kHeartbeat));
+
+    EXPECT_FALSE(client.fatal());
+    EXPECT_EQ(session.total_records_written(), 0U);
 }
