@@ -20,20 +20,20 @@ constexpr unsigned kCheckSumModulus = 256;
 /// that is never going to arrive.
 constexpr std::size_t kMaxBodyLengthDigits = 10;
 
-bool is_digit(char character) {
+bool IsDigit(char character) {
     return character >= '0' && character <= '9';
 }
 
 /// "8=FIX.4.4<SOH>" -- the fixed opening bytes of every message on this
 /// session, and the only thing the framer can synchronise on.
-std::string begin_string_prefix() {
+std::string BeginStringPrefix() {
     std::string prefix = "8=";
     prefix += kBeginString;
     prefix += kSoh;
     return prefix;
 }
 
-std::string checksum_field(std::string_view digits) {
+std::string ChecksumField(std::string_view digits) {
     std::string rendered = "10=";
     rendered += digits;
     rendered += kSoh;
@@ -42,7 +42,7 @@ std::string checksum_field(std::string_view digits) {
 
 /// A whole-value decimal integer, or nullopt. Whole-value matters: "12abc" is
 /// not 12 here, it is a field this code does not understand.
-std::optional<std::int64_t> to_int(std::string_view value) {
+std::optional<std::int64_t> ToInt(std::string_view value) {
     if (value.empty()) {
         return std::nullopt;
     }
@@ -56,8 +56,8 @@ std::optional<std::int64_t> to_int(std::string_view value) {
     return parsed;
 }
 
-std::optional<std::string_view> first_value(std::span<const parsed_message::field_view> fields,
-                                            int tag_number) {
+std::optional<std::string_view> FirstValue(std::span<const ParsedMessage::FieldView> fields,
+                                           int tag_number) {
     for (const auto& one : fields) {
         if (one.tag == tag_number) {
             return one.value;
@@ -66,7 +66,7 @@ std::optional<std::string_view> first_value(std::span<const parsed_message::fiel
     return std::nullopt;
 }
 
-struct scanned_field {
+struct ScannedField {
     int tag = 0;
     std::string_view value;
     /// Offset of the first byte after this field's terminating SOH.
@@ -78,7 +78,7 @@ struct scanned_field {
 /// The value runs to the next SOH, not to the next '=' -- values legitimately
 /// contain '=' (RawData's base64 padding is the case that actually occurs
 /// here), so only the tag is split on '='.
-std::expected<scanned_field, std::string> scan_field(std::string_view raw, std::size_t offset) {
+std::expected<ScannedField, std::string> ScanField(std::string_view raw, std::size_t offset) {
     const std::size_t equals = raw.find('=', offset);
     if (equals == std::string_view::npos) {
         return std::unexpected("fix: field has no '=' separator");
@@ -87,7 +87,7 @@ std::expected<scanned_field, std::string> scan_field(std::string_view raw, std::
         return std::unexpected("fix: field has an empty tag");
     }
     for (std::size_t index = offset; index < equals; ++index) {
-        if (!is_digit(raw[index])) {
+        if (!IsDigit(raw[index])) {
             return std::unexpected("fix: field tag is not a number");
         }
     }
@@ -103,7 +103,7 @@ std::expected<scanned_field, std::string> scan_field(std::string_view raw, std::
     if (terminator == std::string_view::npos) {
         return std::unexpected("fix: field is not SOH-terminated");
     }
-    return scanned_field{
+    return ScannedField{
         .tag = tag_number,
         .value = raw.substr(equals + 1, terminator - equals - 1),
         .next = terminator + 1,
@@ -112,7 +112,7 @@ std::expected<scanned_field, std::string> scan_field(std::string_view raw, std::
 
 }  // namespace
 
-std::string format_checksum(std::string_view bytes) {
+std::string FormatChecksum(std::string_view bytes) {
     unsigned sum = 0;
     for (const char byte : bytes) {
         sum += static_cast<unsigned char>(byte);
@@ -126,7 +126,7 @@ std::string format_checksum(std::string_view bytes) {
     return digits;
 }
 
-std::string format_utc_timestamp(std::uint64_t realtime_ns) {
+std::string FormatUtcTimestamp(std::uint64_t realtime_ns) {
     const auto seconds = static_cast<std::time_t>(realtime_ns / kNanosPerSecond);
     const auto millis = static_cast<unsigned>((realtime_ns % kNanosPerSecond) / kNanosPerMilli);
 
@@ -142,7 +142,7 @@ std::string format_utc_timestamp(std::uint64_t realtime_ns) {
     return std::string(formatted.data(), length) + fraction.data();
 }
 
-std::string build_message(std::span<const field> fields) {
+std::string BuildMessage(std::span<const Field> fields) {
     // The body is rendered first because BodyLength is defined as its exact
     // byte count: rendering the envelope first would need the length of a
     // field that does not exist yet.
@@ -160,7 +160,7 @@ std::string build_message(std::span<const field> fields) {
         body += kSoh;
     }
 
-    std::string message = begin_string_prefix();
+    std::string message = BeginStringPrefix();
     message += "9=";
     message += std::to_string(body.size());
     message += kSoh;
@@ -168,66 +168,66 @@ std::string build_message(std::span<const field> fields) {
 
     // CheckSum covers everything built so far, i.e. up to and including the
     // SOH that terminates the last body field.
-    message += checksum_field(format_checksum(message));
+    message += ChecksumField(FormatChecksum(message));
     return message;
 }
 
-std::string build_message(const session_header& header, std::span<const field> body) {
-    std::vector<field> fields;
+std::string BuildMessage(const SessionHeader& header, std::span<const Field> body) {
+    std::vector<Field> fields;
     fields.reserve(body.size() + 4);
-    fields.push_back({.tag = tag::msg_type, .value = std::string(header.msg_type)});
-    fields.push_back({.tag = tag::sender_comp_id, .value = std::string(header.sender_comp_id)});
-    fields.push_back({.tag = tag::target_comp_id, .value = std::string(header.target_comp_id)});
-    fields.push_back({.tag = tag::msg_seq_num, .value = std::to_string(header.msg_seq_num)});
-    fields.push_back({.tag = tag::sending_time, .value = std::string(header.sending_time)});
+    fields.push_back({.tag = tag::kMsgType, .value = std::string(header.msg_type)});
+    fields.push_back({.tag = tag::kSenderCompId, .value = std::string(header.sender_comp_id)});
+    fields.push_back({.tag = tag::kTargetCompId, .value = std::string(header.target_comp_id)});
+    fields.push_back({.tag = tag::kMsgSeqNum, .value = std::to_string(header.msg_seq_num)});
+    fields.push_back({.tag = tag::kSendingTime, .value = std::string(header.sending_time)});
     fields.insert(fields.end(), body.begin(), body.end());
-    return build_message(fields);
+    return BuildMessage(fields);
 }
 
-std::span<const parsed_message::field_view> parsed_message::body_fields() const {
+std::span<const ParsedMessage::FieldView> ParsedMessage::BodyFields() const {
     // BeginString and BodyLength lead, CheckSum trails; everything between is
     // the body, starting at MsgType.
     constexpr std::size_t kEnvelopeFields = 3;
     if (fields_.size() <= kEnvelopeFields) {
         return {};
     }
-    return std::span<const field_view>(fields_).subspan(2, fields_.size() - kEnvelopeFields);
+    return std::span<const FieldView>(fields_).subspan(2, fields_.size() - kEnvelopeFields);
 }
 
-std::optional<std::string_view> parsed_message::get(int tag_number) const {
-    return first_value(fields_, tag_number);
+std::optional<std::string_view> ParsedMessage::Get(int tag_number) const {
+    return FirstValue(fields_, tag_number);
 }
 
-std::optional<std::int64_t> parsed_message::get_int(int tag_number) const {
-    const auto value = get(tag_number);
+std::optional<std::int64_t> ParsedMessage::GetInt(int tag_number) const {
+    const auto value = Get(tag_number);
     if (!value) {
         return std::nullopt;
     }
-    return to_int(*value);
+    return ToInt(*value);
 }
 
-std::size_t parsed_message::count(int tag_number) const {
+std::size_t ParsedMessage::Count(int tag_number) const {
     return static_cast<std::size_t>(std::ranges::count_if(
-        fields_, [tag_number](const field_view& one) { return one.tag == tag_number; }));
+        fields_, [tag_number](const FieldView& one) { return one.tag == tag_number; }));
 }
 
-std::expected<parsed_message, std::string> parse_message(std::string_view raw) {
-    const auto begin_string = scan_field(raw, 0);
+std::expected<ParsedMessage, std::string> ParseMessage(std::string_view raw) {
+    const auto begin_string = ScanField(raw, 0);
     if (!begin_string) {
         return std::unexpected(begin_string.error());
     }
-    if (begin_string->tag != tag::begin_string) {
+    if (begin_string->tag != tag::kBeginString) {
         return std::unexpected("fix: message does not start with BeginString(8)");
     }
     if (begin_string->value != kBeginString) {
         return std::unexpected("fix: unsupported BeginString, expected FIX.4.4");
     }
 
-    const auto body_length = scan_field(raw, begin_string->next);
+    const auto body_length = ScanField(raw, begin_string->next);
     if (!body_length) {
         return std::unexpected(body_length.error());
     }
-    if (body_length->tag != tag::body_length) {
+    if (body_length->tag != tag::kBodyLength) {
         return std::unexpected("fix: BodyLength(9) does not follow BeginString(8)");
     }
     std::size_t declared_body_length = 0;
@@ -240,7 +240,7 @@ std::expected<parsed_message, std::string> parse_message(std::string_view raw) {
         }
     }
 
-    parsed_message message;
+    ParsedMessage message;
     message.fields_.push_back({.tag = begin_string->tag, .value = begin_string->value});
     message.fields_.push_back({.tag = body_length->tag, .value = body_length->value});
 
@@ -250,21 +250,21 @@ std::expected<parsed_message, std::string> parse_message(std::string_view raw) {
     std::string_view check_sum_value;
 
     while (offset < raw.size()) {
-        const auto one = scan_field(raw, offset);
+        const auto one = ScanField(raw, offset);
         if (!one) {
             return std::unexpected(one.error());
         }
-        if (one->tag == tag::check_sum) {
+        if (one->tag == tag::kCheckSum) {
             check_sum_offset = offset;
             check_sum_value = one->value;
             message.fields_.push_back({.tag = one->tag, .value = one->value});
             offset = one->next;
             break;
         }
-        if (message.fields_.size() == 2 && one->tag != tag::msg_type) {
+        if (message.fields_.size() == 2 && one->tag != tag::kMsgType) {
             return std::unexpected("fix: MsgType(35) is not the first body field");
         }
-        if (one->tag == tag::msg_type) {
+        if (one->tag == tag::kMsgType) {
             message.msg_type_ = one->value;
         }
         message.fields_.push_back({.tag = one->tag, .value = one->value});
@@ -292,7 +292,7 @@ std::expected<parsed_message, std::string> parse_message(std::string_view raw) {
     if (check_sum_value.size() != kCheckSumDigits) {
         return std::unexpected("fix: CheckSum(10) is not exactly three digits");
     }
-    const std::string expected = format_checksum(raw.substr(0, check_sum_offset));
+    const std::string expected = FormatChecksum(raw.substr(0, check_sum_offset));
     if (check_sum_value != expected) {
         return std::unexpected("fix: CheckSum(10) mismatch, computed " + expected);
     }
@@ -300,35 +300,34 @@ std::expected<parsed_message, std::string> parse_message(std::string_view raw) {
     return message;
 }
 
-std::optional<std::string_view> group_entry::get(int tag_number) const {
-    return first_value(fields_, tag_number);
+std::optional<std::string_view> GroupEntry::Get(int tag_number) const {
+    return FirstValue(fields_, tag_number);
 }
 
-std::optional<std::int64_t> group_entry::get_int(int tag_number) const {
-    const auto value = get(tag_number);
+std::optional<std::int64_t> GroupEntry::GetInt(int tag_number) const {
+    const auto value = Get(tag_number);
     if (!value) {
         return std::nullopt;
     }
-    return to_int(*value);
+    return ToInt(*value);
 }
 
-std::expected<repeating_group, std::string> read_group(const parsed_message& message, int count_tag,
-                                                       std::span<const int> member_tags) {
-    const auto fields = message.body_fields();
+std::expected<RepeatingGroup, std::string> ReadGroup(const ParsedMessage& message, int count_tag,
+                                                     std::span<const int> member_tags) {
+    const auto fields = message.BodyFields();
     const auto count_at = std::ranges::find_if(
-        fields,
-        [count_tag](const parsed_message::field_view& one) { return one.tag == count_tag; });
+        fields, [count_tag](const ParsedMessage::FieldView& one) { return one.tag == count_tag; });
     if (count_at == fields.end()) {
         return std::unexpected("fix: message has no NumInGroup field " + std::to_string(count_tag));
     }
 
-    const auto declared = to_int(count_at->value);
+    const auto declared = ToInt(count_at->value);
     if (!declared || *declared < 0) {
         return std::unexpected("fix: NumInGroup field " + std::to_string(count_tag) +
                                " is not a non-negative integer");
     }
 
-    repeating_group group;
+    RepeatingGroup group;
     group.declared_count = static_cast<std::size_t>(*declared);
 
     // Deliberately no reserve() on the declared count: it arrives from the
@@ -378,20 +377,20 @@ std::expected<repeating_group, std::string> read_group(const parsed_message& mes
     return group;
 }
 
-framer::framer(std::size_t max_body_length) : max_body_length_(max_body_length) {
+Framer::Framer(std::size_t max_body_length) : max_body_length_(max_body_length) {
     buffer_.reserve(std::min<std::size_t>(max_body_length, 64U * 1024U));
 }
 
-void framer::append(std::string_view bytes) {
-    compact();
+void Framer::Append(std::string_view bytes) {
+    Compact();
     buffer_.append(bytes);
 }
 
-void framer::append(std::span<const std::byte> bytes) {
-    append(std::string_view(std::bit_cast<const char*>(bytes.data()), bytes.size()));
+void Framer::Append(std::span<const std::byte> bytes) {
+    Append(std::string_view(std::bit_cast<const char*>(bytes.data()), bytes.size()));
 }
 
-void framer::compact() {
+void Framer::Compact() {
     if (consumed_ == 0) {
         return;
     }
@@ -399,14 +398,14 @@ void framer::compact() {
     consumed_ = 0;
 }
 
-void framer::fail(std::string reason) {
+void Framer::Fail(std::string reason) {
     if (error_.empty()) {
         error_ = std::move(reason);
     }
 }
 
-std::optional<std::string_view> framer::next_message() {
-    if (!good()) {
+std::optional<std::string_view> Framer::NextMessage() {
+    if (!Good()) {
         return std::nullopt;
     }
 
@@ -419,17 +418,17 @@ std::optional<std::string_view> framer::next_message() {
     // Synchronise on BeginString. Anything else at the head of the stream
     // means this is not a FIX session (or framing has already been lost), and
     // there is deliberately no attempt to hunt forward for the next one.
-    const std::string prefix = begin_string_prefix();
+    const std::string prefix = BeginStringPrefix();
     const std::size_t comparable = std::min(view.size(), prefix.size());
     if (view.substr(0, comparable) != std::string_view(prefix).substr(0, comparable)) {
-        fail("fix: stream does not start with 8=FIX.4.4");
+        Fail("fix: stream does not start with 8=FIX.4.4");
         return std::nullopt;
     }
     if (view.size() < prefix.size() + 2) {
         return std::nullopt;
     }
     if (view.substr(prefix.size(), 2) != "9=") {
-        fail("fix: BodyLength(9) does not follow BeginString(8)");
+        Fail("fix: BodyLength(9) does not follow BeginString(8)");
         return std::nullopt;
     }
 
@@ -437,13 +436,13 @@ std::optional<std::string_view> framer::next_message() {
     std::size_t index = digits_start;
     std::size_t body_length = 0;
     while (index < view.size() && view[index] != kSoh) {
-        if (!is_digit(view[index]) || (index - digits_start) >= kMaxBodyLengthDigits) {
-            fail("fix: BodyLength(9) is not a number");
+        if (!IsDigit(view[index]) || (index - digits_start) >= kMaxBodyLengthDigits) {
+            Fail("fix: BodyLength(9) is not a number");
             return std::nullopt;
         }
         body_length = (body_length * 10) + static_cast<std::size_t>(view[index] - '0');
         if (body_length > max_body_length_) {
-            fail("fix: BodyLength(9) exceeds the maximum accepted message size");
+            Fail("fix: BodyLength(9) exceeds the maximum accepted message size");
             return std::nullopt;
         }
         ++index;
@@ -454,7 +453,7 @@ std::optional<std::string_view> framer::next_message() {
         return std::nullopt;
     }
     if (index == digits_start) {
-        fail("fix: BodyLength(9) is empty");
+        Fail("fix: BodyLength(9) is empty");
         return std::nullopt;
     }
 
@@ -468,7 +467,7 @@ std::optional<std::string_view> framer::next_message() {
     // exactly here. If it does not, the length was wrong and every byte after
     // it is misaligned.
     if (view.substr(body_start + body_length, 3) != "10=" || view[total - 1] != kSoh) {
-        fail("fix: no CheckSum(10) field where BodyLength(9) says the body ends");
+        Fail("fix: no CheckSum(10) field where BodyLength(9) says the body ends");
         return std::nullopt;
     }
 

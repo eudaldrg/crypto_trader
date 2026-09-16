@@ -1,7 +1,7 @@
 // Deribit FIX market-data client: the live-socket end of the second exchange
-// backend. Drives the pure-logic fix_session (deribit_fix_session.h) over a
+// backend. Drives the pure-logic FixSession (deribit_fix_session.h) over a
 // hand-rolled POSIX TCP socket and journals every inbound message through the
-// same exchange-agnostic capture_session Kraken uses.
+// same exchange-agnostic CaptureSession Kraken uses.
 //
 // Threading (decisions/0004): one dedicated thread doing a blocking recv()
 // loop, which is the same "one thread per connection" scope Kraken's v1 has --
@@ -52,51 +52,51 @@ namespace feed_handler::deribit {
 /// What every frame this client captures is: Deribit FIX.4.4 tag=value bytes.
 ///
 /// Stamped onto each frame by this client rather than taken from the
-/// capture_session's configuration, for the same reason Kraken's equivalent is
+/// CaptureSession's configuration, for the same reason Kraken's equivalent is
 /// (kraken_ws_client.h): the client is the only thing that knows first-hand
 /// what shape the bytes it just received are in.
-inline constexpr frame_source kWireSource = frame_source::deribit_fix;
+inline constexpr FrameSource kWireSource = FrameSource::kDeribitFix;
 
 /// What an inbound message is, to the extent this build needs to know. Book
-/// content is deliberately not parsed here even though `fix::read_group()` can
+/// content is deliberately not parsed here even though `fix::ReadGroup()` can
 /// now read a 35=W/35=X entry list: journaling raw bytes is v1's whole job,
 /// and turning entries into order-book state is future work, not a parser
 /// limitation anymore (fix_message.h).
-enum class inbound_kind : std::uint8_t {
-    unknown,
-    logon_ack,
-    heartbeat,
-    test_request,
-    logout,
+enum class InboundKind : std::uint8_t {
+    kUnknown,
+    kLogonAck,
+    kHeartbeat,
+    kTestRequest,
+    kLogout,
     /// Session-level Reject(35=3): the exchange refused one of our messages.
-    session_reject,
-    market_data_snapshot,
-    market_data_incremental,
+    kSessionReject,
+    kMarketDataSnapshot,
+    kMarketDataIncremental,
     /// MarketDataRequestReject(35=Y): the subscribe failed while the session
     /// stays perfectly healthy and simply never delivers data.
-    market_data_request_reject,
+    kMarketDataRequestReject,
 };
 
-std::string_view to_string(inbound_kind kind);
+std::string_view ToString(InboundKind kind);
 
 /// What the connection loop must do about a message, beyond having already
 /// journaled it.
-enum class inbound_action : std::uint8_t {
+enum class InboundAction : std::uint8_t {
     /// Nothing; the message was journaled and that is the whole job.
-    none,
+    kNone,
     /// The Logon was accepted -- subscribe.
-    send_market_data_request,
+    kSendMarketDataRequest,
     /// Answer a TestRequest with a Heartbeat echoing its TestReqID. Not
     /// optional: an unanswered TestRequest ends the session
     /// (exchanges/deribit.md).
-    answer_test_request,
+    kAnswerTestRequest,
     /// The session can no longer be trusted: drop it and re-logon.
-    reconnect,
+    kReconnect,
 };
 
-struct inbound_decision {
-    inbound_kind kind = inbound_kind::unknown;
-    inbound_action action = inbound_action::none;
+struct InboundDecision {
+    InboundKind kind = InboundKind::kUnknown;
+    InboundAction action = InboundAction::kNone;
     /// For `answer_test_request`, the TestReqID(112) to echo. Otherwise a
     /// credential-free reason for the log line (the exchange's own Text(58), or
     /// the sequence check's description). Inbound-derived only, so it can never
@@ -106,19 +106,19 @@ struct inbound_decision {
 
 /// The whole "what happens next" decision for one inbound message, as a pure
 /// function of the parsed message and the session's sequence verdict. Split out
-/// of the socket loop for the same reason capture_session and
-/// staleness_watchdog were: the interesting branches are then testable without
+/// of the socket loop for the same reason CaptureSession and
+/// StalenessWatchdog were: the interesting branches are then testable without
 /// a live connection.
-inbound_decision classify_inbound(const fix::parsed_message& message, const inbound_check& check);
+InboundDecision ClassifyInbound(const fix::ParsedMessage& message, const InboundCheck& check);
 
 /// Exponential backoff between connection attempts: 0 before the first one,
 /// then `min_ms` doubling up to `max_ms`. There is no library reconnect layer
 /// below this client, so this is the only thing standing between a
 /// hard-down exchange and a connect() spin loop.
-std::uint64_t reconnect_delay_ms(std::uint64_t consecutive_failures, std::uint64_t min_ms,
-                                 std::uint64_t max_ms);
+std::uint64_t ReconnectDelayMs(std::uint64_t consecutive_failures, std::uint64_t min_ms,
+                               std::uint64_t max_ms);
 
-struct fix_client_config {
+struct FixClientConfig {
     /// Testnet. Plain TCP, no TLS (experiments/deribit_fix_probe.py).
     std::string host = "fix-test.deribit.com";
     std::uint16_t port = 9881;
@@ -141,81 +141,81 @@ struct fix_client_config {
 /// One Deribit FIX connection, owning its own thread and its own fd.
 ///
 /// Not copyable or movable: the thread captures `this`.
-class fix_client {
+class FixClient {
   public:
-    fix_client(session_config session_cfg, capture_session& capture, fix_client_config cfg = {});
+    FixClient(SessionConfig session_cfg, CaptureSession& capture, FixClientConfig cfg = {});
 
-    fix_client(const fix_client&) = delete;
-    fix_client& operator=(const fix_client&) = delete;
-    fix_client(fix_client&&) = delete;
-    fix_client& operator=(fix_client&&) = delete;
-    ~fix_client();
+    FixClient(const FixClient&) = delete;
+    FixClient& operator=(const FixClient&) = delete;
+    FixClient(FixClient&&) = delete;
+    FixClient& operator=(FixClient&&) = delete;
+    ~FixClient();
 
     /// Starts the connection thread and returns immediately.
-    void start();
+    void Start();
 
     /// Requests shutdown and joins the thread. The thread sends a Logout on its
     /// way out if it is still logged on -- sending it from the owning thread
     /// rather than from here is what keeps the socket single-threaded.
     /// Idempotent.
-    void stop();
+    void Stop();
 
     /// True when capture cannot continue: a journal file could not be opened,
     /// or a write into an open one failed. The owning process should exit
     /// rather than stay connected while discarding the data it exists to
     /// collect.
-    bool fatal() const {
+    bool Fatal() const {
         return fatal_.load(std::memory_order_acquire);
     }
 
-    std::uint64_t messages_received() const {
+    std::uint64_t MessagesReceived() const {
         return messages_received_.load(std::memory_order_relaxed);
     }
 
-    std::uint64_t snapshots_received() const {
+    std::uint64_t SnapshotsReceived() const {
         return snapshots_received_.load(std::memory_order_relaxed);
     }
 
-    std::uint64_t incrementals_received() const {
+    std::uint64_t IncrementalsReceived() const {
         return incrementals_received_.load(std::memory_order_relaxed);
     }
 
-    std::uint64_t connection_attempts() const {
+    std::uint64_t ConnectionAttempts() const {
         return connection_attempts_.load(std::memory_order_relaxed);
     }
 
-    std::uint64_t forced_reconnects() const {
+    std::uint64_t ForcedReconnects() const {
         return forced_reconnects_.load(std::memory_order_relaxed);
     }
 
   private:
     /// The connection thread: connect, run one session until it ends, back off,
     /// repeat, until stop() or a fatal capture failure.
-    void run();
+    void Run();
     /// One connection's whole life. Returns when the session has ended for any
     /// reason; the caller decides whether to retry.
-    void run_one_connection();
+    void RunOneConnection();
     /// Resolves and connects, non-blocking with a poll() deadline, then puts
     /// the socket back into blocking mode with an SO_RCVTIMEO.
-    std::expected<int, std::string> connect_socket();
+    std::expected<int, std::string> ConnectSocket();
     /// Drains every whole message the framer can produce, journaling each one
     /// before classifying it. Returns false when the session must be dropped.
-    bool drain_framed_messages(int fd);
+    bool DrainFramedMessages(int fd);
     /// Journals one framed message verbatim, before any parsing. Returns false
     /// on a journal failure that is fatal to capture.
-    bool journal_message(std::string_view raw);
+    bool JournalMessage(std::string_view raw);
     /// Sends the scheduled Heartbeat(35=0) if HeartBtInt seconds have passed
     /// since the last outbound byte. Returns false only when the send failed,
     /// which ends the connection. Driven from the top of the read loop rather
     /// than from the recv() timeout branch: what we owe the exchange is a
     /// heartbeat every HeartBtInt of *outbound* silence (exchanges/deribit.md),
     /// which has nothing to do with whether inbound data happens to be flowing.
-    bool send_heartbeat_if_due(int fd);
+    bool SendHeartbeatIfDue(int fd);
     /// Writes the whole buffer, tolerating short writes and EINTR. Outbound
     /// only -- these bytes never reach the journal.
-    bool send_all(int fd, std::string_view bytes);
+    bool SendAll(int fd, std::string_view bytes);
     /// Returns true if shutdown was requested while waiting.
-    bool wait_for_stop(std::uint64_t millis);
+    bool WaitForStop(std::uint64_t millis);
     /// Latches the capture failure and wakes every waiter.
     ///
     /// The mutation is made under `stop_mutex_`, not just the notify: a waiter
@@ -226,18 +226,18 @@ class fix_client {
     /// deliberately left outside the lock: by then the new state is already
     /// published, so notifying after unlocking only saves the woken thread from
     /// waking straight onto a mutex this thread still holds.
-    void latch_fatal();
-    bool stopping() const {
+    void LatchFatal();
+    bool Stopping() const {
         return stopping_.load(std::memory_order_acquire);
     }
 
-    fix_client_config cfg_;
-    capture_session& capture_;
-    fix_session session_;
-    staleness_watchdog watchdog_;
+    FixClientConfig cfg_;
+    CaptureSession& capture_;
+    FixSession session_;
+    StalenessWatchdog watchdog_;
 
     /// Everything below is touched only by the connection thread.
-    fix::framer framer_;
+    fix::Framer framer_;
     bool logged_on_ = false;
     bool subscribed_ = false;
     std::uint64_t last_outbound_ns_ = 0;

@@ -6,7 +6,7 @@
 
 namespace feed_handler::journal {
 
-std::uint32_t crc32_update(std::uint32_t seed, std::span<const std::byte> data) {
+std::uint32_t Crc32Update(std::uint32_t seed, std::span<const std::byte> data) {
     uLong running = seed;
     // zlib's length argument is uInt; chunk so an oversized span can still be
     // hashed correctly rather than silently truncated by the cast.

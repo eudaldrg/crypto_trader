@@ -23,14 +23,14 @@ namespace feed_handler {
 /// exchange tag, so a replay source recovers this once per file rather than
 /// once per record, and the format needs no version bump for it
 /// (journal_format.h).
-enum class frame_source : std::uint8_t {
+enum class FrameSource : std::uint8_t {
     /// Not stated. Nothing on a live path produces this; it is what a
     /// default-constructed frame carries.
-    unknown = 0,
+    kUnknown = 0,
     /// Kraken WebSocket v2 JSON text (kraken/kraken_ws_client.h).
-    kraken_json = 1,
+    kRakenJson = 1,
     /// Deribit FIX.4.4 tag=value bytes (deribit/deribit_fix_client.h).
-    deribit_fix = 2,
+    kDeribitFix = 2,
 };
 
 /// Raw wire bytes exactly as received from an exchange, plus the capture
@@ -42,7 +42,7 @@ enum class frame_source : std::uint8_t {
 /// free that memory the instant `on_frame` returns, so any sink needing the
 /// bytes to outlive the call (e.g. a future SPSC ring feeding another core)
 /// must copy them itself before returning.
-struct capture_frame {
+struct CaptureFrame {
     std::span<const std::byte> payload;
 
     /// In-process, per-connection, strictly increasing capture ordinal.
@@ -58,27 +58,27 @@ struct capture_frame {
     /// Which connection/wire encoding this payload came off. Set by the
     /// exchange client at the capture call site, since that is the only place
     /// that knows first-hand what it just received.
-    frame_source source = frame_source::unknown;
+    FrameSource source = FrameSource::kUnknown;
 };
 
 /// Consumer of capture frames: the journal writer, and -- once it exists --
-/// the order book. capture_session fans one frame out to the journal writer
+/// the order book. CaptureSession fans one frame out to the journal writer
 /// plus any number of registered sinks.
 ///
 /// Dispatch mechanism (virtual vs. a compile-time policy) is deliberately left
 /// open by decisions/0004 until there is a real hot-path sink to measure, so
 /// this stays a plain virtual interface for now.
-class message_sink {
+class MessageSink {
   public:
-    message_sink() = default;
-    message_sink(const message_sink&) = default;
-    message_sink& operator=(const message_sink&) = default;
-    message_sink(message_sink&&) = default;
-    message_sink& operator=(message_sink&&) = default;
-    virtual ~message_sink() = default;
+    MessageSink() = default;
+    MessageSink(const MessageSink&) = default;
+    MessageSink& operator=(const MessageSink&) = default;
+    MessageSink(MessageSink&&) = default;
+    MessageSink& operator=(MessageSink&&) = default;
+    virtual ~MessageSink() = default;
 
     /// Called once per inbound wire message, on the connection's own thread.
-    virtual void on_frame(const capture_frame& frame) = 0;
+    virtual void OnFrame(const CaptureFrame& frame) = 0;
 
     /// Called when a new connection incarnation begins, before any of its
     /// frames: "the connection was re-established, a fresh snapshot follows,
@@ -89,14 +89,14 @@ class message_sink {
     /// reconnect is exactly when an order book has to reset -- but most sinks
     /// have no state to reset, hence a no-op default rather than a second pure
     /// virtual every implementation would have to write out.
-    virtual void on_incarnation(std::uint64_t /*incarnation*/, std::string_view /*reason*/) {}
+    virtual void OnIncarnation(std::uint64_t /*incarnation*/, std::string_view /*reason*/) {}
 };
 
 /// Nanoseconds since an unspecified monotonic epoch (CLOCK_MONOTONIC).
-std::uint64_t monotonic_now_ns();
+std::uint64_t MonotonicNowNs();
 
 /// Nanoseconds since the Unix epoch (CLOCK_REALTIME).
-std::uint64_t realtime_now_ns();
+std::uint64_t RealtimeNowNs();
 
 /// Assigns the capture metadata for one connection: the strictly increasing
 /// capture sequence number and the CLOCK_MONOTONIC capture timestamp.
@@ -104,7 +104,7 @@ std::uint64_t realtime_now_ns();
 /// One instance per connection; not thread safe, and does not need to be --
 /// each connection stamps its own frames on its own thread
 /// (decisions/0004, threading model).
-class capture_stamper {
+class CaptureStamper {
   public:
     /// Returns a frame viewing `payload` (no copy) stamped with the next
     /// sequence number, the current monotonic time and `source`. Sequence
@@ -113,10 +113,10 @@ class capture_stamper {
     /// `source` defaults to unknown for the benefit of writer-level tests: the
     /// journal format does not record it, so a test exercising the on-disk
     /// bytes has nothing to say about it. Every live capture path states it.
-    capture_frame stamp(std::span<const std::byte> payload,
-                        frame_source source = frame_source::unknown);
+    CaptureFrame Stamp(std::span<const std::byte> payload,
+                       FrameSource source = FrameSource::kUnknown);
 
-    std::uint64_t last_sequence() const {
+    std::uint64_t LastSequence() const {
         return sequence_;
     }
 

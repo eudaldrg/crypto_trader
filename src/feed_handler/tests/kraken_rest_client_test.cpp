@@ -24,20 +24,20 @@
 
 namespace {
 
-using feed_handler::kraken::base64_decode;
-using feed_handler::kraken::base64_encode;
-using feed_handler::kraken::encode_post_data;
-using feed_handler::kraken::nonce_generator;
-using feed_handler::kraken::persistent_nonce_source;
-using feed_handler::kraken::sign_private_request;
-using feed_handler::kraken::url_encode;
+using feed_handler::kraken::Base64Decode;
+using feed_handler::kraken::Base64Encode;
+using feed_handler::kraken::EncodePostData;
+using feed_handler::kraken::NonceGenerator;
+using feed_handler::kraken::PersistentNonceSource;
+using feed_handler::kraken::SignPrivateRequest;
+using feed_handler::kraken::UrlEncode;
 
-void write_text_file(const std::filesystem::path& path, std::string_view text) {
+void WriteTextFile(const std::filesystem::path& path, std::string_view text) {
     std::ofstream output(path, std::ios::binary | std::ios::trunc);
     output << text;
 }
 
-std::string read_text_file(const std::filesystem::path& path) {
+std::string ReadTextFile(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
@@ -53,7 +53,7 @@ constexpr std::string_view kTokenPath = "/0/private/GetWebSocketsToken";
 constexpr std::string_view kExpectedSignature =
     "g4suuu4djNxLp6Txqx6r5BFwS3uPPOExtw2kJqSeICqn6Wz+nG9SCT+y1RYWItviGMHVkHG8KluDaMd1kK4imQ==";
 
-std::span<const std::byte> bytes_of(std::string_view text) {
+std::span<const std::byte> BytesOf(std::string_view text) {
     return {std::bit_cast<const std::byte*>(text.data()), text.size()};
 }
 
@@ -82,11 +82,11 @@ TEST(KrakenUrlEncode, MatchesPythonUrlencodeConventions) {
     // Python's urllib.parse.urlencode is what the probe signs with, so the
     // C++ encoder has to agree with it byte for byte or the signature will
     // cover a different body than the one sent.
-    EXPECT_EQ(url_encode("1700000000000000"), "1700000000000000");
-    EXPECT_EQ(url_encode("BTC/USD"), "BTC%2FUSD");
-    EXPECT_EQ(url_encode("a b+c~d"), "a+b%2Bc~d");
-    EXPECT_EQ(url_encode("-_.~"), "-_.~");
-    EXPECT_EQ(url_encode(""), "");
+    EXPECT_EQ(UrlEncode("1700000000000000"), "1700000000000000");
+    EXPECT_EQ(UrlEncode("BTC/USD"), "BTC%2FUSD");
+    EXPECT_EQ(UrlEncode("a b+c~d"), "a+b%2Bc~d");
+    EXPECT_EQ(UrlEncode("-_.~"), "-_.~");
+    EXPECT_EQ(UrlEncode(""), "");
 }
 
 TEST(KrakenPostData, PreservesParameterOrder) {
@@ -94,13 +94,13 @@ TEST(KrakenPostData, PreservesParameterOrder) {
         std::pair<std::string, std::string>{"nonce", "1700000000000000"},
         std::pair<std::string, std::string>{"pair", "BTC/USD"},
     };
-    EXPECT_EQ(encode_post_data(params), "nonce=1700000000000000&pair=BTC%2FUSD");
+    EXPECT_EQ(EncodePostData(params), "nonce=1700000000000000&pair=BTC%2FUSD");
 }
 
 TEST(KrakenBase64, RoundTripsAndRecoversExactLength) {
     for (std::string_view sample : {"k", "kr", "kra", "krak", "kraken-secret-bytes"}) {
-        const std::string encoded = base64_encode(bytes_of(sample));
-        const auto decoded = base64_decode(encoded);
+        const std::string encoded = Base64Encode(BytesOf(sample));
+        const auto decoded = Base64Decode(encoded);
         ASSERT_TRUE(decoded.has_value()) << decoded.error();
         ASSERT_EQ(decoded->size(), sample.size()) << "sample: " << sample;
         EXPECT_EQ(std::string(std::bit_cast<const char*>(decoded->data()), decoded->size()),
@@ -109,50 +109,49 @@ TEST(KrakenBase64, RoundTripsAndRecoversExactLength) {
 }
 
 TEST(KrakenBase64, RejectsMalformedInput) {
-    EXPECT_FALSE(base64_decode("").has_value());
-    EXPECT_FALSE(base64_decode("abc").has_value());
-    EXPECT_FALSE(base64_decode("!!!!").has_value());
+    EXPECT_FALSE(Base64Decode("").has_value());
+    EXPECT_FALSE(Base64Decode("abc").has_value());
+    EXPECT_FALSE(Base64Decode("!!!!").has_value());
 }
 
 TEST(KrakenSigning, MatchesIndependentReferenceImplementation) {
     const auto signature =
-        sign_private_request(kTokenPath, "1700000000000000", "nonce=1700000000000000", kTestSecret);
+        SignPrivateRequest(kTokenPath, "1700000000000000", "nonce=1700000000000000", kTestSecret);
     ASSERT_TRUE(signature.has_value()) << signature.error();
     EXPECT_EQ(*signature, kExpectedSignature);
 }
 
 TEST(KrakenSigning, ProducesAWellShapedHmacSha512Signature) {
     const auto signature =
-        sign_private_request(kTokenPath, "1700000000000000", "nonce=1700000000000000", kTestSecret);
+        SignPrivateRequest(kTokenPath, "1700000000000000", "nonce=1700000000000000", kTestSecret);
     ASSERT_TRUE(signature.has_value()) << signature.error();
 
     // base64 of a 64-byte HMAC-SHA512 digest is always 88 characters with a
     // single '=' of padding.
     EXPECT_EQ(signature->size(), 88U);
     EXPECT_EQ(signature->back(), '=');
-    const auto decoded = base64_decode(*signature);
+    const auto decoded = Base64Decode(*signature);
     ASSERT_TRUE(decoded.has_value());
     EXPECT_EQ(decoded->size(), 64U);
 }
 
 TEST(KrakenSigning, IsDeterministicForIdenticalInput) {
-    const auto first = sign_private_request(kTokenPath, "42", "nonce=42", kTestSecret);
-    const auto second = sign_private_request(kTokenPath, "42", "nonce=42", kTestSecret);
+    const auto first = SignPrivateRequest(kTokenPath, "42", "nonce=42", kTestSecret);
+    const auto second = SignPrivateRequest(kTokenPath, "42", "nonce=42", kTestSecret);
     ASSERT_TRUE(first.has_value());
     ASSERT_TRUE(second.has_value());
     EXPECT_EQ(*first, *second);
 }
 
 TEST(KrakenSigning, EveryInputComponentChangesTheSignature) {
-    const auto base = sign_private_request(kTokenPath, "42", "nonce=42", kTestSecret);
+    const auto base = SignPrivateRequest(kTokenPath, "42", "nonce=42", kTestSecret);
     ASSERT_TRUE(base.has_value());
 
     // The url path is part of the signed message, so the same nonce/body
     // signed for a different endpoint must not produce the same signature.
-    const auto other_path =
-        sign_private_request("/0/private/Balance", "42", "nonce=42", kTestSecret);
-    const auto other_nonce = sign_private_request(kTokenPath, "43", "nonce=43", kTestSecret);
-    const auto other_secret = sign_private_request(
+    const auto other_path = SignPrivateRequest("/0/private/Balance", "42", "nonce=42", kTestSecret);
+    const auto other_nonce = SignPrivateRequest(kTokenPath, "43", "nonce=43", kTestSecret);
+    const auto other_secret = SignPrivateRequest(
         kTokenPath, "42", "nonce=42", "b3RoZXItc2VjcmV0LWRvLW5vdC11c2UtMDEyMzQ1Njc4OQ==");
     ASSERT_TRUE(other_path.has_value());
     ASSERT_TRUE(other_nonce.has_value());
@@ -164,18 +163,18 @@ TEST(KrakenSigning, EveryInputComponentChangesTheSignature) {
 }
 
 TEST(KrakenSigning, FailsCleanlyOnANonBase64Secret) {
-    const auto signature = sign_private_request(kTokenPath, "42", "nonce=42", "not base64!");
+    const auto signature = SignPrivateRequest(kTokenPath, "42", "nonce=42", "not base64!");
     ASSERT_FALSE(signature.has_value());
     // The failure must never quote the secret back.
     EXPECT_EQ(signature.error().find("not base64!"), std::string::npos);
 }
 
 TEST(KrakenNonce, IsStrictlyIncreasingUnderRapidRepeatedCalls) {
-    nonce_generator nonce;
+    NonceGenerator nonce;
     std::uint64_t previous = 0;
     std::set<std::uint64_t> seen;
     for (int iteration = 0; iteration < 10000; ++iteration) {
-        const std::uint64_t value = nonce.next();
+        const std::uint64_t value = nonce.Next();
         EXPECT_GT(value, previous);
         seen.insert(value);
         previous = value;
@@ -186,31 +185,31 @@ TEST(KrakenNonce, IsStrictlyIncreasingUnderRapidRepeatedCalls) {
 TEST(KrakenNonce, AdvancesWhenTheClockDoesNot) {
     // The exact failure mode a raw millisecond timestamp has: several calls
     // landing inside one clock tick (exchanges/kraken.md).
-    nonce_generator nonce;
-    EXPECT_EQ(nonce.next_from(1'700'000'000'000'000ULL), 1'700'000'000'000'000ULL);
-    EXPECT_EQ(nonce.next_from(1'700'000'000'000'000ULL), 1'700'000'000'000'001ULL);
-    EXPECT_EQ(nonce.next_from(1'700'000'000'000'000ULL), 1'700'000'000'000'002ULL);
+    NonceGenerator nonce;
+    EXPECT_EQ(nonce.NextFrom(1'700'000'000'000'000ULL), 1'700'000'000'000'000ULL);
+    EXPECT_EQ(nonce.NextFrom(1'700'000'000'000'000ULL), 1'700'000'000'000'001ULL);
+    EXPECT_EQ(nonce.NextFrom(1'700'000'000'000'000ULL), 1'700'000'000'000'002ULL);
     // A later real timestamp wins again once the clock catches up.
-    EXPECT_EQ(nonce.next_from(1'700'000'000'000'010ULL), 1'700'000'000'000'010ULL);
+    EXPECT_EQ(nonce.NextFrom(1'700'000'000'000'010ULL), 1'700'000'000'000'010ULL);
 }
 
 TEST(KrakenNonce, SurvivesBackwardsClockSkew) {
-    nonce_generator nonce;
-    EXPECT_EQ(nonce.next_from(1'700'000'000'000'000ULL), 1'700'000'000'000'000ULL);
+    NonceGenerator nonce;
+    EXPECT_EQ(nonce.NextFrom(1'700'000'000'000'000ULL), 1'700'000'000'000'000ULL);
     // NTP steps the clock back a full second: the nonce must still increase,
     // because Kraken rejects a non-increasing one for the whole API key.
-    EXPECT_EQ(nonce.next_from(1'699'999'999'000'000ULL), 1'700'000'000'000'001ULL);
-    EXPECT_EQ(nonce.next_from(0), 1'700'000'000'000'002ULL);
+    EXPECT_EQ(nonce.NextFrom(1'699'999'999'000'000ULL), 1'700'000'000'000'001ULL);
+    EXPECT_EQ(nonce.NextFrom(0), 1'700'000'000'000'002ULL);
 }
 
 TEST(KrakenAssetPairs, ParsesTickSizeAndDecimals) {
-    feed_handler::kraken::rest_client client;
-    const auto count = client.parse_asset_pairs(kAssetPairsBody);
+    feed_handler::kraken::RestClient client;
+    const auto count = client.ParseAssetPairs(kAssetPairsBody);
     ASSERT_TRUE(count.has_value()) << count.error();
     EXPECT_EQ(*count, 2U);
-    EXPECT_EQ(client.cached_pair_count(), 2U);
+    EXPECT_EQ(client.CachedPairCount(), 2U);
 
-    const auto* btc = client.find_asset_pair("XXBTZUSD");
+    const auto* btc = client.FindAssetPair("XXBTZUSD");
     ASSERT_NE(btc, nullptr);
     EXPECT_EQ(btc->altname, "XBTUSD");
     EXPECT_EQ(btc->ws_name, "XBT/USD");
@@ -219,7 +218,7 @@ TEST(KrakenAssetPairs, ParsesTickSizeAndDecimals) {
     EXPECT_EQ(btc->tick_size, "0.1");
     EXPECT_DOUBLE_EQ(btc->tick_size_value, 0.1);
 
-    const auto* eth = client.find_asset_pair("ETH/USD");
+    const auto* eth = client.FindAssetPair("ETH/USD");
     ASSERT_NE(eth, nullptr);
     EXPECT_EQ(eth->rest_name, "XETHZUSD");
     EXPECT_EQ(eth->price_decimals, 2);
@@ -229,37 +228,37 @@ TEST(KrakenAssetPairs, ParsesTickSizeAndDecimals) {
 TEST(KrakenAssetPairs, ResolvesTheWsV2SpellingOfBitcoin) {
     // The discrepancy that would otherwise bite at subscribe time: REST
     // reference data says "XBT/USD", WS v2 says "BTC/USD".
-    feed_handler::kraken::rest_client client;
-    ASSERT_TRUE(client.parse_asset_pairs(kAssetPairsBody).has_value());
+    feed_handler::kraken::RestClient client;
+    ASSERT_TRUE(client.ParseAssetPairs(kAssetPairsBody).has_value());
 
-    const auto* by_rest = client.find_asset_pair("XXBTZUSD");
-    const auto* by_ws_name = client.find_asset_pair("XBT/USD");
-    const auto* by_ws_v2_name = client.find_asset_pair("BTC/USD");
-    const auto* by_altname = client.find_asset_pair("XBTUSD");
+    const auto* by_rest = client.FindAssetPair("XXBTZUSD");
+    const auto* by_ws_name = client.FindAssetPair("XBT/USD");
+    const auto* by_ws_v2_name = client.FindAssetPair("BTC/USD");
+    const auto* by_altname = client.FindAssetPair("XBTUSD");
     ASSERT_NE(by_rest, nullptr);
     EXPECT_EQ(by_ws_name, by_rest);
     EXPECT_EQ(by_ws_v2_name, by_rest);
     EXPECT_EQ(by_altname, by_rest);
 
-    EXPECT_EQ(client.find_asset_pair("DOGE/MOON"), nullptr);
+    EXPECT_EQ(client.FindAssetPair("DOGE/MOON"), nullptr);
 }
 
 TEST(KrakenAssetPairs, SurfacesKrakenErrorArrays) {
-    feed_handler::kraken::rest_client client;
+    feed_handler::kraken::RestClient client;
     const auto parsed =
-        client.parse_asset_pairs(R"({"error":["EQuery:Unknown asset pair"],"result":{}})");
+        client.ParseAssetPairs(R"({"error":["EQuery:Unknown asset pair"],"result":{}})");
     ASSERT_FALSE(parsed.has_value());
     EXPECT_NE(parsed.error().find("EQuery:Unknown asset pair"), std::string::npos);
 }
 
 TEST(KrakenAssetPairs, RejectsGarbageBody) {
-    feed_handler::kraken::rest_client client;
-    EXPECT_FALSE(client.parse_asset_pairs("this is not json").has_value());
+    feed_handler::kraken::RestClient client;
+    EXPECT_FALSE(client.ParseAssetPairs("this is not json").has_value());
 }
 
 TEST(KrakenCredentials, RefusesToSignWithoutCredentials) {
-    feed_handler::kraken::rest_client client;
-    const auto result = client.fetch_websockets_token({});
+    feed_handler::kraken::RestClient client;
+    const auto result = client.FetchWebsocketsToken({});
     ASSERT_FALSE(result.has_value());
     EXPECT_NE(result.error().find("not set"), std::string::npos);
 }
@@ -267,17 +266,17 @@ TEST(KrakenCredentials, RefusesToSignWithoutCredentials) {
 TEST(KrakenNonce, DefaultConstructedPersistentSourceBehavesLikeTheBareGenerator) {
     // Backward compatibility: anything not opting into a state file must get
     // exactly today's in-memory behavior, and must touch no files at all.
-    persistent_nonce_source source;
-    nonce_generator reference;
-    EXPECT_FALSE(source.persisting());
-    EXPECT_TRUE(source.state_file().empty());
-    EXPECT_EQ(source.seeded_from(), 0U);
+    PersistentNonceSource source;
+    NonceGenerator reference;
+    EXPECT_FALSE(source.Persisting());
+    EXPECT_TRUE(source.StateFile().empty());
+    EXPECT_EQ(source.SeededFrom(), 0U);
 
     for (const std::uint64_t now : {1'700'000'000'000'000ULL, 1'700'000'000'000'000ULL,
                                     1'699'999'999'000'000ULL, 1'700'000'000'000'010ULL, 0ULL}) {
-        EXPECT_EQ(source.next_from(now), reference.next_from(now));
+        EXPECT_EQ(source.NextFrom(now), reference.NextFrom(now));
     }
-    EXPECT_EQ(source.last(), reference.last());
+    EXPECT_EQ(source.Last(), reference.Last());
 }
 
 /// Gives each test its own directory under the system temp dir, so a state
@@ -306,22 +305,22 @@ TEST_F(KrakenNonceState, SurvivesARestartAtTheSameFile) {
 
     std::uint64_t last_before_restart = 0;
     {
-        persistent_nonce_source source(path_);
-        EXPECT_TRUE(source.persisting());
-        EXPECT_EQ(source.seeded_from(), 0U);
-        source.next_from(kNow);
-        source.next_from(kNow);
-        last_before_restart = source.next_from(kNow);
+        PersistentNonceSource source(path_);
+        EXPECT_TRUE(source.Persisting());
+        EXPECT_EQ(source.SeededFrom(), 0U);
+        source.NextFrom(kNow);
+        source.NextFrom(kNow);
+        last_before_restart = source.NextFrom(kNow);
     }
     EXPECT_EQ(last_before_restart, kNow + 2);
     EXPECT_TRUE(std::filesystem::exists(path_));
-    EXPECT_EQ(read_text_file(path_), std::to_string(last_before_restart) + "\n");
+    EXPECT_EQ(ReadTextFile(path_), std::to_string(last_before_restart) + "\n");
 
     // The restart: a fresh process, same file, and a clock that has not moved.
-    persistent_nonce_source restarted(path_);
-    EXPECT_EQ(restarted.seeded_from(), last_before_restart);
-    EXPECT_EQ(restarted.next_from(kNow), last_before_restart + 1);
-    EXPECT_EQ(restarted.next_from(kNow), last_before_restart + 2);
+    PersistentNonceSource restarted(path_);
+    EXPECT_EQ(restarted.SeededFrom(), last_before_restart);
+    EXPECT_EQ(restarted.NextFrom(kNow), last_before_restart + 1);
+    EXPECT_EQ(restarted.NextFrom(kNow), last_before_restart + 2);
 }
 
 TEST_F(KrakenNonceState, DoesNotRegressWhenThePersistedMarkIsInTheFuture) {
@@ -329,14 +328,14 @@ TEST_F(KrakenNonceState, DoesNotRegressWhenThePersistedMarkIsInTheFuture) {
     // process was down, so "now" is well behind what Kraken has already seen.
     constexpr std::uint64_t kPersisted = 1'700'000'000'000'000ULL;
     constexpr std::uint64_t kRewoundNow = 1'699'999'000'000'000ULL;
-    write_text_file(path_, std::to_string(kPersisted) + "\n");
+    WriteTextFile(path_, std::to_string(kPersisted) + "\n");
 
-    persistent_nonce_source source(path_);
-    EXPECT_EQ(source.seeded_from(), kPersisted);
-    EXPECT_EQ(source.next_from(kRewoundNow), kPersisted + 1);
-    EXPECT_EQ(source.next_from(kRewoundNow), kPersisted + 2);
+    PersistentNonceSource source(path_);
+    EXPECT_EQ(source.SeededFrom(), kPersisted);
+    EXPECT_EQ(source.NextFrom(kRewoundNow), kPersisted + 1);
+    EXPECT_EQ(source.NextFrom(kRewoundNow), kPersisted + 2);
     // And the clock wins again as soon as it has genuinely caught up.
-    EXPECT_EQ(source.next_from(kPersisted + 500), kPersisted + 500);
+    EXPECT_EQ(source.NextFrom(kPersisted + 500), kPersisted + 500);
 }
 
 TEST_F(KrakenNonceState, FallsBackToTheClockWhenTheFileIsMissing) {
@@ -345,10 +344,10 @@ TEST_F(KrakenNonceState, FallsBackToTheClockWhenTheFileIsMissing) {
 
     // First run: nothing to restore, so this is plain clock behavior, and the
     // mark starts being recorded from here.
-    persistent_nonce_source source(path_);
-    EXPECT_EQ(source.seeded_from(), 0U);
-    EXPECT_EQ(source.next_from(kNow), kNow);
-    EXPECT_EQ(read_text_file(path_), std::to_string(kNow) + "\n");
+    PersistentNonceSource source(path_);
+    EXPECT_EQ(source.SeededFrom(), 0U);
+    EXPECT_EQ(source.NextFrom(kNow), kNow);
+    EXPECT_EQ(ReadTextFile(path_), std::to_string(kNow) + "\n");
 }
 
 TEST_F(KrakenNonceState, FallsBackToTheClockOnAGarbageFile) {
@@ -356,13 +355,13 @@ TEST_F(KrakenNonceState, FallsBackToTheClockOnAGarbageFile) {
     for (const std::string_view contents :
          {"", "   \n", "not-a-nonce", "1700000000000000 1700000000000001", "-5", "1e6",
           "1700000000000000garbage"}) {
-        write_text_file(path_, contents);
+        WriteTextFile(path_, contents);
 
-        persistent_nonce_source source(path_);
-        EXPECT_EQ(source.seeded_from(), 0U) << "contents: " << contents;
-        EXPECT_EQ(source.next_from(kNow), kNow) << "contents: " << contents;
+        PersistentNonceSource source(path_);
+        EXPECT_EQ(source.SeededFrom(), 0U) << "contents: " << contents;
+        EXPECT_EQ(source.NextFrom(kNow), kNow) << "contents: " << contents;
         // The unusable contents are replaced rather than left to be re-read.
-        EXPECT_EQ(read_text_file(path_), std::to_string(kNow) + "\n");
+        EXPECT_EQ(ReadTextFile(path_), std::to_string(kNow) + "\n");
     }
 }
 
@@ -372,27 +371,27 @@ TEST_F(KrakenNonceState, ToleratesAnUnwritableLocation) {
     // usable clock-only nonce source rather than a failed startup.
     constexpr std::uint64_t kNow = 1'700'000'000'000'000ULL;
     const std::filesystem::path blocker = directory_ / "not-a-directory";
-    write_text_file(blocker, "occupied");
+    WriteTextFile(blocker, "occupied");
     const std::filesystem::path unwritable = blocker / "kraken-nonce.state";
 
-    persistent_nonce_source source(unwritable);
-    EXPECT_TRUE(source.persisting());
-    EXPECT_EQ(source.seeded_from(), 0U);
-    EXPECT_EQ(source.next_from(kNow), kNow);
-    EXPECT_EQ(source.next_from(kNow), kNow + 1);
+    PersistentNonceSource source(unwritable);
+    EXPECT_TRUE(source.Persisting());
+    EXPECT_EQ(source.SeededFrom(), 0U);
+    EXPECT_EQ(source.NextFrom(kNow), kNow);
+    EXPECT_EQ(source.NextFrom(kNow), kNow + 1);
     EXPECT_FALSE(std::filesystem::is_directory(blocker));
 }
 
 TEST_F(KrakenNonceState, RestClientOptsInWithoutChangingTheDefault) {
-    // The wiring the binary uses: a path on the rest_client seeds the same
+    // The wiring the binary uses: a path on the RestClient seeds the same
     // source, while the default constructor stays purely in-memory.
-    write_text_file(path_, "1700000000000000\n");
-    const feed_handler::kraken::rest_client persisted(
-        std::string(feed_handler::kraken::rest_client::kDefaultBaseUrl), path_);
-    EXPECT_TRUE(persisted.nonce_source().persisting());
-    EXPECT_EQ(persisted.nonce_source().seeded_from(), 1'700'000'000'000'000ULL);
+    WriteTextFile(path_, "1700000000000000\n");
+    const feed_handler::kraken::RestClient persisted(
+        std::string(feed_handler::kraken::RestClient::kDefaultBaseUrl), path_);
+    EXPECT_TRUE(persisted.NonceSource().Persisting());
+    EXPECT_EQ(persisted.NonceSource().SeededFrom(), 1'700'000'000'000'000ULL);
 
-    const feed_handler::kraken::rest_client plain;
-    EXPECT_FALSE(plain.nonce_source().persisting());
-    EXPECT_EQ(plain.nonce_source().seeded_from(), 0U);
+    const feed_handler::kraken::RestClient plain;
+    EXPECT_FALSE(plain.NonceSource().Persisting());
+    EXPECT_EQ(plain.NonceSource().SeededFrom(), 0U);
 }

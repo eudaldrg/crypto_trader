@@ -35,16 +35,16 @@
 
 namespace {
 
-using feed_handler::capture_session;
-using feed_handler::frame_source;
-using feed_handler::kraken::build_subscribe_message;
-using feed_handler::kraken::classify_message;
-using feed_handler::kraken::message_kind;
-using feed_handler::kraken::rest_client;
-using feed_handler::kraken::ws_client;
-using feed_handler::testing::recording_sink;
+using feed_handler::CaptureSession;
+using feed_handler::FrameSource;
+using feed_handler::kraken::BuildSubscribeMessage;
+using feed_handler::kraken::ClassifyMessage;
+using feed_handler::kraken::MessageKind;
+using feed_handler::kraken::RestClient;
+using feed_handler::kraken::WsClient;
+using feed_handler::testing::RecordingSink;
 
-std::span<const std::byte> bytes_of(std::string_view text) {
+std::span<const std::byte> BytesOf(std::string_view text) {
     return {std::bit_cast<const std::byte*>(text.data()), text.size()};
 }
 
@@ -87,8 +87,8 @@ constexpr int kStopRaceAttempts = 10;
 constexpr std::string_view kUnreachableUrl = "ws://127.0.0.1:1";
 
 /// Never a real Kraken credential: nothing in these tests makes a REST call.
-feed_handler::kraken::credentials test_credentials() {
-    return feed_handler::kraken::credentials{
+feed_handler::kraken::Credentials TestCredentials() {
+    return feed_handler::kraken::Credentials{
         .api_key = "not-a-key",
         .api_secret_b64 = "bm90LWEtcmVhbC1zZWNyZXQ=",
     };
@@ -100,7 +100,7 @@ feed_handler::kraken::credentials test_credentials() {
 // cannot parse TEST macros that follow another definition inside one.
 
 TEST(KrakenSubscribeMessage, MatchesTheShapeKrakenDocuments) {
-    const std::string message = build_subscribe_message("BTC/USD", "fake-token-not-a-credential");
+    const std::string message = BuildSubscribeMessage("BTC/USD", "fake-token-not-a-credential");
     EXPECT_EQ(message, R"({"method":"subscribe","params":{"channel":"level3","symbol":["BTC/USD"],)"
                        R"("snapshot":true,"token":"fake-token-not-a-credential"}})");
 }
@@ -108,55 +108,55 @@ TEST(KrakenSubscribeMessage, MatchesTheShapeKrakenDocuments) {
 TEST(KrakenSubscribeMessage, AsksForASnapshotBecauseThatIsTheRecoveryMechanism) {
     // exchanges/kraken.md: there is no resume-from-sequence-number request, so
     // every (re)subscribe has to ask for a fresh snapshot.
-    const std::string message = build_subscribe_message("BTC/USD", "fake-token");
+    const std::string message = BuildSubscribeMessage("BTC/USD", "fake-token");
     EXPECT_NE(message.find(R"("snapshot":true)"), std::string::npos);
     // WS v2 spells bitcoin BTC, not REST's XBT.
     EXPECT_NE(message.find(R"("BTC/USD")"), std::string::npos);
 }
 
 TEST(KrakenMessageClassification, RecognizesASuccessfulSubscribeAck) {
-    const auto classified = classify_message(kSubscribeAck);
-    EXPECT_EQ(classified.kind, message_kind::subscribe_ack);
+    const auto classified = ClassifyMessage(kSubscribeAck);
+    EXPECT_EQ(classified.kind, MessageKind::kSubscribeAck);
 }
 
 TEST(KrakenMessageClassification, RecognizesARejectedSubscribeAndKeepsTheReason) {
-    const auto classified = classify_message(kSubscribeError);
-    EXPECT_EQ(classified.kind, message_kind::subscribe_error);
+    const auto classified = ClassifyMessage(kSubscribeError);
+    EXPECT_EQ(classified.kind, MessageKind::kSubscribeError);
     EXPECT_EQ(classified.detail, "Authentication failed");
 }
 
 TEST(KrakenMessageClassification, SeparatesSnapshotsFromIncrementalUpdates) {
-    EXPECT_EQ(classify_message(kSnapshot).kind, message_kind::book_snapshot);
-    EXPECT_EQ(classify_message(kUpdate).kind, message_kind::book_update);
+    EXPECT_EQ(ClassifyMessage(kSnapshot).kind, MessageKind::kBookSnapshot);
+    EXPECT_EQ(ClassifyMessage(kUpdate).kind, MessageKind::kBookUpdate);
 }
 
 TEST(KrakenMessageClassification, RecognizesControlTraffic) {
-    EXPECT_EQ(classify_message(kHeartbeat).kind, message_kind::heartbeat);
-    EXPECT_EQ(classify_message(kStatus).kind, message_kind::status);
+    EXPECT_EQ(ClassifyMessage(kHeartbeat).kind, MessageKind::kHeartbeat);
+    EXPECT_EQ(ClassifyMessage(kStatus).kind, MessageKind::kStatus);
 }
 
 TEST(KrakenMessageClassification, TreatsUnparseableInputAsUnknownRatherThanThrowing) {
     // Classification runs after the message has already been journaled, so its
     // only job on garbage is to not blow up the connection.
-    EXPECT_EQ(classify_message("not json at all").kind, message_kind::unknown);
-    EXPECT_EQ(classify_message("").kind, message_kind::unknown);
-    EXPECT_EQ(classify_message("[1,2,3]").kind, message_kind::unknown);
-    EXPECT_EQ(classify_message(R"({"channel":"level3","type":)").kind, message_kind::unknown);
+    EXPECT_EQ(ClassifyMessage("not json at all").kind, MessageKind::kUnknown);
+    EXPECT_EQ(ClassifyMessage("").kind, MessageKind::kUnknown);
+    EXPECT_EQ(ClassifyMessage("[1,2,3]").kind, MessageKind::kUnknown);
+    EXPECT_EQ(ClassifyMessage(R"({"channel":"level3","type":)").kind, MessageKind::kUnknown);
 }
 
 TEST(KrakenMessageClassification, DoesNotDependOnTopLevelKeyOrder) {
-    EXPECT_EQ(classify_message(R"({"success":false,"error":"Subscription failed",)"
-                               R"("method":"subscribe"})")
+    EXPECT_EQ(ClassifyMessage(R"({"success":false,"error":"Subscription failed",)"
+                              R"("method":"subscribe"})")
                   .kind,
-              message_kind::subscribe_error);
-    EXPECT_EQ(classify_message(R"({"type":"update","channel":"level3","data":[]})").kind,
-              message_kind::book_update);
+              MessageKind::kSubscribeError);
+    EXPECT_EQ(ClassifyMessage(R"({"type":"update","channel":"level3","data":[]})").kind,
+              MessageKind::kBookUpdate);
 }
 
 TEST(KrakenMessageClassification, ReportsANonSubscribeMethodFailureSeparately) {
     const auto classified =
-        classify_message(R"({"error":"Unsupported method","method":"pong","success":false})");
-    EXPECT_EQ(classified.kind, message_kind::method_error);
+        ClassifyMessage(R"({"error":"Unsupported method","method":"pong","success":false})");
+    EXPECT_EQ(classified.kind, MessageKind::kMethodError);
     EXPECT_EQ(classified.detail, "Unsupported method");
 }
 
@@ -181,29 +181,29 @@ class KrakenCapture : public ::testing::Test {
     }
 
     std::filesystem::path dir_;
-    rest_client rest_;
+    RestClient rest_;
 };
 
 TEST_F(KrakenCapture, StampsEveryCapturedFrameWithItsOwnWireShape) {
     // What an order-book sink fed by both exchanges branches on. The session is
     // deliberately opened as `unknown`, so a frame that says kraken_json can
     // only have been stamped by the client itself.
-    capture_session session({.directory = dir_, .exchange = "kraken"});
-    recording_sink sink;
-    session.add_sink(sink);
-    ASSERT_TRUE(session.begin_incarnation("test", frame_source::unknown).has_value());
+    CaptureSession session({.directory = dir_, .exchange = "kraken"});
+    RecordingSink sink;
+    session.AddSink(sink);
+    ASSERT_TRUE(session.BeginIncarnation("test", FrameSource::kUnknown).has_value());
 
-    ws_client client(rest_, test_credentials(), session);
-    client.handle_message(std::string(kHeartbeat));
-    client.handle_message(std::string(kUpdate));
+    WsClient client(rest_, TestCredentials(), session);
+    client.HandleMessage(std::string(kHeartbeat));
+    client.HandleMessage(std::string(kUpdate));
 
-    const auto frames = sink.frames();
+    const auto frames = sink.Frames();
     ASSERT_EQ(frames.size(), 2U);
-    EXPECT_EQ(frames[0].source, frame_source::kraken_json);
-    EXPECT_EQ(frames[1].source, frame_source::kraken_json);
+    EXPECT_EQ(frames[0].source, FrameSource::kRakenJson);
+    EXPECT_EQ(frames[1].source, FrameSource::kRakenJson);
     EXPECT_EQ(frames[1].payload, kUpdate);
-    EXPECT_EQ(client.messages_received(), 2U);
-    EXPECT_FALSE(client.fatal());
+    EXPECT_EQ(client.MessagesReceived(), 2U);
+    EXPECT_FALSE(client.Fatal());
 }
 
 TEST_F(KrakenCapture, TreatsAFailedJournalWriteAsFatalToTheProcess) {
@@ -211,21 +211,21 @@ TEST_F(KrakenCapture, TreatsAFailedJournalWriteAsFatalToTheProcess) {
     // nothing else, so after a full disk the main loop's `!client.fatal()`
     // stayed true forever and the process looked healthy while capturing
     // nothing. Deribit's journal_message already ended the session here.
-    capture_session session({.directory = dir_, .exchange = "kraken"});
-    ASSERT_TRUE(session.begin_incarnation("connected", frame_source::kraken_json).has_value());
+    CaptureSession session({.directory = dir_, .exchange = "kraken"});
+    ASSERT_TRUE(session.BeginIncarnation("connected", FrameSource::kRakenJson).has_value());
 
     // Latches the writer's sticky error the way a full disk would: the record
     // is refused and the file is unreliable from that point on. Every later
     // write into this session now fails the same way, which is the property
     // that makes a journal failure worth ending the process over.
     const std::string oversized(feed_handler::journal::kMaxPayloadBytes + 1U, 'x');
-    ASSERT_FALSE(session.on_wire_message(bytes_of(oversized), frame_source::kraken_json));
-    ASSERT_FALSE(session.error().empty());
+    ASSERT_FALSE(session.OnWireMessage(BytesOf(oversized), FrameSource::kRakenJson));
+    ASSERT_FALSE(session.Error().empty());
 
-    ws_client client(rest_, test_credentials(), session);
-    ASSERT_FALSE(client.fatal());
-    client.handle_message(std::string(kHeartbeat));
-    EXPECT_TRUE(client.fatal());
+    WsClient client(rest_, TestCredentials(), session);
+    ASSERT_FALSE(client.Fatal());
+    client.HandleMessage(std::string(kHeartbeat));
+    EXPECT_TRUE(client.Fatal());
 }
 
 TEST_F(KrakenCapture, DoesNotEndTheProcessOverAMessageThatArrivedBeforeTheFirstIncarnation) {
@@ -233,13 +233,13 @@ TEST_F(KrakenCapture, DoesNotEndTheProcessOverAMessageThatArrivedBeforeTheFirstI
     // message arriving before handle_open() has opened a file is loud but
     // recoverable -- the next incarnation captures normally -- so it must not
     // be confused with a journal that has failed.
-    capture_session session({.directory = dir_, .exchange = "kraken"});
+    CaptureSession session({.directory = dir_, .exchange = "kraken"});
 
-    ws_client client(rest_, test_credentials(), session);
-    client.handle_message(std::string(kHeartbeat));
+    WsClient client(rest_, TestCredentials(), session);
+    client.HandleMessage(std::string(kHeartbeat));
 
-    EXPECT_FALSE(client.fatal());
-    EXPECT_EQ(session.total_records_written(), 0U);
+    EXPECT_FALSE(client.Fatal());
+    EXPECT_EQ(session.TotalRecordsWritten(), 0U);
 }
 
 TEST_F(KrakenCapture, StopsPromptlyWhileTheWatchdogIsWaitingOutItsPollInterval) {
@@ -254,7 +254,7 @@ TEST_F(KrakenCapture, StopsPromptlyWhileTheWatchdogIsWaitingOutItsPollInterval) 
     // (a journal failure in handle_open/handle_message unblocking the watchdog)
     // are reachable from a live connection, which IXWebSocket owns end to end --
     // there is no loopback harness for them the way there is for Deribit.
-    feed_handler::kraken::ws_client_config cfg;
+    feed_handler::kraken::WsClientConfig cfg;
     cfg.url = std::string(kUnreachableUrl);
     // Ten seconds of watchdog sleep is what stop() must cut short; the
     // library's own retry bounds are kept tiny so its reconnect backoff cannot
@@ -264,15 +264,15 @@ TEST_F(KrakenCapture, StopsPromptlyWhileTheWatchdogIsWaitingOutItsPollInterval) 
     cfg.max_reconnect_wait_ms = 50;
 
     for (int attempt = 0; attempt < kStopRaceAttempts; ++attempt) {
-        capture_session session({.directory = dir_, .exchange = "kraken"});
-        ws_client client(rest_, test_credentials(), session, cfg);
+        CaptureSession session({.directory = dir_, .exchange = "kraken"});
+        WsClient client(rest_, TestCredentials(), session, cfg);
         // start() launches the watchdog thread, which goes straight into its
         // first poll wait -- stopping right behind it is the race worth
         // bounding.
-        client.start();
+        client.Start();
 
         const auto before = std::chrono::steady_clock::now();
-        client.stop();
+        client.Stop();
         const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                     std::chrono::steady_clock::now() - before)
                                     .count();

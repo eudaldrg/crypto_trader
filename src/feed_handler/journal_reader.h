@@ -1,4 +1,4 @@
-// Sequential reader for the v1 capture journal written by journal_writer.
+// Sequential reader for the v1 capture journal written by JournalWriter.
 // See journal_format.h for the byte layout.
 //
 // Full Replay mode (pacing, cross-incarnation manifest ordering) is a future
@@ -21,7 +21,7 @@
 namespace feed_handler {
 
 /// The once-per-file/incarnation metadata from the journal header.
-struct journal_file_header {
+struct JournalFileHeader {
     std::uint16_t format_version = 0;
     /// CLOCK_REALTIME and CLOCK_MONOTONIC sampled at the same instant when the
     /// file was created; together they convert any record's monotonic_ns to
@@ -34,28 +34,28 @@ struct journal_file_header {
 
 /// One decoded record. `payload` views the reader's internal buffer and is
 /// only valid until the next next() call -- the same non-owning contract
-/// capture_frame uses, so a replay source can hand it straight to a
+/// CaptureFrame uses, so a replay source can hand it straight to a
 /// message_sink without copying.
-struct journal_record {
-    journal::record_type type = journal::record_type::wire_message;
+struct JournalRecord {
+    journal::RecordType type = journal::RecordType::kWireMessage;
     std::uint64_t capture_sequence = 0;
     std::uint64_t monotonic_ns = 0;
     std::span<const std::byte> payload;
 };
 
-class journal_reader {
+class JournalReader {
   public:
     /// Opens `path` and validates the file header. The error string is
     /// human-readable and never contains file contents.
-    static std::expected<journal_reader, std::string> open(const std::filesystem::path& path);
+    static std::expected<JournalReader, std::string> Open(const std::filesystem::path& path);
 
-    journal_reader(const journal_reader&) = delete;
-    journal_reader& operator=(const journal_reader&) = delete;
-    journal_reader(journal_reader&&) = default;
-    journal_reader& operator=(journal_reader&&) = default;
-    ~journal_reader() = default;
+    JournalReader(const JournalReader&) = delete;
+    JournalReader& operator=(const JournalReader&) = delete;
+    JournalReader(JournalReader&&) = default;
+    JournalReader& operator=(JournalReader&&) = default;
+    ~JournalReader() = default;
 
-    const journal_file_header& header() const {
+    const JournalFileHeader& Header() const {
         return header_;
     }
 
@@ -65,29 +65,29 @@ class journal_reader {
     /// -- is NOT an error: the reader stops cleanly at the first record it
     /// cannot fully validate and reports it via stopped_early()/stop_reason(),
     /// per decisions/0004.
-    std::optional<journal_record> next();
+    std::optional<JournalRecord> Next();
 
     /// True if next() stopped on an invalid record rather than clean EOF.
-    bool stopped_early() const {
+    bool StoppedEarly() const {
         return stopped_early_;
     }
 
     /// Why reading stopped; empty until it does.
-    std::string_view stop_reason() const {
+    std::string_view StopReason() const {
         return stop_reason_;
     }
 
-    std::uint64_t records_read() const {
+    std::uint64_t RecordsRead() const {
         return records_read_;
     }
 
   private:
-    journal_reader() = default;
+    JournalReader() = default;
 
-    void stop(std::string reason);
+    void Stop(std::string reason);
 
     std::ifstream in_;
-    journal_file_header header_;
+    JournalFileHeader header_;
     std::vector<std::byte> payload_;
     std::string stop_reason_;
     std::uint64_t records_read_ = 0;

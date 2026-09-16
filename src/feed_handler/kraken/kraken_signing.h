@@ -1,7 +1,7 @@
 // Kraken REST private-endpoint request signing, plus the nonce source it
-// needs. The signing functions and `nonce_generator` are pure -- no network, no
+// needs. The signing functions and `NonceGenerator` are pure -- no network, no
 // I/O -- so they are unit-testable without credentials. The one exception is
-// `persistent_nonce_source`, a thin wrapper that reads/writes the nonce
+// `PersistentNonceSource`, a thin wrapper that reads/writes the nonce
 // high-water mark file; it is kept separate precisely so the rule it wraps
 // stays pure. See exchanges/kraken.md, "Auth".
 #pragma once
@@ -22,18 +22,18 @@ namespace feed_handler::kraken {
 /// Python's urllib.parse.urlencode (the reference the probe signs with):
 /// unreserved characters pass through, space becomes '+', everything else
 /// becomes %HH with uppercase hex.
-std::string url_encode(std::string_view value);
+std::string UrlEncode(std::string_view value);
 
 /// Joins `params` into a urlencoded POST body in the given order. Order is
 /// significant: the signature is computed over this exact byte string, so the
 /// body that gets sent must be the same object that was signed.
-std::string encode_post_data(std::span<const std::pair<std::string, std::string>> params);
+std::string EncodePostData(std::span<const std::pair<std::string, std::string>> params);
 
-std::string base64_encode(std::span<const std::byte> data);
+std::string Base64Encode(std::span<const std::byte> data);
 
 /// Strict base64 decode. The error string never echoes the input, because the
 /// only thing this is used on is the API secret.
-std::expected<std::vector<std::byte>, std::string> base64_decode(std::string_view text);
+std::expected<std::vector<std::byte>, std::string> Base64Decode(std::string_view text);
 
 /// Computes Kraken's `API-Sign` header value:
 ///
@@ -43,10 +43,10 @@ std::expected<std::vector<std::byte>, std::string> base64_decode(std::string_vie
 /// `post_data` is the exact urlencoded body being sent (which itself contains
 /// `nonce=<nonce>`). Neither the secret nor any part of it appears in the
 /// error string on failure.
-std::expected<std::string, std::string> sign_private_request(std::string_view url_path,
-                                                             std::string_view nonce,
-                                                             std::string_view post_data,
-                                                             std::string_view api_secret_b64);
+std::expected<std::string, std::string> SignPrivateRequest(std::string_view url_path,
+                                                           std::string_view nonce,
+                                                           std::string_view post_data,
+                                                           std::string_view api_secret_b64);
 
 /// Kraken requires a strictly increasing nonce per API key. A raw millisecond
 /// timestamp (what experiments/kraken_l3_probe.py uses) collides when two
@@ -55,21 +55,21 @@ std::expected<std::string, std::string> sign_private_request(std::string_view ur
 ///
 /// In-memory only, by design: no I/O, no clock read beyond `next()`, so the
 /// rule itself stays trivially testable. Surviving a *restart* is
-/// `persistent_nonce_source`'s job.
-class nonce_generator {
+/// `PersistentNonceSource`'s job.
+class NonceGenerator {
   public:
     /// Next nonce from the current wall clock, in microseconds.
-    std::uint64_t next();
+    std::uint64_t Next();
 
     /// Test seam: same rule against a caller-supplied "now", so same-timestamp
     /// and backwards-clock cases are directly exercisable.
-    std::uint64_t next_from(std::uint64_t now_micros);
+    std::uint64_t NextFrom(std::uint64_t now_micros);
 
     /// Raises the high-water mark to `value`, never lowers it, so the next
     /// nonce is at least `value + 1`. Seeds from a persisted mark.
-    void seed_at_least(std::uint64_t value);
+    void SeedAtLeast(std::uint64_t value);
 
-    std::uint64_t last() const {
+    std::uint64_t Last() const {
         return last_;
     }
 
@@ -77,7 +77,7 @@ class nonce_generator {
     std::uint64_t last_ = 0;
 };
 
-/// A `nonce_generator` whose high-water mark survives a process restart.
+/// A `NonceGenerator` whose high-water mark survives a process restart.
 ///
 /// Kraken's strictly-increasing-per-API-key rule is not self-healing: one
 /// nonce below a value already used gets every later call with that key
@@ -94,47 +94,47 @@ class nonce_generator {
 /// API key, secret and WS token), so it is stored and logged in the clear.
 ///
 /// Default-constructed, this persists nothing and behaves exactly like a bare
-/// `nonce_generator`.
-class persistent_nonce_source {
+/// `NonceGenerator`.
+class PersistentNonceSource {
   public:
     /// Clock-only: no file, no I/O.
-    persistent_nonce_source() = default;
+    PersistentNonceSource() = default;
 
     /// Seeds from `state_file` if it holds a usable mark, and writes every
     /// nonce issued afterwards back to it. An empty path means "no
     /// persistence".
-    explicit persistent_nonce_source(std::filesystem::path state_file);
+    explicit PersistentNonceSource(std::filesystem::path state_file);
 
     /// Next nonce from the current wall clock, persisted before it is used.
-    std::uint64_t next();
+    std::uint64_t Next();
 
-    /// Test seam, matching `nonce_generator::next_from`: the same rule and the
+    /// Test seam, matching `NonceGenerator::next_from`: the same rule and the
     /// same persistence, against a caller-supplied "now".
-    std::uint64_t next_from(std::uint64_t now_micros);
+    std::uint64_t NextFrom(std::uint64_t now_micros);
 
-    std::uint64_t last() const {
-        return generator_.last();
+    std::uint64_t Last() const {
+        return generator_.Last();
     }
 
     /// True when a state file is configured, whether or not writes to it are
     /// currently succeeding.
-    bool persisting() const {
+    bool Persisting() const {
         return !state_file_.empty();
     }
 
-    const std::filesystem::path& state_file() const {
+    const std::filesystem::path& StateFile() const {
         return state_file_;
     }
 
     /// The mark read at construction; 0 when there was no usable one.
-    std::uint64_t seeded_from() const {
+    std::uint64_t SeededFrom() const {
         return seeded_from_;
     }
 
   private:
-    void persist(std::uint64_t value);
+    void Persist(std::uint64_t value);
 
-    nonce_generator generator_;
+    NonceGenerator generator_;
     std::filesystem::path state_file_;
     std::uint64_t seeded_from_ = 0;
     /// Latched so an unwritable directory warns once rather than on every

@@ -12,23 +12,23 @@
 
 namespace feed_handler {
 
-enum class log_level : std::uint8_t { info, warn, error };
+enum class LogLevel : std::uint8_t { kInfo, kWarn, kError };
 
 /// Writes one line to stderr: "<UTC timestamp> <level> <message>". Serialized
 /// with a mutex, so the WS thread and the watchdog thread cannot interleave
 /// half-lines.
-void log_message(log_level level, std::string_view message);
+void LogMessage(LogLevel level, std::string_view message);
 
-inline void log_info(std::string_view message) {
-    log_message(log_level::info, message);
+inline void LogInfo(std::string_view message) {
+    LogMessage(LogLevel::kInfo, message);
 }
 
-inline void log_warn(std::string_view message) {
-    log_message(log_level::warn, message);
+inline void LogWarn(std::string_view message) {
+    LogMessage(LogLevel::kWarn, message);
 }
 
-inline void log_error(std::string_view message) {
-    log_message(log_level::error, message);
+inline void LogError(std::string_view message) {
+    LogMessage(LogLevel::kError, message);
 }
 
 }  // namespace feed_handler

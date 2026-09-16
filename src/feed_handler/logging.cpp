@@ -14,18 +14,18 @@ namespace {
 constexpr std::uint64_t kNanosPerSecond = 1'000'000'000;
 constexpr std::uint64_t kNanosPerMilli = 1'000'000;
 
-std::mutex& log_mutex() {
+std::mutex& LogMutex() {
     static std::mutex mutex;
     return mutex;
 }
 
-std::string_view level_tag(log_level level) {
+std::string_view LevelTag(LogLevel level) {
     switch (level) {
-        case log_level::warn:
+        case LogLevel::kWarn:
             return "WARN ";
-        case log_level::error:
+        case LogLevel::kError:
             return "ERROR";
-        case log_level::info:
+        case LogLevel::kInfo:
             break;
     }
     return "INFO ";
@@ -33,8 +33,8 @@ std::string_view level_tag(log_level level) {
 
 /// "2026-09-16T21:30:00.123Z". UTC on purpose: capture files and logs get read
 /// next to exchange-side timestamps, which are UTC.
-std::string utc_timestamp() {
-    const std::uint64_t now_ns = realtime_now_ns();
+std::string UtcTimestamp() {
+    const std::uint64_t now_ns = RealtimeNowNs();
     const auto seconds = static_cast<std::time_t>(now_ns / kNanosPerSecond);
     const auto millis = static_cast<unsigned>((now_ns % kNanosPerSecond) / kNanosPerMilli);
 
@@ -52,10 +52,10 @@ std::string utc_timestamp() {
 
 }  // namespace
 
-void log_message(log_level level, std::string_view message) {
-    const std::string prefix = utc_timestamp();
-    const std::lock_guard<std::mutex> guard(log_mutex());
-    std::clog << prefix << ' ' << level_tag(level) << ' ' << message << '\n';
+void LogMessage(LogLevel level, std::string_view message) {
+    const std::string prefix = UtcTimestamp();
+    const std::lock_guard<std::mutex> guard(LogMutex());
+    std::clog << prefix << ' ' << LevelTag(level) << ' ' << message << '\n';
 }
 
 }  // namespace feed_handler

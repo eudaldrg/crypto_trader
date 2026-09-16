@@ -21,17 +21,17 @@
 
 namespace {
 
-using feed_handler::capture_frame;
-using feed_handler::capture_stamper;
-using feed_handler::journal_reader;
-using feed_handler::journal_writer;
-using feed_handler::journal::record_type;
+using feed_handler::CaptureFrame;
+using feed_handler::CaptureStamper;
+using feed_handler::JournalReader;
+using feed_handler::JournalWriter;
+using feed_handler::journal::RecordType;
 
-std::span<const std::byte> bytes_of(std::string_view text) {
+std::span<const std::byte> BytesOf(std::string_view text) {
     return {std::bit_cast<const std::byte*>(text.data()), text.size()};
 }
 
-std::string text_of(std::span<const std::byte> payload) {
+std::string TextOf(std::span<const std::byte> payload) {
     return {std::bit_cast<const char*>(payload.data()), payload.size()};
 }
 
@@ -71,95 +71,95 @@ class JournalFile : public ::testing::Test {
 };
 
 TEST_F(JournalFile, RoundTripsHeaderRecordsAndIncarnationMarker) {
-    capture_stamper stamper;
+    CaptureStamper stamper;
     {
-        journal_writer writer(path_, {.exchange = "kraken", .incarnation = 7});
-        writer.write_incarnation_marker(stamper.stamp(bytes_of("connect")));
-        writer.on_frame(stamper.stamp(bytes_of(kSnapshot)));
-        writer.on_frame(stamper.stamp(bytes_of(kUpdate)));
-        writer.on_frame(stamper.stamp(bytes_of(kHeartbeat)));
-        writer.flush();
-        ASSERT_TRUE(writer.good()) << writer.error();
-        EXPECT_EQ(writer.records_written(), 4U);
+        JournalWriter writer(path_, {.exchange = "kraken", .incarnation = 7});
+        writer.WriteIncarnationMarker(stamper.Stamp(BytesOf("connect")));
+        writer.OnFrame(stamper.Stamp(BytesOf(kSnapshot)));
+        writer.OnFrame(stamper.Stamp(BytesOf(kUpdate)));
+        writer.OnFrame(stamper.Stamp(BytesOf(kHeartbeat)));
+        writer.Flush();
+        ASSERT_TRUE(writer.Good()) << writer.Error();
+        EXPECT_EQ(writer.RecordsWritten(), 4U);
     }
 
-    auto reader = journal_reader::open(path_);
+    auto reader = JournalReader::Open(path_);
     ASSERT_TRUE(reader.has_value()) << reader.error();
-    EXPECT_EQ(reader->header().format_version, feed_handler::journal::kFormatVersion);
-    EXPECT_EQ(reader->header().exchange, "kraken");
-    EXPECT_EQ(reader->header().incarnation, 7U);
+    EXPECT_EQ(reader->Header().format_version, feed_handler::journal::kFormatVersion);
+    EXPECT_EQ(reader->Header().exchange, "kraken");
+    EXPECT_EQ(reader->Header().incarnation, 7U);
     // The wall-clock anchor must actually be populated; monotonic alone cannot
     // be correlated across a restart.
-    EXPECT_GT(reader->header().realtime_ns, 0U);
-    EXPECT_GT(reader->header().monotonic_ns, 0U);
+    EXPECT_GT(reader->Header().realtime_ns, 0U);
+    EXPECT_GT(reader->Header().monotonic_ns, 0U);
 
-    auto marker = reader->next();
+    auto marker = reader->Next();
     ASSERT_TRUE(marker.has_value());
-    EXPECT_EQ(marker->type, record_type::connection_incarnation);
-    EXPECT_EQ(text_of(marker->payload), "connect");
+    EXPECT_EQ(marker->type, RecordType::kConnectionIncarnation);
+    EXPECT_EQ(TextOf(marker->payload), "connect");
     EXPECT_EQ(marker->capture_sequence, 1U);
 
     const std::array<std::string_view, 3> expected = {kSnapshot, kUpdate, kHeartbeat};
     std::uint64_t previous_sequence = marker->capture_sequence;
     for (std::string_view want : expected) {
-        auto record = reader->next();
+        auto record = reader->Next();
         ASSERT_TRUE(record.has_value());
-        EXPECT_EQ(record->type, record_type::wire_message);
-        EXPECT_EQ(text_of(record->payload), want);
+        EXPECT_EQ(record->type, RecordType::kWireMessage);
+        EXPECT_EQ(TextOf(record->payload), want);
         EXPECT_GT(record->capture_sequence, previous_sequence);
-        EXPECT_GE(record->monotonic_ns, reader->header().monotonic_ns);
+        EXPECT_GE(record->monotonic_ns, reader->Header().monotonic_ns);
         previous_sequence = record->capture_sequence;
     }
 
-    EXPECT_FALSE(reader->next().has_value());
-    EXPECT_FALSE(reader->stopped_early()) << reader->stop_reason();
-    EXPECT_EQ(reader->records_read(), 4U);
+    EXPECT_FALSE(reader->Next().has_value());
+    EXPECT_FALSE(reader->StoppedEarly()) << reader->StopReason();
+    EXPECT_EQ(reader->RecordsRead(), 4U);
 }
 
 TEST_F(JournalFile, EmptyJournalIsStillAValidFile) {
-    { journal_writer writer(path_, {.exchange = "kraken"}); }
+    { JournalWriter writer(path_, {.exchange = "kraken"}); }
 
-    auto reader = journal_reader::open(path_);
+    auto reader = JournalReader::Open(path_);
     ASSERT_TRUE(reader.has_value()) << reader.error();
-    EXPECT_FALSE(reader->next().has_value());
-    EXPECT_FALSE(reader->stopped_early());
+    EXPECT_FALSE(reader->Next().has_value());
+    EXPECT_FALSE(reader->StoppedEarly());
 }
 
 TEST_F(JournalFile, PreservesEmptyAndBinaryPayloads) {
     const std::array<std::byte, 4> binary = {std::byte{0x00}, std::byte{0xFF}, std::byte{0x0A},
                                              std::byte{0x00}};
-    capture_stamper stamper;
+    CaptureStamper stamper;
     {
-        journal_writer writer(path_, {.exchange = "kraken"});
-        writer.on_frame(stamper.stamp({}));
-        writer.on_frame(stamper.stamp(binary));
-        writer.flush();
-        ASSERT_TRUE(writer.good()) << writer.error();
+        JournalWriter writer(path_, {.exchange = "kraken"});
+        writer.OnFrame(stamper.Stamp({}));
+        writer.OnFrame(stamper.Stamp(binary));
+        writer.Flush();
+        ASSERT_TRUE(writer.Good()) << writer.Error();
     }
 
-    auto reader = journal_reader::open(path_);
+    auto reader = JournalReader::Open(path_);
     ASSERT_TRUE(reader.has_value()) << reader.error();
 
-    auto empty = reader->next();
+    auto empty = reader->Next();
     ASSERT_TRUE(empty.has_value());
     EXPECT_TRUE(empty->payload.empty());
 
-    auto blob = reader->next();
+    auto blob = reader->Next();
     ASSERT_TRUE(blob.has_value());
     ASSERT_EQ(blob->payload.size(), binary.size());
     EXPECT_TRUE(std::equal(binary.begin(), binary.end(), blob->payload.begin()));
 
-    EXPECT_FALSE(reader->next().has_value());
-    EXPECT_FALSE(reader->stopped_early());
+    EXPECT_FALSE(reader->Next().has_value());
+    EXPECT_FALSE(reader->StoppedEarly());
 }
 
 TEST_F(JournalFile, StopsCleanlyOnTruncatedTail) {
-    capture_stamper stamper;
+    CaptureStamper stamper;
     {
-        journal_writer writer(path_, {.exchange = "kraken"});
-        writer.on_frame(stamper.stamp(bytes_of(kSnapshot)));
-        writer.on_frame(stamper.stamp(bytes_of(kUpdate)));
-        writer.flush();
+        JournalWriter writer(path_, {.exchange = "kraken"});
+        writer.OnFrame(stamper.Stamp(BytesOf(kSnapshot)));
+        writer.OnFrame(stamper.Stamp(BytesOf(kUpdate)));
+        writer.Flush();
     }
 
     // Simulate a crash mid-write of the last record by lopping bytes off the
@@ -167,28 +167,28 @@ TEST_F(JournalFile, StopsCleanlyOnTruncatedTail) {
     const auto full_size = std::filesystem::file_size(path_);
     std::filesystem::resize_file(path_, full_size - 10);
 
-    auto reader = journal_reader::open(path_);
+    auto reader = JournalReader::Open(path_);
     ASSERT_TRUE(reader.has_value()) << reader.error();
 
-    auto first = reader->next();
+    auto first = reader->Next();
     ASSERT_TRUE(first.has_value());
-    EXPECT_EQ(text_of(first->payload), kSnapshot);
+    EXPECT_EQ(TextOf(first->payload), kSnapshot);
 
-    EXPECT_FALSE(reader->next().has_value());
-    EXPECT_TRUE(reader->stopped_early());
-    EXPECT_FALSE(reader->stop_reason().empty());
-    EXPECT_EQ(reader->records_read(), 1U);
+    EXPECT_FALSE(reader->Next().has_value());
+    EXPECT_TRUE(reader->StoppedEarly());
+    EXPECT_FALSE(reader->StopReason().empty());
+    EXPECT_EQ(reader->RecordsRead(), 1U);
     // Truncation must not be reported as a hard error, only as a short read.
-    EXPECT_FALSE(reader->next().has_value());
+    EXPECT_FALSE(reader->Next().has_value());
 }
 
 TEST_F(JournalFile, StopsCleanlyOnCorruptedPayload) {
-    capture_stamper stamper;
+    CaptureStamper stamper;
     {
-        journal_writer writer(path_, {.exchange = "kraken"});
-        writer.on_frame(stamper.stamp(bytes_of(kSnapshot)));
-        writer.on_frame(stamper.stamp(bytes_of(kUpdate)));
-        writer.flush();
+        JournalWriter writer(path_, {.exchange = "kraken"});
+        writer.OnFrame(stamper.Stamp(BytesOf(kSnapshot)));
+        writer.OnFrame(stamper.Stamp(BytesOf(kUpdate)));
+        writer.Flush();
     }
 
     // Flip a byte inside the second record's payload, leaving every length
@@ -205,12 +205,12 @@ TEST_F(JournalFile, StopsCleanlyOnCorruptedPayload) {
         file.write(&flipped, 1);
     }
 
-    auto reader = journal_reader::open(path_);
+    auto reader = JournalReader::Open(path_);
     ASSERT_TRUE(reader.has_value()) << reader.error();
-    ASSERT_TRUE(reader->next().has_value());
-    EXPECT_FALSE(reader->next().has_value());
-    EXPECT_TRUE(reader->stopped_early());
-    EXPECT_EQ(reader->stop_reason(), "record checksum mismatch");
+    ASSERT_TRUE(reader->Next().has_value());
+    EXPECT_FALSE(reader->Next().has_value());
+    EXPECT_TRUE(reader->StoppedEarly());
+    EXPECT_EQ(reader->StopReason(), "record checksum mismatch");
 }
 
 TEST_F(JournalFile, RejectsNonJournalFile) {
@@ -219,59 +219,59 @@ TEST_F(JournalFile, RejectsNonJournalFile) {
         const std::string junk(128, 'z');
         file.write(junk.data(), static_cast<std::streamsize>(junk.size()));
     }
-    auto reader = journal_reader::open(path_);
+    auto reader = JournalReader::Open(path_);
     EXPECT_FALSE(reader.has_value());
 }
 
 TEST_F(JournalFile, RejectsCorruptedFileHeader) {
-    { journal_writer writer(path_, {.exchange = "kraken"}); }
+    { JournalWriter writer(path_, {.exchange = "kraken"}); }
     {
         std::fstream file(path_, std::ios::binary | std::ios::in | std::ios::out);
         file.seekp(20);
         const char flipped = '\x7F';
         file.write(&flipped, 1);
     }
-    auto reader = journal_reader::open(path_);
+    auto reader = JournalReader::Open(path_);
     EXPECT_FALSE(reader.has_value());
 }
 
 TEST_F(JournalFile, ThrowsWhenFileCannotBeCreated) {
     const std::filesystem::path bad = path_ / "no" / "such" / "dir" / "j.bin";
-    EXPECT_THROW(journal_writer(bad, {.exchange = "kraken"}), std::runtime_error);
+    EXPECT_THROW(JournalWriter(bad, {.exchange = "kraken"}), std::runtime_error);
 }
 
 TEST_F(JournalFile, RefusesOutOfOrderCaptureSequence) {
-    journal_writer writer(path_, {.exchange = "kraken"});
-    const capture_frame first{.payload = bytes_of(kSnapshot), .capture_sequence = 5};
-    const capture_frame stale{.payload = bytes_of(kUpdate), .capture_sequence = 5};
+    JournalWriter writer(path_, {.exchange = "kraken"});
+    const CaptureFrame first{.payload = BytesOf(kSnapshot), .capture_sequence = 5};
+    const CaptureFrame stale{.payload = BytesOf(kUpdate), .capture_sequence = 5};
 
-    writer.on_frame(first);
-    EXPECT_TRUE(writer.good());
-    writer.on_frame(stale);
-    EXPECT_FALSE(writer.good());
-    EXPECT_EQ(writer.records_written(), 1U);
+    writer.OnFrame(first);
+    EXPECT_TRUE(writer.Good());
+    writer.OnFrame(stale);
+    EXPECT_FALSE(writer.Good());
+    EXPECT_EQ(writer.RecordsWritten(), 1U);
 }
 
 TEST(CaptureStamper, AssignsStrictlyIncreasingSequenceNumbers) {
-    capture_stamper stamper;
-    EXPECT_EQ(stamper.last_sequence(), 0U);
+    CaptureStamper stamper;
+    EXPECT_EQ(stamper.LastSequence(), 0U);
 
     std::uint64_t previous = 0;
     for (int iteration = 0; iteration < 1000; ++iteration) {
-        const capture_frame frame = stamper.stamp(bytes_of(kHeartbeat));
+        const CaptureFrame frame = stamper.Stamp(BytesOf(kHeartbeat));
         EXPECT_GT(frame.capture_sequence, previous);
         previous = frame.capture_sequence;
     }
-    EXPECT_EQ(stamper.last_sequence(), 1000U);
+    EXPECT_EQ(stamper.LastSequence(), 1000U);
 }
 
 TEST(CaptureStamper, StampsAMonotonicTimestampAndDoesNotCopyThePayload) {
-    capture_stamper stamper;
+    CaptureStamper stamper;
     const std::string payload(kUpdate);
-    const capture_frame frame = stamper.stamp(bytes_of(payload));
+    const CaptureFrame frame = stamper.Stamp(BytesOf(payload));
 
     EXPECT_GT(frame.monotonic_ns, 0U);
-    EXPECT_GE(feed_handler::monotonic_now_ns(), frame.monotonic_ns);
+    EXPECT_GE(feed_handler::MonotonicNowNs(), frame.monotonic_ns);
     // The frame must be a view, not a copy -- the ownership contract the whole
     // MessageSink seam depends on.
     EXPECT_EQ(static_cast<const void*>(frame.payload.data()),
@@ -280,8 +280,8 @@ TEST(CaptureStamper, StampsAMonotonicTimestampAndDoesNotCopyThePayload) {
 
 TEST(JournalFormat, LittleEndianRoundTrip) {
     std::array<std::byte, 8> raw{};
-    feed_handler::journal::store_le<std::uint64_t>(raw, 0x0123456789ABCDEFULL);
+    feed_handler::journal::StoreLe<std::uint64_t>(raw, 0x0123456789ABCDEFULL);
     EXPECT_EQ(raw[0], std::byte{0xEF});
     EXPECT_EQ(raw[7], std::byte{0x01});
-    EXPECT_EQ(feed_handler::journal::load_le<std::uint64_t>(raw), 0x0123456789ABCDEFULL);
+    EXPECT_EQ(feed_handler::journal::LoadLe<std::uint64_t>(raw), 0x0123456789ABCDEFULL);
 }
