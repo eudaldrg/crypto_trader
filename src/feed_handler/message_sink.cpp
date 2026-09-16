@@ -29,12 +29,13 @@ std::uint64_t realtime_now_ns() {
     return clock_now_ns(CLOCK_REALTIME);
 }
 
-capture_frame capture_stamper::stamp(std::span<const std::byte> payload) {
+capture_frame capture_stamper::stamp(std::span<const std::byte> payload, frame_source source) {
     ++sequence_;
     return capture_frame{
         .payload = payload,
         .capture_sequence = sequence_,
         .monotonic_ns = monotonic_now_ns(),
+        .source = source,
     };
 }
 

@@ -33,6 +33,15 @@ class WebSocket;
 
 namespace feed_handler::kraken {
 
+/// What every frame this client captures is: Kraken WebSocket v2 JSON text.
+///
+/// Stamped onto each frame by this client rather than taken from the
+/// capture_session's configuration, because the client is the only thing that
+/// knows first-hand what shape the bytes it just received are in. A session
+/// configured by the binary that owns it could be handed the wrong answer and
+/// nothing would notice until an order book parsed JSON as tag=value.
+inline constexpr frame_source kWireSource = frame_source::kraken_json;
+
 /// The bits of an inbound message this client cares about. Book content is
 /// deliberately not parsed: v1 journals raw bytes and the order book that
 /// would consume them does not exist yet (decisions/0004).
@@ -116,6 +125,15 @@ class ws_client {
     /// IXWebSocket's thread. Idempotent.
     void stop();
 
+    /// Handles one inbound Kraken wire message: journal it, then classify it.
+    /// Normally called by IXWebSocket's callback on its own thread.
+    ///
+    /// Public so the capture paths that matter -- the frame identity it stamps,
+    /// and what it does when the journal write fails -- are testable without a
+    /// live socket, in the same spirit as rest_client::parse_asset_pairs. It is
+    /// not a send path: nothing outbound goes through here.
+    void handle_message(const std::string& payload);
+
     /// True when capture cannot continue (the journal file could not be
     /// opened). The owning process should shut down rather than stay connected
     /// while dropping data on the floor.
@@ -133,7 +151,6 @@ class ws_client {
 
   private:
     void handle_open();
-    void handle_message(const std::string& payload);
     void run_watchdog();
     /// Closes the current connection so IXWebSocket's automatic reconnection
     /// re-establishes it. Deliberately close(), not stop(): stop() joins the

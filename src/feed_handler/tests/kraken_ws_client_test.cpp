@@ -1,6 +1,13 @@
 // The socket-independent halves of the Kraken WS client: the outbound
-// subscribe payload and the minimal inbound classification that exists only so
-// a rejected subscribe is noticed rather than looking like a quiet connection.
+// subscribe payload, the minimal inbound classification that exists only so a
+// rejected subscribe is noticed rather than looking like a quiet connection,
+// and what handle_message() stamps onto the frames it captures.
+//
+// The capture test drives handle_message() directly rather than over a socket.
+// IXWebSocket owns its own thread and fd (decisions/0004), and a real
+// connection would also need a signed REST token call, so a live-socket
+// harness like the Deribit one is not available here; handle_message() is the
+// entry point that callback would reach anyway.
 //
 // The JSON fixtures below are real messages captured from
 // wss://ws-l3.kraken.com/v2 (2026-09-16), with the token removed from the
@@ -8,15 +15,27 @@
 #include "feed_handler/kraken/kraken_ws_client.h"
 
 #include <gtest/gtest.h>
+#include <unistd.h>
 
+#include <filesystem>
 #include <string>
 #include <string_view>
 
+#include "feed_handler/capture_session.h"
+#include "feed_handler/kraken/kraken_rest_client.h"
+#include "feed_handler/message_sink.h"
+#include "feed_handler/tests/recording_sink.h"
+
 namespace {
 
+using feed_handler::capture_session;
+using feed_handler::frame_source;
 using feed_handler::kraken::build_subscribe_message;
 using feed_handler::kraken::classify_message;
 using feed_handler::kraken::message_kind;
+using feed_handler::kraken::rest_client;
+using feed_handler::kraken::ws_client;
+using feed_handler::testing::recording_sink;
 
 constexpr std::string_view kSubscribeAck =
     R"({"method":"subscribe","result":{"channel":"level3","snapshot":true,"symbol":"BTC/USD"},)"
@@ -43,6 +62,14 @@ constexpr std::string_view kUpdate =
     R"({"event":"add","order_id":"OZ2CPT-5QN7T-PD4B4C","limit_price":115000.0,)"
     R"("order_qty":0.1,"timestamp":"2026-09-16T21:30:01.000000Z"}],"asks":[],)"
     R"("checksum":1671312190}]})";
+
+/// Never a real Kraken credential: nothing in these tests makes a REST call.
+feed_handler::kraken::credentials test_credentials() {
+    return feed_handler::kraken::credentials{
+        .api_key = "not-a-key",
+        .api_secret_b64 = "bm90LWEtcmVhbC1zZWNyZXQ=",
+    };
+}
 
 }  // namespace
 
@@ -108,4 +135,50 @@ TEST(KrakenMessageClassification, ReportsANonSubscribeMethodFailureSeparately) {
         classify_message(R"({"error":"Unsupported method","method":"pong","success":false})");
     EXPECT_EQ(classified.kind, message_kind::method_error);
     EXPECT_EQ(classified.detail, "Unsupported method");
+}
+
+/// The capture half of handle_message(), driven directly: the client is
+/// constructed but never start()ed, so no thread, no socket and no REST call
+/// exists for the duration of these tests.
+class KrakenCapture : public ::testing::Test {
+  protected:
+    void SetUp() override {
+        // Test name and pid, for the same reason the Deribit loopback fixture
+        // uses them: two concurrent runs of this binary must not share a
+        // journal directory.
+        dir_ = std::filesystem::temp_directory_path() /
+               ("kraken_ws_capture_" +
+                std::string(::testing::UnitTest::GetInstance()->current_test_info()->name()) + "_" +
+                std::to_string(::getpid()));
+        std::filesystem::remove_all(dir_);
+    }
+
+    void TearDown() override {
+        std::filesystem::remove_all(dir_);
+    }
+
+    std::filesystem::path dir_;
+    rest_client rest_;
+};
+
+TEST_F(KrakenCapture, StampsEveryCapturedFrameWithItsOwnWireShape) {
+    // What an order-book sink fed by both exchanges branches on. The session is
+    // deliberately opened as `unknown`, so a frame that says kraken_json can
+    // only have been stamped by the client itself.
+    capture_session session({.directory = dir_, .exchange = "kraken"});
+    recording_sink sink;
+    session.add_sink(sink);
+    ASSERT_TRUE(session.begin_incarnation("test", frame_source::unknown).has_value());
+
+    ws_client client(rest_, test_credentials(), session);
+    client.handle_message(std::string(kHeartbeat));
+    client.handle_message(std::string(kUpdate));
+
+    const auto frames = sink.frames();
+    ASSERT_EQ(frames.size(), 2U);
+    EXPECT_EQ(frames[0].source, frame_source::kraken_json);
+    EXPECT_EQ(frames[1].source, frame_source::kraken_json);
+    EXPECT_EQ(frames[1].payload, kUpdate);
+    EXPECT_EQ(client.messages_received(), 2U);
+    EXPECT_FALSE(client.fatal());
 }

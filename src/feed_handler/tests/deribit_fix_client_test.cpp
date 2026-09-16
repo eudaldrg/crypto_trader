@@ -38,6 +38,8 @@
 #include <utility>
 
 #include "feed_handler/capture_session.h"
+#include "feed_handler/message_sink.h"
+#include "feed_handler/tests/recording_sink.h"
 
 namespace {
 
@@ -593,4 +595,36 @@ TEST_F(DeribitFixLoopback, ASequenceGapDropsTheConnectionAndLogsOnAgain) {
     // Note for whoever reads this next: forced_reconnects() deliberately stays
     // 0 here. It counts only staleness-forced drops; a gap-driven reconnect is
     // not counted anywhere today.
+}
+
+TEST_F(DeribitFixLoopback, StampsEveryCapturedFrameWithItsOwnWireShape) {
+    // What an order-book sink fed by both exchanges branches on, proven where
+    // the frames are real: the session is opened by the client, and the sink
+    // sees what the client actually put into it.
+    capture_session capture({.directory = dir_, .exchange = "deribit"});
+    feed_handler::testing::recording_sink sink;
+    capture.add_sink(sink);
+    fix_client client(test_config(), capture, loopback_config());
+    client.start();
+
+    peer exchange = server_.accept_one(kStepTimeoutMs);
+    ASSERT_TRUE(exchange.connected()) << "the client never connected";
+    // Returns only once the MarketDataRequest is out, which the client sends
+    // strictly after journaling the Logon that triggered it.
+    ASSERT_TRUE(complete_handshake(exchange));
+
+    const auto frames = sink.frames();
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_EQ(frames[0].source, feed_handler::frame_source::deribit_fix);
+    EXPECT_NE(frames[0].payload.find("35=A"), std::string::npos);
+    // Sequence 1 is the incarnation marker, which is a journal record rather
+    // than a frame, so the first frame a sink sees is 2.
+    EXPECT_EQ(frames[0].capture_sequence, 2U);
+
+    const auto incarnations = sink.incarnations();
+    ASSERT_EQ(incarnations.size(), 1U);
+    EXPECT_EQ(incarnations[0].incarnation, 1U);
+    EXPECT_NE(incarnations[0].reason.find("deribit fix"), std::string::npos);
+
+    client.stop();
 }
