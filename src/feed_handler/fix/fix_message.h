@@ -144,20 +144,20 @@ std::string FormatChecksum(std::string_view bytes);
 
 /// A parsed message's fields, in wire order.
 ///
-/// Lifetime: every value is a view into the buffer `parse_message` was handed
+/// Lifetime: every value is a view into the buffer `ParseMessage` was handed
 /// (the same non-owning convention as `CaptureFrame`, decisions/0004). When
-/// that buffer is a `framer`'s, it stays valid only until the next
-/// append()/next_message() call. A `ParsedMessage` is also viewed *into* --
+/// that buffer is a `Framer`'s, it stays valid only until the next
+/// Append()/NextMessage() call. A `ParsedMessage` is also viewed *into* --
 /// `ReadGroup()` hands back spans over this object's field list -- so it must
 /// itself outlive anything read out of it, which is why a temporary
 /// `ParsedMessage` is rejected at compile time (see `ReadGroup` below).
 ///
 /// The field list stays flat and ordered rather than being turned into a tree:
-/// `get()` returns the FIRST occurrence of a tag, which is right for the
+/// `Get()` returns the FIRST occurrence of a tag, which is right for the
 /// top-level session fields and meaningless for a tag that repeats inside a
 /// group. Repeating groups are read on top of this ordered list by
 /// `ReadGroup()` below -- that is what the ordering is preserved for -- so a
-/// group member is reached through a `group_entry`, never through `get()`.
+/// group member is reached through a `GroupEntry`, never through `Get()`.
 ///
 /// Still not supported, deliberately: nested groups (a group whose member is
 /// itself a NumInGroup field). `ReadGroup()` handles one flat group, which is
@@ -214,11 +214,45 @@ class ParsedMessage {
 /// back as an error rather than as partially-trusted fields.
 std::expected<ParsedMessage, std::string> ParseMessage(std::string_view raw);
 
+/// Rejects parsing straight out of a temporary `std::string` at compile time,
+/// for the same reason `ReadGroup` rejects a temporary `ParsedMessage` below.
+/// The natural-looking
+///
+///     const auto parsed = ParseMessage(BuildMessage(header, body));
+///
+/// would otherwise compile without a warning and dangle: `ParseMessage` copies
+/// nothing, so every field of `parsed` is a view into a buffer that dies at the
+/// end of that full expression. It "works" in a normal build only because a
+/// short string is stored inline and the dead bytes are usually still
+/// readable -- under AddressSanitizer it is a heap-use-after-free.
+///
+/// This outranks the `std::string_view` overload: binding a `std::string`
+/// prvalue directly to `std::string&&` is an identity conversion, while
+/// reaching the `std::string_view` overload needs `std::string`'s
+/// user-defined conversion operator.
+///
+/// If this overload is what the compiler is complaining about, hoist the
+/// buffer into a named variable that outlives every use of the result:
+///
+///     const std::string raw = BuildMessage(header, body);  // named, outlives...
+///     const auto parsed = ParseMessage(raw);               // ...this
+std::expected<ParsedMessage, std::string> ParseMessage(std::string&& raw) = delete;
+
+/// Keeps a string literal working. Without it, `ParseMessage("8=FIX.4.4...")`
+/// becomes *ambiguous* rather than accepted: `const char*` reaches both
+/// `std::string_view` and `std::string` through a user-defined conversion, and
+/// neither is better. A literal has static storage duration and cannot dangle,
+/// so the safe spelling should not pay for the guard above with a diagnostic
+/// that points at the wrong problem.
+inline std::expected<ParsedMessage, std::string> ParseMessage(const char* raw) {
+    return ParseMessage(std::string_view(raw));
+}
+
 /// One repetition of a repeating group: a view over exactly the fields that
 /// belong to that repetition, in wire order.
 ///
 /// Lookups are scoped to the repetition, which is the entire point -- the same
-/// tag means a different thing in every entry, so a message-wide `get()` cannot
+/// tag means a different thing in every entry, so a message-wide `Get()` cannot
 /// answer "this entry's MDEntryPx". A tag missing from this particular entry is
 /// nullopt rather than an error, because entries in a real group are not all
 /// the same shape: Deribit puts MDUpdateAction(279) on every 35=X entry and on
@@ -305,7 +339,7 @@ struct RepeatingGroup {
 ///
 /// Malformed input is salvaged, not rejected, and the caller is told: a
 /// NumInGroup larger than the number of repetitions actually present yields the
-/// entries that *are* there with `truncated()` true, never an out-of-bounds
+/// entries that *are* there with `Truncated()` true, never an out-of-bounds
 /// read and never an unbounded loop (nothing is sized or reserved from the
 /// declared count; the scan is bounded by the field list). That mirrors the
 /// framer/parser split -- hand out what was structurally recoverable, flag the
@@ -323,7 +357,7 @@ struct RepeatingGroup {
 /// If `count_tag` occurs more than once, the first occurrence wins -- two
 /// groups sharing a NumInGroup tag in one message does not happen on this wire.
 ///
-/// Lifetime: the returned `repeating_group` holds `group_entry`s that are spans
+/// Lifetime: the returned `RepeatingGroup` holds `GroupEntry`s that are spans
 /// into `message`'s own field list, so `message` must outlive the group (and
 /// the buffer `message` was parsed from must outlive both). Bind the parsed
 /// message to a named variable first -- see the deleted rvalue overload below.
@@ -332,9 +366,9 @@ std::expected<RepeatingGroup, std::string> ReadGroup(const ParsedMessage& messag
 
 /// Rejects a temporary `ParsedMessage` at compile time. The natural-looking
 ///
-///     auto group = ReadGroup(*parse_message(raw), tag::no_md_entries, {...});
+///     auto group = ReadGroup(*ParseMessage(raw), tag::kNoMdEntries, {...});
 ///
-/// would otherwise compile without a warning and dangle: `parse_message`
+/// would otherwise compile without a warning and dangle: `ParseMessage`
 /// returns an `std::expected` prvalue, that temporary dies at the end of the
 /// full expression, and every span inside `group` points into the field list it
 /// took with it. Binding to a `const&` parameter does not extend the temporary
@@ -342,14 +376,14 @@ std::expected<RepeatingGroup, std::string> ReadGroup(const ParsedMessage& messag
 ///
 /// If this overload is what the compiler is complaining about, hoist the parse:
 ///
-///     const auto parsed = parse_message(raw);            // named, outlives...
+///     const auto parsed = ParseMessage(raw);             // named, outlives...
 ///     if (!parsed) { ... }
-///     const auto group = ReadGroup(*parsed, tag::no_md_entries, {...});  // ...this
+///     const auto group = ReadGroup(*parsed, tag::kNoMdEntries, {...});  // ...this
 std::expected<RepeatingGroup, std::string> ReadGroup(ParsedMessage&& message, int count_tag,
                                                      std::span<const int> member_tags) = delete;
 
 /// Convenience overload so call sites can write the member tags inline:
-/// `ReadGroup(msg, tag::no_md_entries, {tag::md_update_action, ...})`.
+/// `ReadGroup(msg, tag::kNoMdEntries, {tag::kMdUpdateAction, ...})`.
 /// std::span is not constructible from a braced list until C++26.
 inline std::expected<RepeatingGroup, std::string> ReadGroup(
     const ParsedMessage& message, int count_tag, std::initializer_list<int> member_tags) {
@@ -385,16 +419,16 @@ class Framer {
     explicit Framer(std::size_t max_body_length = kMaxBodyLength);
 
     /// Appends bytes read from the socket. May invalidate any view previously
-    /// returned by next_message().
+    /// returned by NextMessage().
     void Append(std::string_view bytes);
     void Append(std::span<const std::byte> bytes);
 
     /// The next complete message, as a view into this framer's buffer, valid
-    /// only until the next append()/next_message() call. nullopt means "need
-    /// more bytes" -- or, if good() is false, "this stream is unusable".
+    /// only until the next Append()/NextMessage() call. nullopt means "need
+    /// more bytes" -- or, if Good() is false, "this stream is unusable".
     ///
     /// The returned bytes are structurally delimited but NOT yet validated:
-    /// run parse_message() on them, which is where BodyLength and CheckSum are
+    /// run ParseMessage() on them, which is where BodyLength and CheckSum are
     /// checked. Framing is a transport concern, message validity is not.
     std::optional<std::string_view> NextMessage();
 
@@ -403,7 +437,7 @@ class Framer {
         return error_.empty();
     }
 
-    /// Empty while good(). Never contains payload bytes -- only a description
+    /// Empty while Good(). Never contains payload bytes -- only a description
     /// of what was structurally wrong.
     const std::string& Error() const {
         return error_;
