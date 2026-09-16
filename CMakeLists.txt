@@ -9,6 +9,13 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON) # Export compilation database (single file
 # Set to 1 to use the sanitizers.
 option(ENABLE_ASAN "Enable AddressSanitizer" OFF)
 option(ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
+# ThreadSanitizer instruments differently than ASan/UBSan and the two runtimes
+# cannot coexist in one binary, hence the separate option and the guard below
+# rather than folding it into ENABLE_ASAN's block. See decisions/0005.
+option(ENABLE_TSAN "Enable ThreadSanitizer" OFF)
+if(ENABLE_TSAN AND ENABLE_ASAN)
+  message(FATAL_ERROR "ENABLE_TSAN and ENABLE_ASAN cannot be combined in one binary -- configure separate build directories (see scripts/run_sanitizers.sh)")
+endif()
 option(USE_CLOCK_MANAGER "Enable clock manager" OFF)
 option(ENABLE_COVERAGE "Enable code coverage instrumentation" OFF)
 option(ENABLE_TCMALLOC "Use tcmalloc" OFF)
@@ -72,6 +79,14 @@ if(ENABLE_UBSAN)
         -fsanitize=undefined
     )
 endif()
+if(ENABLE_TSAN)
+    target_compile_options(project_sanitizers INTERFACE
+        -fsanitize=thread
+    )
+    target_link_options(project_sanitizers INTERFACE
+        -fsanitize=thread
+    )
+endif()
 
 add_library(project_options INTERFACE)
 if(USE_CLOCK_MANAGER)
@@ -117,6 +132,10 @@ target_compile_options(project_warnings INTERFACE
       -Wno-deprecated-declarations
       -Wno-array-bounds
       -Wno-redundant-move
+      # clang-tidy's syntax-only analysis pass reports -ftime-trace (see
+      # project_options below) as unused since it never runs codegen --
+      # without this, -Werror turns that into a hard error on every file.
+      -Wno-unused-command-line-argument
       -ftemplate-backtrace-limit=0
     >
 )
@@ -152,7 +171,7 @@ if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
     # Emits a per-translation-unit *.json timing trace next to each object file for ClangBuildAnalyzer
     -ftime-trace
     -ftemplate-depth=750
-    $<$<CONFIG:Release>:-O3;-fomit-frame-pointer;-DNDEBUG;-DQT_NO_DEBUG>
+    $<$<CONFIG:release,profile,production>:-O3;-fomit-frame-pointer;-DNDEBUG;-DQT_NO_DEBUG>
   )
   target_link_options(project_options INTERFACE
       -fuse-ld=lld
@@ -166,17 +185,127 @@ if(ENABLE_GPERFTOOLS)
   set_target_properties(gperftools_profiler PROPERTIES IMPORTED_LOCATION "${GPERFTOOLS_PROFILER_LIBRARY}")
 endif()
 
+#### Third-party dependencies (decisions/0002, decisions/0004) ####
+include(FetchContent)
+
+# IXWebSocket: Kraken WSS transport. USE_TLS must be forced into the cache
+# before add_subdirectory runs (via FetchContent_MakeAvailable below) --
+# IXWebSocket's own option(USE_TLS ...) call is a no-op once the cache entry
+# already exists. Defaults to OpenSSL on Linux once TLS is on.
+set(USE_TLS ON CACHE BOOL "" FORCE)
+FetchContent_Declare(
+  ixwebsocket
+  GIT_REPOSITORY https://github.com/machinezone/IXWebSocket.git
+  GIT_TAG v12.0.1
+)
+
+# simdjson: Kraken message parsing.
+FetchContent_Declare(
+  simdjson
+  GIT_REPOSITORY https://github.com/simdjson/simdjson.git
+  GIT_TAG v4.6.11
+)
+
+FetchContent_MakeAvailable(ixwebsocket simdjson)
+
+# GoogleTest: TDD for feed-parsing/journal logic, per decisions/0002.
+option(BUILD_TESTING "Build test targets" ON)
+if(BUILD_TESTING)
+  set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+  set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+  FetchContent_Declare(
+    googletest
+    GIT_REPOSITORY https://github.com/google/googletest.git
+    GIT_TAG v1.18.0
+  )
+  FetchContent_MakeAvailable(googletest)
+  enable_testing()
+  include(GoogleTest)
+endif()
+
 # Wraps add_executable() + the standard project_options/project_warnings
 # linkage so future targets can't forget to link one -- see decisions/0002.
 function(add_project_executable name)
   add_executable(${name} ${ARGN})
-  target_link_libraries(${name} PRIVATE project_options project_warnings)
+  target_link_libraries(${name} PRIVATE project_options project_warnings project_sanitizers)
   if(ENABLE_GPERFTOOLS)
     target_link_libraries(${name} PRIVATE gperftools_profiler)
   endif()
+endfunction()
+
+# Same, but for a GTest-based test binary registered with ctest -- see
+# decisions/0002.
+function(add_project_test name)
+  add_executable(${name} ${ARGN})
+  target_link_libraries(${name} PRIVATE project_options project_warnings project_sanitizers
+                                        GTest::gtest_main)
+  gtest_discover_tests(${name})
 endfunction()
 
 add_project_executable(crypto_trader
   src/greeter.cpp
   src/main.cpp
 )
+
+#### Feed handler ####
+# OpenSSL and zlib both already arrive transitively through IXWebSocket
+# (USE_TLS/USE_ZLIB), but relying on that leakage from a subdirectory scope is
+# fragile -- ask for them explicitly for the targets that actually use them.
+find_package(OpenSSL REQUIRED)
+find_package(ZLIB REQUIRED)
+
+add_library(feed_handler STATIC
+  src/feed_handler/capture_session.cpp
+  src/feed_handler/journal_format.cpp
+  src/feed_handler/journal_reader.cpp
+  src/feed_handler/journal_writer.cpp
+  src/feed_handler/logging.cpp
+  src/feed_handler/message_sink.cpp
+  src/feed_handler/deribit/deribit_fix_client.cpp
+  src/feed_handler/deribit/deribit_fix_session.cpp
+  src/feed_handler/fix/fix_message.cpp
+  src/feed_handler/kraken/kraken_rest_client.cpp
+  src/feed_handler/kraken/kraken_signing.cpp
+  src/feed_handler/kraken/kraken_ws_client.cpp
+)
+target_include_directories(feed_handler PUBLIC ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(feed_handler
+  PUBLIC project_options project_warnings project_sanitizers
+  PRIVATE ixwebsocket::ixwebsocket simdjson::simdjson OpenSSL::Crypto ZLIB::ZLIB
+)
+
+# The live Kraken level3 capture binary (decisions/0004's first vertical
+# slice). Credentials come from the environment; see the file's header comment.
+add_project_executable(kraken_feed_handler
+  src/feed_handler/kraken/kraken_feed_handler_main.cpp
+)
+target_link_libraries(kraken_feed_handler PRIVATE feed_handler)
+
+# The live Deribit FIX capture binary: decisions/0004's second exchange
+# backend, hand-rolled over a raw POSIX socket. Credentials come from the
+# environment; see the file's header comment.
+add_project_executable(deribit_feed_handler
+  src/feed_handler/deribit/deribit_feed_handler_main.cpp
+)
+target_link_libraries(deribit_feed_handler PRIVATE feed_handler)
+
+if(BUILD_TESTING)
+  # Proves the FetchContent wiring for IXWebSocket/simdjson/GoogleTest
+  # actually works end-to-end -- not feed handler behavior.
+  add_project_test(dependency_smoke_test
+    src/feed_handler/tests/dependency_smoke_test.cpp
+  )
+  target_link_libraries(dependency_smoke_test PRIVATE ixwebsocket::ixwebsocket simdjson::simdjson)
+
+  add_project_test(feed_handler_tests
+    src/feed_handler/tests/capture_session_test.cpp
+    src/feed_handler/tests/deribit_fix_client_test.cpp
+    src/feed_handler/tests/deribit_fix_session_test.cpp
+    src/feed_handler/tests/fix_message_test.cpp
+    src/feed_handler/tests/journal_test.cpp
+    src/feed_handler/tests/kraken_rest_client_test.cpp
+    src/feed_handler/tests/kraken_ws_client_test.cpp
+    src/feed_handler/tests/staleness_watchdog_test.cpp
+  )
+  target_link_libraries(feed_handler_tests PRIVATE feed_handler)
+endif()

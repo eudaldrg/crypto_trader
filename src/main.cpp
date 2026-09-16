@@ -1,7 +1,8 @@
-#include "greeter.h"
 #include <iostream>
 
+#include "greeter.h"
+
 int main() {
-    std::cout << greeting() << "\n";
+    std::cout << Greeting() << "\n";
     return 0;
 }
