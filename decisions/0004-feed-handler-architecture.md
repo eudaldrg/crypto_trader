@@ -352,6 +352,67 @@ choices worth recording:
   to catch. If a third user appears, promote them to a shared helper — do not
   let one exchange depend on another.
 
+### Deribit FIX client v1: as implemented (2026-09-16)
+
+`src/feed_handler/deribit/deribit_fix_client.*` plus the `deribit_feed_handler`
+binary: the raw socket under the session layer above, wired to the same
+`capture_session` Kraken uses. The choices worth recording:
+
+- **One dedicated thread doing a blocking `recv()`, not epoll.** The
+  epoll-per-thread-group model above is the end-goal for when there is more
+  than one connection to *group*; with exactly one Deribit socket a
+  multiplexer would be machinery with nothing to multiplex. This is the same
+  scope as Kraken's v1 (one thread per connection), just hand-rolled instead
+  of library-provided — and because this client owns its fd outright, it can
+  join an epoll group the day one exists, with no library in the way.
+- **`SO_RCVTIMEO` is what makes one thread enough.** The session needs two
+  timers (the outbound Heartbeat every `HeartBtInt`, and the staleness
+  watchdog) and a shutdown check, and a receive timeout gives all three a tick
+  without a second thread or a readiness API. A timed-out `recv` is not an
+  event, it is the loop's clock. Kraken needed a separate watchdog thread only
+  because IXWebSocket owns its own loop and offers no such hook.
+- **`connect()` is non-blocking + `poll()`, then back to blocking.** Not for
+  concurrency — purely so an unreachable host cannot park the thread for the
+  kernel's own multi-minute SYN timeout and make shutdown look hung.
+- **Staleness timeout is 90s against a 30s `HeartBtInt`**: three missed
+  heartbeats. Deliberately loose, because regular heartbeats *are* the
+  steady-state traffic on an idle book and the watchdog's job is to catch a
+  half-open socket, not to police jitter.
+- **Backoff advances on "this connection never delivered a message", not on
+  "connect() failed".** A TCP connect that succeeds and is then dropped
+  seconds later (a rejected Logon, say) is still a failure, and resetting the
+  counter on connect alone would spin on it — the same trap Kraken's
+  `throttle_connection_setup` exists for, arrived at from the other direction.
+  This client has no library reconnect layer underneath, so its backoff is the
+  only one, which makes it simpler than Kraken's two-layer arrangement, not
+  more complex.
+- **A rejected `MarketDataRequest` (`35=Y`) is loud but is not a reconnect.**
+  Unlike a gap, the session is healthy; reconnecting would only replay the
+  same rejected request. Confirmed in `exchanges/deribit.md`: there is no
+  positive ack for the request either, so the snapshot's *absence* is the only
+  other symptom.
+- **A peer-initiated `Logout` (`35=5`), a framing loss and a failed
+  `BodyLength`/`CheckSum` validation all take the gap path** — one recovery
+  story, as the gap-handling bullet above requires.
+- **The whole "what happens next" decision is a pure function**
+  (`classify_inbound`), taking the parsed message and the session's sequence
+  verdict. That is what keeps the branches a live socket makes hardest to
+  reach — a gap, a peer Logout, a rejected subscribe on an otherwise healthy
+  session — unit-testable, exactly as `capture_session` and
+  `staleness_watchdog` were on the Kraken side. Socket I/O itself is proven by
+  the live testnet run, not by a mocked fd.
+- **Keeping outbound bytes out of the journal stayed structural.**
+  `on_wire_message` is only ever called with a `framer::next_message()` view,
+  and the Logon/Heartbeat/MarketDataRequest builders return strings that go
+  straight to `send()`. Nothing had to be remembered.
+- **`capture_session` and `staleness_watchdog` were reused unchanged.** The
+  only exchange-specific thing either needed was the string `"deribit"`. That
+  is the result the Kraken-first/Deribit-second ordering in Consequences was
+  designed to test, and the seam held: the two exchanges differ in transport
+  (library-owned WSS vs. hand-rolled TCP), encoding (JSON vs. tag=value),
+  recovery trigger (silence vs. `MsgSeqNum`) and liveness mechanism, and share
+  the journal layer verbatim.
+
 ## Consequences
 
 - Kraken-first, Deribit-second implementation order is intentional: it
