@@ -147,7 +147,10 @@ std::string format_checksum(std::string_view bytes);
 /// Lifetime: every value is a view into the buffer `parse_message` was handed
 /// (the same non-owning convention as `capture_frame`, decisions/0004). When
 /// that buffer is a `framer`'s, it stays valid only until the next
-/// append()/next_message() call.
+/// append()/next_message() call. A `parsed_message` is also viewed *into* --
+/// `read_group()` hands back spans over this object's field list -- so it must
+/// itself outlive anything read out of it, which is why a temporary
+/// `parsed_message` is rejected at compile time (see `read_group` below).
 ///
 /// The field list stays flat and ordered rather than being turned into a tree:
 /// `get()` returns the FIRST occurrence of a tag, which is right for the
@@ -319,8 +322,31 @@ struct repeating_group {
 ///
 /// If `count_tag` occurs more than once, the first occurrence wins -- two
 /// groups sharing a NumInGroup tag in one message does not happen on this wire.
+///
+/// Lifetime: the returned `repeating_group` holds `group_entry`s that are spans
+/// into `message`'s own field list, so `message` must outlive the group (and
+/// the buffer `message` was parsed from must outlive both). Bind the parsed
+/// message to a named variable first -- see the deleted rvalue overload below.
 std::expected<repeating_group, std::string> read_group(const parsed_message& message, int count_tag,
                                                        std::span<const int> member_tags);
+
+/// Rejects a temporary `parsed_message` at compile time. The natural-looking
+///
+///     auto group = read_group(*parse_message(raw), tag::no_md_entries, {...});
+///
+/// would otherwise compile without a warning and dangle: `parse_message`
+/// returns an `std::expected` prvalue, that temporary dies at the end of the
+/// full expression, and every span inside `group` points into the field list it
+/// took with it. Binding to a `const&` parameter does not extend the temporary
+/// past the enclosing statement, and the group outlives the statement.
+///
+/// If this overload is what the compiler is complaining about, hoist the parse:
+///
+///     const auto parsed = parse_message(raw);            // named, outlives...
+///     if (!parsed) { ... }
+///     const auto group = read_group(*parsed, tag::no_md_entries, {...});  // ...this
+std::expected<repeating_group, std::string> read_group(parsed_message&& message, int count_tag,
+                                                       std::span<const int> member_tags) = delete;
 
 /// Convenience overload so call sites can write the member tags inline:
 /// `read_group(msg, tag::no_md_entries, {tag::md_update_action, ...})`.
@@ -330,6 +356,12 @@ inline std::expected<repeating_group, std::string> read_group(
     return read_group(message, count_tag,
                       std::span<const int>(member_tags.begin(), member_tags.size()));
 }
+
+/// The same rvalue guard for the braced-list convenience overload: without it,
+/// the inline-member-tags spelling -- which is the one a call site is most
+/// likely to reach for -- would still silently dangle.
+std::expected<repeating_group, std::string> read_group(
+    parsed_message&& message, int count_tag, std::initializer_list<int> member_tags) = delete;
 
 /// Reassembles whole FIX messages from a stream that arrives in arbitrary
 /// chunks.
