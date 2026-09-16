@@ -363,14 +363,15 @@ choices worth recording:
   and there is deliberately **no resynchronisation** by hunting for the next
   `8=FIX.4.4`: once framing is lost, every byte after it is unaligned, and the
   answer is the same reconnect the gap policy above prescribes.
-- **Repeating groups are not parsed into a structure in v1.** `parse_message`
-  produces a flat, ordered field list; `get()` returns the first occurrence of
-  a tag, which is correct for top-level session fields and wrong for a group
-  member. Building groups outbound is unaffected (FIX groups are positional,
-  so an ordered field list is exactly right). This is a real corner cut, and
-  it has to be closed before `35=W`/`35=X` book content can be read — it is
-  flagged in `fix_message.h`, and the ordered list is kept precisely so a group
-  parser layers on without re-parsing.
+- **Repeating groups are read on top of the flat field list, not baked into
+  the parser.** `parse_message` still produces one flat, ordered field list and
+  `get()` still returns a tag's first occurrence (right for top-level session
+  fields, meaningless for a group member); `read_group()` layers on top of that
+  ordering without re-parsing, which is what preserving wire order was for.
+  Building groups outbound is unaffected (FIX groups are positional, so an
+  ordered field list is exactly right). See the group-reader subsection below
+  for the semantics; the only thing still unsupported is *nested* groups, which
+  no group on either exchange's wire uses.
 - **A detected sequence gap is reported, not repaired**, per the corrected
   bullet above. The expectation advances past the gap rather than staying put,
   so one lost message produces one gap report instead of an identical report
@@ -450,6 +451,42 @@ binary: the raw socket under the session layer above, wired to the same
   (library-owned WSS vs. hand-rolled TCP), encoding (JSON vs. tag=value),
   recovery trigger (silence vs. `MsgSeqNum`) and liveness mechanism, and share
   the journal layer verbatim.
+
+### FIX repeating groups: as implemented (2026-09-16)
+
+`fix::read_group()` in `src/feed_handler/fix/fix_message.*` closes the corner
+cut recorded in the session-layer section above. It is parsing capability only:
+nothing consumes book content yet, and wiring it into the client's
+classification path waits for the order book. The choices worth recording:
+
+- **A repetition ends where the delimiter tag comes round again, never after a
+  fixed number of fields.** The delimiter is whatever tag follows NumInGroup,
+  so it is discovered rather than declared — `279` on a `35=X` entry, `269` on a
+  `35=W` one. A fixed stride would look right against the captured messages and
+  desynchronise the entire group the first time an exchange omits an optional
+  member, which is legal and needs no announcement. There is a test that omits
+  one `272` mid-group for exactly this reason.
+- **The entry shape is a parameter, not a guess.** The caller passes the member
+  tags, so `35=W` and `35=X` are two calls with two shapes rather than one
+  union that quietly tolerates both; the member set is what says where the
+  group *ends* (the first non-member tag). Per-entry lookup still returns
+  `nullopt` for a tag this entry does not carry, matching `parsed_message::get`,
+  because asking a snapshot entry for its `MDUpdateAction` is a fair question
+  with the answer "none".
+- **A NumInGroup that lies is salvaged and flagged, not rejected.** Fewer
+  repetitions present than declared yields the ones that are there with
+  `truncated()` true — the same split as framer-vs-parser: hand out what was
+  structurally recoverable, make the defect unmissable, let the client decide
+  what it means for the session. Nothing is sized or reserved from the declared
+  count, so a nine-digit NumInGroup costs a bounded scan rather than an
+  allocation. In the other direction NumInGroup is authoritative: extra
+  repetitions on the wire stay outside the group, so a stray member-tagged
+  field cannot be absorbed into it.
+- **Nested groups remain unsupported, deliberately.** Knowing which member tag
+  opens a sub-group needs a data dictionary, and no group either exchange sends
+  (`NoMDEntries`, `NoMDEntryTypes`, `NoRelatedSym`) nests. That is the whole of
+  the remaining limitation, and it is stated as such in `fix_message.h` rather
+  than left as a general "groups are not supported" warning.
 
 ## Consequences
 

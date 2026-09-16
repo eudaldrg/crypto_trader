@@ -40,6 +40,32 @@ std::string checksum_field(std::string_view digits) {
     return rendered;
 }
 
+/// A whole-value decimal integer, or nullopt. Whole-value matters: "12abc" is
+/// not 12 here, it is a field this code does not understand.
+std::optional<std::int64_t> to_int(std::string_view value) {
+    if (value.empty()) {
+        return std::nullopt;
+    }
+    std::int64_t parsed = 0;
+    const char* begin = value.data();
+    const char* end = value.data() + value.size();
+    const auto result = std::from_chars(begin, end, parsed);
+    if (result.ec != std::errc{} || result.ptr != end) {
+        return std::nullopt;
+    }
+    return parsed;
+}
+
+std::optional<std::string_view> first_value(std::span<const parsed_message::field_view> fields,
+                                            int tag_number) {
+    for (const auto& one : fields) {
+        if (one.tag == tag_number) {
+            return one.value;
+        }
+    }
+    return std::nullopt;
+}
+
 struct scanned_field {
     int tag = 0;
     std::string_view value;
@@ -169,27 +195,15 @@ std::span<const parsed_message::field_view> parsed_message::body_fields() const 
 }
 
 std::optional<std::string_view> parsed_message::get(int tag_number) const {
-    for (const auto& one : fields_) {
-        if (one.tag == tag_number) {
-            return one.value;
-        }
-    }
-    return std::nullopt;
+    return first_value(fields_, tag_number);
 }
 
 std::optional<std::int64_t> parsed_message::get_int(int tag_number) const {
     const auto value = get(tag_number);
-    if (!value || value->empty()) {
+    if (!value) {
         return std::nullopt;
     }
-    std::int64_t parsed = 0;
-    const char* begin = value->data();
-    const char* end = value->data() + value->size();
-    const auto result = std::from_chars(begin, end, parsed);
-    if (result.ec != std::errc{} || result.ptr != end) {
-        return std::nullopt;
-    }
-    return parsed;
+    return to_int(*value);
 }
 
 std::size_t parsed_message::count(int tag_number) const {
@@ -284,6 +298,84 @@ std::expected<parsed_message, std::string> parse_message(std::string_view raw) {
     }
 
     return message;
+}
+
+std::optional<std::string_view> group_entry::get(int tag_number) const {
+    return first_value(fields_, tag_number);
+}
+
+std::optional<std::int64_t> group_entry::get_int(int tag_number) const {
+    const auto value = get(tag_number);
+    if (!value) {
+        return std::nullopt;
+    }
+    return to_int(*value);
+}
+
+std::expected<repeating_group, std::string> read_group(const parsed_message& message, int count_tag,
+                                                       std::span<const int> member_tags) {
+    const auto fields = message.body_fields();
+    const auto count_at = std::ranges::find_if(
+        fields,
+        [count_tag](const parsed_message::field_view& one) { return one.tag == count_tag; });
+    if (count_at == fields.end()) {
+        return std::unexpected("fix: message has no NumInGroup field " + std::to_string(count_tag));
+    }
+
+    const auto declared = to_int(count_at->value);
+    if (!declared || *declared < 0) {
+        return std::unexpected("fix: NumInGroup field " + std::to_string(count_tag) +
+                               " is not a non-negative integer");
+    }
+
+    repeating_group group;
+    group.declared_count = static_cast<std::size_t>(*declared);
+
+    // Deliberately no reserve() on the declared count: it arrives from the
+    // wire, and sizing an allocation from an unvalidated peer-supplied number
+    // is how a one-byte typo becomes an out-of-memory. The vector grows to fit
+    // what is genuinely there instead.
+    if (group.declared_count == 0) {
+        return group;
+    }
+
+    const auto is_member = [member_tags](int tag_number) {
+        return std::ranges::find(member_tags, tag_number) != member_tags.end();
+    };
+
+    const auto group_start = static_cast<std::size_t>(count_at - fields.begin()) + 1;
+    if (group_start >= fields.size() || !is_member(fields[group_start].tag)) {
+        // A count that promises entries with nothing group-shaped behind it.
+        // Nothing to salvage, but truncated() now says so.
+        return group;
+    }
+
+    // The delimiter is whatever tag opens the first repetition -- 279 on 35=X,
+    // 269 on 35=W -- not something the caller has to declare and get wrong.
+    const int delimiter = fields[group_start].tag;
+
+    std::vector<std::size_t> entry_starts;
+    std::size_t offset = group_start;
+    while (offset < fields.size() && is_member(fields[offset].tag)) {
+        if (fields[offset].tag == delimiter) {
+            if (entry_starts.size() == group.declared_count) {
+                // NumInGroup is authoritative: whatever follows is outside the
+                // group, even though it is spelled like a member.
+                break;
+            }
+            entry_starts.push_back(offset);
+        }
+        ++offset;
+    }
+
+    group.entries.reserve(entry_starts.size());
+    for (std::size_t index = 0; index < entry_starts.size(); ++index) {
+        const std::size_t begin = entry_starts[index];
+        const std::size_t end =
+            (index + 1 < entry_starts.size()) ? entry_starts[index + 1] : offset;
+        group.entries.emplace_back(fields.subspan(begin, end - begin));
+    }
+    return group;
 }
 
 framer::framer(std::size_t max_body_length) : max_body_length_(max_body_length) {

@@ -30,6 +30,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <initializer_list>
 #include <optional>
 #include <span>
 #include <string>
@@ -81,7 +82,11 @@ inline constexpr int md_req_id = 262;
 inline constexpr int subscription_request_type = 263;
 inline constexpr int market_depth = 264;
 inline constexpr int no_md_entry_types = 267;
+inline constexpr int no_md_entries = 268;
 inline constexpr int md_entry_type = 269;
+inline constexpr int md_entry_px = 270;
+inline constexpr int md_entry_size = 271;
+inline constexpr int md_entry_date = 272;
 inline constexpr int md_update_action = 279;
 }  // namespace tag
 
@@ -144,14 +149,19 @@ std::string format_checksum(std::string_view bytes);
 /// that buffer is a `framer`'s, it stays valid only until the next
 /// append()/next_message() call.
 ///
-/// Repeating groups (NoMDEntryTypes/NoRelatedSym/the MD entry groups in 35=W
-/// and 35=X) are NOT structured here: this is a flat, ordered field list.
-/// `get()` deliberately returns the FIRST occurrence of a tag, which is right
-/// for the top-level session fields v1 needs and wrong for a group member.
-/// Anything walking groups must iterate `body_fields()` in order and track
-/// group boundaries itself. That is the corner being cut for v1; the ordered
-/// list is kept precisely so a real group parser can be layered on without
-/// re-parsing.
+/// The field list stays flat and ordered rather than being turned into a tree:
+/// `get()` returns the FIRST occurrence of a tag, which is right for the
+/// top-level session fields and meaningless for a tag that repeats inside a
+/// group. Repeating groups are read on top of this ordered list by
+/// `read_group()` below -- that is what the ordering is preserved for -- so a
+/// group member is reached through a `group_entry`, never through `get()`.
+///
+/// Still not supported, deliberately: nested groups (a group whose member is
+/// itself a NumInGroup field). `read_group()` handles one flat group, which is
+/// the shape every group this project meets actually has (exchanges/deribit.md:
+/// NoMDEntries, NoMDEntryTypes, NoRelatedSym). Building the general
+/// group-of-groups walker would need a data dictionary to know which tags nest,
+/// and nothing here has a use for one.
 class parsed_message {
   public:
     struct field_view {
@@ -169,7 +179,7 @@ class parsed_message {
     std::span<const field_view> body_fields() const;
 
     /// First value carrying `tag`, or nullopt. See the repeating-group caveat
-    /// above.
+    /// above: for a tag that repeats inside a group, use `read_group()`.
     std::optional<std::string_view> get(int tag) const;
 
     /// First value carrying `tag`, parsed as a decimal integer. nullopt if the
@@ -200,6 +210,126 @@ class parsed_message {
 /// match a recomputation. A message failing any of those is corrupt and comes
 /// back as an error rather than as partially-trusted fields.
 std::expected<parsed_message, std::string> parse_message(std::string_view raw);
+
+/// One repetition of a repeating group: a view over exactly the fields that
+/// belong to that repetition, in wire order.
+///
+/// Lookups are scoped to the repetition, which is the entire point -- the same
+/// tag means a different thing in every entry, so a message-wide `get()` cannot
+/// answer "this entry's MDEntryPx". A tag missing from this particular entry is
+/// nullopt rather than an error, because entries in a real group are not all
+/// the same shape: Deribit puts MDUpdateAction(279) on every 35=X entry and on
+/// no 35=W entry (exchanges/deribit.md), and even within one message an
+/// optional member may simply be absent.
+///
+/// Lifetime: a view into the `parsed_message` the group was read from, which is
+/// itself a view into the buffer that was parsed. Both must outlive it.
+class group_entry {
+  public:
+    group_entry() = default;
+    explicit group_entry(std::span<const parsed_message::field_view> fields) : fields_(fields) {}
+
+    /// This entry's fields, in wire order, starting with the delimiter tag.
+    std::span<const parsed_message::field_view> fields() const {
+        return fields_;
+    }
+
+    /// First value carrying `tag` within this entry, or nullopt.
+    std::optional<std::string_view> get(int tag) const;
+
+    /// As `get`, parsed as a decimal integer. nullopt if the tag is absent from
+    /// this entry or its value is not a well-formed integer.
+    std::optional<std::int64_t> get_int(int tag) const;
+
+    std::size_t size() const {
+        return fields_.size();
+    }
+
+  private:
+    std::span<const parsed_message::field_view> fields_;
+};
+
+/// The entries of one repeating group, in wire order.
+struct repeating_group {
+    std::vector<group_entry> entries;
+
+    /// What NumInGroup claimed. Equal to `entries.size()` on a well-formed
+    /// message; larger when the message lied (see `read_group`).
+    std::size_t declared_count = 0;
+
+    /// True when fewer repetitions were actually on the wire than NumInGroup
+    /// claimed -- i.e. the message is malformed and `entries` is what could be
+    /// salvaged from it.
+    bool truncated() const {
+        return entries.size() < declared_count;
+    }
+
+    std::size_t size() const {
+        return entries.size();
+    }
+    bool empty() const {
+        return entries.empty();
+    }
+    const group_entry& operator[](std::size_t index) const {
+        return entries[index];
+    }
+    auto begin() const {
+        return entries.begin();
+    }
+    auto end() const {
+        return entries.end();
+    }
+};
+
+/// Reads the flat repeating group introduced by the NumInGroup field
+/// `count_tag` (e.g. NoMDEntries(268)), whose repetitions are made of
+/// `member_tags`.
+///
+/// A free function rather than a `parsed_message` member on purpose: the parser
+/// keeps producing one flat ordered list and knows nothing about groups, and
+/// this layers on top of that list without re-parsing -- which is exactly what
+/// preserving wire order buys.
+///
+/// How a repetition's boundary is found, and why it is not a field count: the
+/// group's *delimiter* is the first tag that appears after NumInGroup, and a
+/// new repetition starts at every later occurrence of it. Counting a fixed
+/// number of fields per entry would desynchronise the whole group the first
+/// time an exchange omits an optional member or adds one, which is a normal,
+/// legal thing for it to do. `member_tags` only says where the group *ends* --
+/// the first tag that is not a member terminates it -- so the two message
+/// shapes Deribit sends are just two calls with different member sets, and the
+/// caller never has to pretend 35=W and 35=X have the same entry layout.
+///
+/// Malformed input is salvaged, not rejected, and the caller is told: a
+/// NumInGroup larger than the number of repetitions actually present yields the
+/// entries that *are* there with `truncated()` true, never an out-of-bounds
+/// read and never an unbounded loop (nothing is sized or reserved from the
+/// declared count; the scan is bounded by the field list). That mirrors the
+/// framer/parser split -- hand out what was structurally recoverable, flag the
+/// defect, let the client decide what it means for the session -- and leaves
+/// the entries inspectable, which turning it into an error would not.
+/// NumInGroup is authoritative in the other direction too: if more repetitions
+/// are on the wire than it declares, only the declared ones are returned and
+/// the rest are left as ordinary trailing fields, so a stray member-tagged
+/// field after the group cannot be absorbed into it.
+///
+/// Errors (rather than empty results) are reserved for "this is not a group at
+/// all": no `count_tag` field in the message, or a NumInGroup value that is not
+/// a non-negative integer. A declared count of zero is a valid, empty group.
+///
+/// If `count_tag` occurs more than once, the first occurrence wins -- two
+/// groups sharing a NumInGroup tag in one message does not happen on this wire.
+std::expected<repeating_group, std::string> read_group(const parsed_message& message, int count_tag,
+                                                       std::span<const int> member_tags);
+
+/// Convenience overload so call sites can write the member tags inline:
+/// `read_group(msg, tag::no_md_entries, {tag::md_update_action, ...})`.
+/// std::span is not constructible from a braced list until C++26.
+inline std::expected<repeating_group, std::string> read_group(
+    const parsed_message& message, int count_tag, std::initializer_list<int> member_tags) {
+    return read_group(message, count_tag,
+                      std::span<const int>(member_tags.begin(), member_tags.size()));
+}
 
 /// Reassembles whole FIX messages from a stream that arrives in arbitrary
 /// chunks.
