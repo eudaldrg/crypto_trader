@@ -160,9 +160,10 @@ class fix_client {
     /// Idempotent.
     void stop();
 
-    /// True when capture cannot continue (a journal file could not be opened).
-    /// The owning process should exit rather than stay connected while
-    /// discarding the data it exists to collect.
+    /// True when capture cannot continue: a journal file could not be opened,
+    /// or a write into an open one failed. The owning process should exit
+    /// rather than stay connected while discarding the data it exists to
+    /// collect.
     bool fatal() const {
         return fatal_.load(std::memory_order_acquire);
     }
