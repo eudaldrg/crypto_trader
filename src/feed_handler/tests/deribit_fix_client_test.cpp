@@ -126,6 +126,13 @@ constexpr int kTrickleIntervalMs = 5;
 constexpr int kBusyRecvTimeoutMs = 500;
 constexpr int kHeartbeatDeadlineMs = 4'000;
 
+/// The shutdown-promptness test's clocks: a backoff long enough that sleeping
+/// through it is unmistakable, a bound far below it, and enough attempts to give
+/// the stop()-versus-wait race a fair number of chances to be lost.
+constexpr std::uint64_t kStuckBackoffMs = 10'000;
+constexpr int kPromptStopMs = 1'000;
+constexpr int kStopRaceAttempts = 20;
+
 /// The sockaddr_in -> sockaddr cast every BSD-socket call needs, in one place.
 /// reinterpret_cast rather than the std::bit_cast used elsewhere in this
 /// project: bit_cast between pointer types is itself a lint finding
@@ -816,4 +823,43 @@ TEST_F(DeribitFixLoopback, SendsItsScheduledHeartbeatWhileInboundDataKeepsFlowin
     EXPECT_FALSE(parsed->get(tag::test_req_id).has_value());
 
     client.stop();
+}
+
+TEST_F(DeribitFixLoopback, StopsPromptlyWhileWaitingOutTheReconnectBackoff) {
+    // A notify_all() issued without holding stop_mutex_ can land in the window
+    // between a waiter evaluating the predicate and its wait actually
+    // registering, and the wakeup is then delivered to nobody. Not a deadlock --
+    // the timeout still expires -- but shutdown then sleeps out the whole
+    // backoff, up to max_reconnect_wait_ms (30s in production). A true race
+    // cannot be hit on demand, so what is asserted is the property the fix
+    // guarantees: stop() is bounded well below the wait it interrupts, every
+    // time, with each attempt racing stop() against the thread entering that
+    // wait.
+    server_.stop_listening();  // Every connect() is refused immediately, so the
+                               // thread is in the backoff wait and nowhere else.
+    fix_client_config cfg = loopback_config();
+    cfg.min_reconnect_wait_ms = kStuckBackoffMs;
+    cfg.max_reconnect_wait_ms = kStuckBackoffMs;
+
+    for (int attempt = 0; attempt < kStopRaceAttempts; ++attempt) {
+        capture_session capture({.directory = dir_, .exchange = "deribit"});
+        fix_client client(test_config(), capture, cfg);
+        client.start();
+
+        const auto give_up =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(kStepTimeoutMs);
+        while (client.connection_attempts() == 0 && std::chrono::steady_clock::now() < give_up) {
+            std::this_thread::yield();
+        }
+        ASSERT_GE(client.connection_attempts(), 1U) << "the client never tried to connect";
+
+        const auto before = std::chrono::steady_clock::now();
+        client.stop();
+        const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - before)
+                                    .count();
+        ASSERT_LT(elapsed_ms, kPromptStopMs)
+            << "stop() took " << elapsed_ms << "ms on attempt " << attempt << ": it waited out the "
+            << kStuckBackoffMs << "ms backoff instead of being woken";
+    }
 }

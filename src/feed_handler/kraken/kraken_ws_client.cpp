@@ -202,8 +202,17 @@ void ws_client::start() {
 }
 
 void ws_client::stop() {
-    if (stopping_.exchange(true, std::memory_order_acq_rel)) {
-        return;
+    {
+        // Under the mutex for the same reason latch_fatal() is: the watchdog
+        // thread checks this flag under it, and a store made outside it can be
+        // lost in the gap between that check and the wait, which would leave
+        // shutdown waiting out a whole poll interval or backoff. The join stays
+        // outside the lock -- the thread it waits for needs this mutex to
+        // notice.
+        const std::lock_guard<std::mutex> lock(stop_mutex_);
+        if (stopping_.exchange(true, std::memory_order_acq_rel)) {
+            return;
+        }
     }
     stop_cv_.notify_all();
     if (watchdog_thread_.joinable()) {
@@ -256,8 +265,7 @@ void ws_client::handle_open() {
         // Staying connected while unable to capture would silently throw away
         // the data this process exists to collect.
         log_error("cannot start capture: " + path.error());
-        fatal_.store(true, std::memory_order_release);
-        stop_cv_.notify_all();
+        latch_fatal();
         return;
     }
 
@@ -287,8 +295,7 @@ void ws_client::handle_message(const std::string& payload) {
             // journal_message -- capturing nothing while looking healthy is the
             // one outcome this process must not have.
             log_error("journal write failed: " + std::string(reason));
-            fatal_.store(true, std::memory_order_release);
-            stop_cv_.notify_all();
+            latch_fatal();
         }
     }
 
@@ -381,6 +388,17 @@ bool ws_client::wait_for_stop(std::uint64_t millis) {
     return stop_cv_.wait_for(lock, std::chrono::milliseconds(millis), [this] {
         return stopping_.load(std::memory_order_acquire) || fatal();
     });
+}
+
+void ws_client::latch_fatal() {
+    {
+        const std::lock_guard<std::mutex> lock(stop_mutex_);
+        fatal_.store(true, std::memory_order_release);
+    }
+    // Both callers run on IXWebSocket's thread, which holds stop_mutex_ only
+    // inside wait_for_stop() and never across one of these calls, so taking it
+    // here cannot self-deadlock.
+    stop_cv_.notify_all();
 }
 
 }  // namespace feed_handler::kraken

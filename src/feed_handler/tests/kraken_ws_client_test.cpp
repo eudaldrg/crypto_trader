@@ -19,7 +19,9 @@
 #include <unistd.h>
 
 #include <bit>
+#include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <span>
 #include <string>
@@ -71,6 +73,18 @@ constexpr std::string_view kUpdate =
     R"({"event":"add","order_id":"OZ2CPT-5QN7T-PD4B4C","limit_price":115000.0,)"
     R"("order_qty":0.1,"timestamp":"2026-09-16T21:30:01.000000Z"}],"asks":[],)"
     R"("checksum":1671312190}]})";
+
+/// The shutdown-promptness test's clocks. The watchdog poll interval is what
+/// stop() has to interrupt, the bound is far below it, and the library's own
+/// reconnect bounds are turned right down so nothing but this client's own
+/// condition variable can be responsible for the difference.
+constexpr std::uint64_t kLongWatchdogPollMs = 10'000;
+constexpr int kPromptStopMs = 2'000;
+constexpr int kStopRaceAttempts = 10;
+
+/// Nothing listens on port 1, so IXWebSocket's connect is refused at once and
+/// no Open event -- hence no signed REST token call -- can ever happen.
+constexpr std::string_view kUnreachableUrl = "ws://127.0.0.1:1";
 
 /// Never a real Kraken credential: nothing in these tests makes a REST call.
 feed_handler::kraken::credentials test_credentials() {
@@ -226,4 +240,44 @@ TEST_F(KrakenCapture, DoesNotEndTheProcessOverAMessageThatArrivedBeforeTheFirstI
 
     EXPECT_FALSE(client.fatal());
     EXPECT_EQ(session.total_records_written(), 0U);
+}
+
+TEST_F(KrakenCapture, StopsPromptlyWhileTheWatchdogIsWaitingOutItsPollInterval) {
+    // A notify_all() issued without holding stop_mutex_ can land in the window
+    // between the watchdog evaluating the predicate and its wait actually
+    // registering, and the wakeup is then delivered to nobody -- shutdown
+    // sleeps out the rest of the wait instead. A race cannot be hit on demand,
+    // so what is asserted is the property the fix guarantees: stop() is bounded
+    // well below the wait it interrupts, every time.
+    //
+    // This covers the notify in stop() only. Kraken's other two wakeup sites
+    // (a journal failure in handle_open/handle_message unblocking the watchdog)
+    // are reachable from a live connection, which IXWebSocket owns end to end --
+    // there is no loopback harness for them the way there is for Deribit.
+    feed_handler::kraken::ws_client_config cfg;
+    cfg.url = std::string(kUnreachableUrl);
+    // Ten seconds of watchdog sleep is what stop() must cut short; the
+    // library's own retry bounds are kept tiny so its reconnect backoff cannot
+    // be mistaken for this client's.
+    cfg.watchdog_poll_ms = kLongWatchdogPollMs;
+    cfg.min_reconnect_wait_ms = 10;
+    cfg.max_reconnect_wait_ms = 50;
+
+    for (int attempt = 0; attempt < kStopRaceAttempts; ++attempt) {
+        capture_session session({.directory = dir_, .exchange = "kraken"});
+        ws_client client(rest_, test_credentials(), session, cfg);
+        // start() launches the watchdog thread, which goes straight into its
+        // first poll wait -- stopping right behind it is the race worth
+        // bounding.
+        client.start();
+
+        const auto before = std::chrono::steady_clock::now();
+        client.stop();
+        const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - before)
+                                    .count();
+        ASSERT_LT(elapsed_ms, kPromptStopMs)
+            << "stop() took " << elapsed_ms << "ms on attempt " << attempt
+            << ": the watchdog waited out its " << kLongWatchdogPollMs << "ms poll interval";
+    }
 }
