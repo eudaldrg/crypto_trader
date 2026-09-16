@@ -17,8 +17,11 @@ first vertical slice of the feed handler in `src/feed_handler/` — the
 auth / `AssetPairs` client, the Kraken `level3` WebSocket client, and the
 `kraken_feed_handler` binary that captures live market data to a journal
 (`KRAKEN_API_KEY`/`KRAKEN_API_SECRET` from the environment, journals into
-`./journal/`, runs until SIGINT). No order book or strategy code has landed
-yet. `decisions/` holds the locked-in ADRs; the rest of the design is
+`./journal/`, runs until SIGINT). The second exchange backend has started:
+`src/feed_handler/fix/` (generic hand-rolled FIX.4.4 builder/parser/framer)
+and `src/feed_handler/deribit/` (Logon/MarketDataRequest/Heartbeat
+construction and session sequence tracking) exist as pure logic — no socket,
+no journal wiring yet. No order book or strategy code has landed yet. `decisions/` holds the locked-in ADRs; the rest of the design is
 intentionally unspecified and will be worked out in future sessions — don't
 assume unwritten components exist.
 

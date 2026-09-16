@@ -42,9 +42,26 @@ secondary/future target (real market data here is L2, not L3).
 - `35=X` `MarketDataIncrementalRefresh` — incremental updates, per-entry
   `MDUpdateAction`: `0` = New, `1` = Change, `2` = Delete.
 
+### Session keepalive and sequencing
+
+- `HeartBtInt(108)=30` is what the accepted Logon negotiates, so the client
+  owes a `Heartbeat` (`35=0`) every 30s of outbound silence, and owes an
+  immediate `Heartbeat` echoing `TestReqID(112)` whenever the server sends a
+  `TestRequest` (`35=1`). An unanswered `TestRequest` ends the session.
+- `MsgSeqNum(34)` starts at 1 in each direction for each new session. The
+  probe sent no `ResetSeqNumFlag(141)` and Deribit accepted a session
+  beginning at 1 regardless, so a reconnect just starts counting again.
+- The FIX envelope itself (`8=FIX.4.4`, `9=<BodyLength>`, `10=<CheckSum>`) is
+  standard FIX.4.4, not a Deribit quirk — see
+  `src/feed_handler/fix/fix_message.h` for the exact arithmetic. One value
+  Deribit actually sends that the arithmetic has to survive: `RawData(96)` and
+  `Password(554)` are base64 and routinely contain `=`, so a field is split on
+  its *first* `=` only.
+
 Two independent sequencing layers to be aware of when building the real
-client: FIX session-level `MsgSeqNum` (transport reliability —
-`ResendRequest`/`SequenceReset` handle gaps at this layer) and the MD-level
+client: FIX session-level `MsgSeqNum` (transport reliability — standard FIX
+repairs gaps here with `ResendRequest`/`SequenceReset`, though this project
+deliberately does not; see `decisions/0004`) and the MD-level
 snapshot/incremental structure above (business-level). Neither is the same
 mechanism as Kraken's checksum approach.
 
