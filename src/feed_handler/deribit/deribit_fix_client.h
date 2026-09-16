@@ -50,9 +50,10 @@
 namespace feed_handler::deribit {
 
 /// What an inbound message is, to the extent this build needs to know. Book
-/// content is deliberately not parsed: v1 journals raw bytes, and reading a
-/// 35=W/35=X entry list needs the repeating-group parser fix_message.h flags as
-/// the corner cut for v1.
+/// content is deliberately not parsed here even though `fix::read_group()` can
+/// now read a 35=W/35=X entry list: journaling raw bytes is v1's whole job,
+/// and turning entries into order-book state is future work, not a parser
+/// limitation anymore (fix_message.h).
 enum class inbound_kind : std::uint8_t {
     unknown,
     logon_ack,
