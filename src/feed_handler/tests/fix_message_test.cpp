@@ -14,6 +14,7 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -29,6 +30,7 @@ using feed_handler::fix::format_utc_timestamp;
 using feed_handler::fix::framer;
 using feed_handler::fix::kSoh;
 using feed_handler::fix::parse_message;
+using feed_handler::fix::read_group;
 using feed_handler::fix::session_header;
 namespace tag = feed_handler::fix::tag;
 
@@ -70,6 +72,80 @@ session_header header_for(std::string_view msg_type, std::uint64_t seq_num) {
 
 std::span<const std::byte> bytes_of(std::string_view text) {
     return {std::bit_cast<const std::byte*>(text.data()), text.size()};
+}
+
+// --- Market-data repeating groups -----------------------------------------
+//
+// The messages below reproduce the tag layout `exchanges/deribit.md` records
+// from the live testnet capture, not a plausible-looking invention: above the
+// entry group come 55, 231, 746 and Deribit's custom 100087/100090 (plus
+// 100092/100093 on 35=W only), then 262 and 268; each entry is
+// 269/270/271/272, preceded by 279 on 35=X only.
+
+/// Tags this project only has to skip past, so they are named here rather than
+/// in fix::tag. 746 is documented in exchanges/deribit.md by number alone.
+constexpr int kContractMultiplier = 231;
+constexpr int kTag746 = 746;
+constexpr int kDeribitTag100087 = 100087;
+constexpr int kDeribitTag100090 = 100090;
+constexpr int kDeribitTag100092 = 100092;
+constexpr int kDeribitTag100093 = 100093;
+
+constexpr std::array kSnapshotEntryTags = {tag::md_entry_type, tag::md_entry_px, tag::md_entry_size,
+                                           tag::md_entry_date};
+constexpr std::array kIncrementalEntryTags = {tag::md_update_action, tag::md_entry_type,
+                                              tag::md_entry_px, tag::md_entry_size,
+                                              tag::md_entry_date};
+
+/// One MD entry to render. An empty member is omitted from the message, which
+/// is how both the 35=W/35=X shape difference (no 279 on a snapshot entry) and
+/// a merely-absent optional member are expressed.
+struct md_entry {
+    std::string_view update_action;  // 279, 35=X only
+    std::string_view entry_type;     // 269
+    std::string_view price;          // 270
+    std::string_view size;           // 271
+    std::string_view date;           // 272
+};
+
+void append_if_present(std::vector<field>& fields, int tag_number, std::string_view value) {
+    if (!value.empty()) {
+        fields.push_back({.tag = tag_number, .value = std::string(value)});
+    }
+}
+
+/// A `35=W` or `35=X` for BTC-PERPETUAL. `declared_count` overrides the value
+/// put in NoMDEntries(268), which is how a message that lies about its own
+/// count is built.
+std::string md_message(std::string_view message_type, std::span<const md_entry> entries,
+                       std::optional<int> declared_count = std::nullopt,
+                       std::span<const field> trailing = {}) {
+    const bool is_snapshot = message_type == "W";
+    std::vector<field> body = {
+        {.tag = tag::symbol, .value = "BTC-PERPETUAL"},
+        {.tag = kContractMultiplier, .value = "10"},
+        {.tag = kTag746, .value = "0"},
+        {.tag = kDeribitTag100087, .value = "1"},
+        {.tag = kDeribitTag100090, .value = "2"},
+    };
+    if (is_snapshot) {
+        body.push_back({.tag = kDeribitTag100092, .value = "3"});
+        body.push_back({.tag = kDeribitTag100093, .value = "4"});
+    }
+    body.push_back({.tag = tag::md_req_id, .value = "req-1"});
+    body.push_back(
+        {.tag = tag::no_md_entries,
+         .value = std::to_string(declared_count.value_or(static_cast<int>(entries.size())))});
+
+    for (const auto& entry : entries) {
+        append_if_present(body, tag::md_update_action, entry.update_action);
+        append_if_present(body, tag::md_entry_type, entry.entry_type);
+        append_if_present(body, tag::md_entry_px, entry.price);
+        append_if_present(body, tag::md_entry_size, entry.size);
+        append_if_present(body, tag::md_entry_date, entry.date);
+    }
+    body.insert(body.end(), trailing.begin(), trailing.end());
+    return build_message(header_for(message_type, 2), body);
 }
 
 }  // namespace
@@ -146,8 +222,9 @@ TEST(FixParser, RoundTripsEveryFieldInOrder) {
 }
 
 TEST(FixParser, GetReturnsTheFirstOccurrenceOfARepeatedTag) {
-    // The documented v1 corner cut: no repeating-group structure, so a group
-    // member must be reached through the ordered field list, not get().
+    // Unchanged by the group reader and deliberately so: get() answers about
+    // the message, so for a tag that repeats inside a group its answer is
+    // arbitrary. A group member is reached through read_group(), never here.
     const std::array<field, 3> body = {
         field{.tag = tag::no_md_entry_types, .value = "2"},
         field{.tag = tag::md_entry_type, .value = "0"},
@@ -330,4 +407,318 @@ TEST(FixFramer, LeavesCheckSumValidationToTheParser) {
     ASSERT_TRUE(framed.has_value());
     EXPECT_TRUE(stream.good());
     EXPECT_FALSE(parse_message(*framed).has_value());
+}
+
+TEST(FixGroup, ReadsEveryEntryOfASnapshotInOrder) {
+    const std::array<md_entry, 3> entries = {
+        md_entry{.update_action = "",
+                 .entry_type = "0",
+                 .price = "64000.5",
+                 .size = "10",
+                 .date = "20260916"},
+        md_entry{.update_action = "",
+                 .entry_type = "0",
+                 .price = "63999.0",
+                 .size = "250",
+                 .date = "20260916"},
+        md_entry{.update_action = "",
+                 .entry_type = "1",
+                 .price = "64001.0",
+                 .size = "7",
+                 .date = "20260916"},
+    };
+    const auto parsed = parse_message(md_message("W", entries));
+    ASSERT_TRUE(parsed.has_value()) << parsed.error();
+
+    const auto group = read_group(*parsed, tag::no_md_entries, kSnapshotEntryTags);
+    ASSERT_TRUE(group.has_value()) << group.error();
+    ASSERT_EQ(group->size(), entries.size());
+    EXPECT_EQ(group->declared_count, entries.size());
+    EXPECT_FALSE(group->truncated());
+
+    for (std::size_t index = 0; index < entries.size(); ++index) {
+        const auto& entry = (*group)[index];
+        EXPECT_EQ(entry.get(tag::md_entry_type), entries[index].entry_type) << "at " << index;
+        EXPECT_EQ(entry.get(tag::md_entry_px), entries[index].price) << "at " << index;
+        EXPECT_EQ(entry.get(tag::md_entry_size), entries[index].size) << "at " << index;
+        EXPECT_EQ(entry.get(tag::md_entry_date), entries[index].date) << "at " << index;
+        // A snapshot entry has no MDUpdateAction: absent, not an error.
+        EXPECT_FALSE(entry.get(tag::md_update_action).has_value()) << "at " << index;
+        EXPECT_EQ(entry.size(), kSnapshotEntryTags.size());
+    }
+    EXPECT_EQ((*group)[1].get_int(tag::md_entry_size), 250);
+}
+
+TEST(FixGroup, ReadsIncrementalEntriesWithTheirUpdateActions) {
+    // 0 = New, 1 = Change, 2 = Delete -- all three observed live
+    // (exchanges/deribit.md).
+    const std::array<md_entry, 3> entries = {
+        md_entry{.update_action = "0",
+                 .entry_type = "0",
+                 .price = "64000.5",
+                 .size = "10",
+                 .date = "20260916"},
+        md_entry{.update_action = "1",
+                 .entry_type = "1",
+                 .price = "64001.0",
+                 .size = "3",
+                 .date = "20260916"},
+        md_entry{.update_action = "2",
+                 .entry_type = "0",
+                 .price = "63998.0",
+                 .size = "0",
+                 .date = "20260916"},
+    };
+    const auto parsed = parse_message(md_message("X", entries));
+    ASSERT_TRUE(parsed.has_value()) << parsed.error();
+
+    const auto group = read_group(*parsed, tag::no_md_entries, kIncrementalEntryTags);
+    ASSERT_TRUE(group.has_value()) << group.error();
+    ASSERT_EQ(group->size(), 3U);
+
+    std::vector<std::int64_t> actions;
+    for (const auto& entry : *group) {
+        const auto action = entry.get_int(tag::md_update_action);
+        ASSERT_TRUE(action.has_value());
+        actions.push_back(*action);
+        // 279 leads an incremental entry, so it is this group's delimiter.
+        EXPECT_EQ(entry.fields().front().tag, tag::md_update_action);
+        EXPECT_EQ(entry.size(), kIncrementalEntryTags.size());
+    }
+    EXPECT_EQ(actions, (std::vector<std::int64_t>{0, 1, 2}));
+    EXPECT_EQ((*group)[1].get(tag::md_entry_px), "64001.0");
+    EXPECT_EQ((*group)[2].get(tag::md_entry_size), "0");
+}
+
+TEST(FixGroup, FindsBoundariesByTheDelimiterTagNotByAFixedStride) {
+    // The entry in the middle omits MDEntryDate(272). A reader that assumed
+    // four fields per entry would shift every later entry by one field and
+    // report the wrong prices -- silently, and only on some messages.
+    const std::array<md_entry, 3> entries = {
+        md_entry{.update_action = "",
+                 .entry_type = "0",
+                 .price = "1.0",
+                 .size = "1",
+                 .date = "20260916"},
+        md_entry{.update_action = "", .entry_type = "0", .price = "2.0", .size = "2", .date = ""},
+        md_entry{.update_action = "",
+                 .entry_type = "1",
+                 .price = "3.0",
+                 .size = "3",
+                 .date = "20260916"},
+    };
+    const auto parsed = parse_message(md_message("W", entries));
+    ASSERT_TRUE(parsed.has_value()) << parsed.error();
+
+    const auto group = read_group(*parsed, tag::no_md_entries, kSnapshotEntryTags);
+    ASSERT_TRUE(group.has_value()) << group.error();
+    ASSERT_EQ(group->size(), 3U);
+    EXPECT_EQ((*group)[0].get(tag::md_entry_px), "1.0");
+    EXPECT_EQ((*group)[1].get(tag::md_entry_px), "2.0");
+    EXPECT_FALSE((*group)[1].get(tag::md_entry_date).has_value());
+    EXPECT_EQ((*group)[1].size(), 3U);
+    EXPECT_EQ((*group)[2].get(tag::md_entry_px), "3.0");
+    EXPECT_EQ((*group)[2].get(tag::md_entry_date), "20260916");
+}
+
+TEST(FixGroup, ReadsASingleEntryGroup) {
+    // The commonest incremental refresh on the wire carries exactly one entry.
+    const std::array<md_entry, 1> entries = {
+        md_entry{.update_action = "1",
+                 .entry_type = "0",
+                 .price = "64000.5",
+                 .size = "12",
+                 .date = "20260916"},
+    };
+    const auto parsed = parse_message(md_message("X", entries));
+    ASSERT_TRUE(parsed.has_value()) << parsed.error();
+
+    const auto group = read_group(*parsed, tag::no_md_entries, kIncrementalEntryTags);
+    ASSERT_TRUE(group.has_value()) << group.error();
+    ASSERT_EQ(group->size(), 1U);
+    EXPECT_FALSE(group->truncated());
+    EXPECT_EQ(group->entries.front().get(tag::md_entry_size), "12");
+}
+
+TEST(FixGroup, ReadsAZeroEntryGroupAsEmptyRatherThanAnError) {
+    const auto parsed = parse_message(md_message("X", std::span<const md_entry>{}));
+    ASSERT_TRUE(parsed.has_value()) << parsed.error();
+    EXPECT_EQ(parsed->get(tag::no_md_entries), "0");
+
+    const auto group = read_group(*parsed, tag::no_md_entries, kIncrementalEntryTags);
+    ASSERT_TRUE(group.has_value()) << group.error();
+    EXPECT_TRUE(group->empty());
+    EXPECT_EQ(group->declared_count, 0U);
+    EXPECT_FALSE(group->truncated());
+}
+
+TEST(FixGroup, StopsAtTheFirstTagThatIsNotAGroupMember) {
+    const std::array<md_entry, 2> entries = {
+        md_entry{.update_action = "",
+                 .entry_type = "0",
+                 .price = "1.0",
+                 .size = "1",
+                 .date = "20260916"},
+        md_entry{.update_action = "",
+                 .entry_type = "1",
+                 .price = "2.0",
+                 .size = "2",
+                 .date = "20260916"},
+    };
+    const std::array<field, 1> trailing = {field{.tag = tag::text, .value = "after the group"}};
+    const auto parsed = parse_message(md_message("W", entries, std::nullopt, trailing));
+    ASSERT_TRUE(parsed.has_value()) << parsed.error();
+
+    const auto group = read_group(*parsed, tag::no_md_entries, kSnapshotEntryTags);
+    ASSERT_TRUE(group.has_value()) << group.error();
+    ASSERT_EQ(group->size(), 2U);
+    EXPECT_EQ(group->entries.back().size(), kSnapshotEntryTags.size());
+    EXPECT_EQ(parsed->get(tag::text), "after the group");
+}
+
+TEST(FixGroup, SalvagesTheEntriesAMessageActuallyCarriesWhenNumInGroupLies) {
+    // NoMDEntries claims five, two are present: return the two and say the
+    // message was short, rather than reading past the end of the field list or
+    // throwing away data the caller could still inspect.
+    const std::array<md_entry, 2> entries = {
+        md_entry{.update_action = "0",
+                 .entry_type = "0",
+                 .price = "1.0",
+                 .size = "1",
+                 .date = "20260916"},
+        md_entry{.update_action = "2",
+                 .entry_type = "1",
+                 .price = "2.0",
+                 .size = "0",
+                 .date = "20260916"},
+    };
+    const auto parsed = parse_message(md_message("X", entries, 5));
+    ASSERT_TRUE(parsed.has_value()) << parsed.error();
+
+    const auto group = read_group(*parsed, tag::no_md_entries, kIncrementalEntryTags);
+    ASSERT_TRUE(group.has_value()) << group.error();
+    ASSERT_EQ(group->size(), 2U);
+    EXPECT_EQ(group->declared_count, 5U);
+    EXPECT_TRUE(group->truncated());
+    EXPECT_EQ((*group)[0].get(tag::md_entry_px), "1.0");
+    EXPECT_EQ((*group)[1].get(tag::md_entry_px), "2.0");
+}
+
+TEST(FixGroup, SurvivesAnAbsurdNumInGroupWithoutAllocatingForIt) {
+    // The out-of-memory shape of the same lie: nothing may be sized from the
+    // declared count. A hang or a bad_alloc here is the failure.
+    const std::array<md_entry, 1> entries = {
+        md_entry{.update_action = "",
+                 .entry_type = "0",
+                 .price = "1.0",
+                 .size = "1",
+                 .date = "20260916"},
+    };
+    const auto parsed = parse_message(md_message("W", entries, 1'000'000'000));
+    ASSERT_TRUE(parsed.has_value()) << parsed.error();
+
+    const auto group = read_group(*parsed, tag::no_md_entries, kSnapshotEntryTags);
+    ASSERT_TRUE(group.has_value()) << group.error();
+    EXPECT_EQ(group->size(), 1U);
+    EXPECT_TRUE(group->truncated());
+}
+
+TEST(FixGroup, TreatsNumInGroupAsAuthoritativeWhenMoreEntriesAreOnTheWire) {
+    // Three entries, a count of two: the third is outside the group as far as
+    // the message's own declaration is concerned, and must not be swept in.
+    const std::array<md_entry, 3> entries = {
+        md_entry{.update_action = "",
+                 .entry_type = "0",
+                 .price = "1.0",
+                 .size = "1",
+                 .date = "20260916"},
+        md_entry{.update_action = "",
+                 .entry_type = "0",
+                 .price = "2.0",
+                 .size = "2",
+                 .date = "20260916"},
+        md_entry{.update_action = "",
+                 .entry_type = "1",
+                 .price = "3.0",
+                 .size = "3",
+                 .date = "20260916"},
+    };
+    const auto parsed = parse_message(md_message("W", entries, 2));
+    ASSERT_TRUE(parsed.has_value()) << parsed.error();
+
+    const auto group = read_group(*parsed, tag::no_md_entries, kSnapshotEntryTags);
+    ASSERT_TRUE(group.has_value()) << group.error();
+    ASSERT_EQ(group->size(), 2U);
+    EXPECT_FALSE(group->truncated());
+    EXPECT_EQ((*group)[1].get(tag::md_entry_px), "2.0");
+}
+
+TEST(FixGroup, ReadsNothingWhenAskedForTheWrongEntryShape) {
+    // 35=X entries open with 279, which the 35=W member set does not contain,
+    // so the group is reported empty-and-short rather than mis-parsed. The
+    // shape belongs to the call, not to a guess made inside the reader.
+    const std::array<md_entry, 2> entries = {
+        md_entry{.update_action = "0",
+                 .entry_type = "0",
+                 .price = "1.0",
+                 .size = "1",
+                 .date = "20260916"},
+        md_entry{.update_action = "1",
+                 .entry_type = "1",
+                 .price = "2.0",
+                 .size = "2",
+                 .date = "20260916"},
+    };
+    const auto parsed = parse_message(md_message("X", entries));
+    ASSERT_TRUE(parsed.has_value()) << parsed.error();
+
+    const auto group = read_group(*parsed, tag::no_md_entries, kSnapshotEntryTags);
+    ASSERT_TRUE(group.has_value()) << group.error();
+    EXPECT_TRUE(group->empty());
+    EXPECT_TRUE(group->truncated());
+}
+
+TEST(FixGroup, ReadsTheOtherGroupsAMarketDataRequestCarries) {
+    // NoMDEntryTypes(267) is a one-member group -- delimiter and entry are the
+    // same tag -- and the reader must not need a second member to find its
+    // boundaries.
+    const std::array<field, 5> body = {
+        field{.tag = tag::no_md_entry_types, .value = "2"},
+        field{.tag = tag::md_entry_type, .value = "0"},
+        field{.tag = tag::md_entry_type, .value = "1"},
+        field{.tag = tag::no_related_sym, .value = "1"},
+        field{.tag = tag::symbol, .value = "BTC-PERPETUAL"},
+    };
+    const auto parsed = parse_message(build_message(header_for("V", 3), body));
+    ASSERT_TRUE(parsed.has_value()) << parsed.error();
+
+    const auto types = read_group(*parsed, tag::no_md_entry_types, {tag::md_entry_type});
+    ASSERT_TRUE(types.has_value()) << types.error();
+    ASSERT_EQ(types->size(), 2U);
+    EXPECT_EQ((*types)[0].get(tag::md_entry_type), "0");
+    EXPECT_EQ((*types)[1].get(tag::md_entry_type), "1");
+
+    const auto symbols = read_group(*parsed, tag::no_related_sym, {tag::symbol});
+    ASSERT_TRUE(symbols.has_value()) << symbols.error();
+    ASSERT_EQ(symbols->size(), 1U);
+    EXPECT_EQ(symbols->entries.front().get(tag::symbol), "BTC-PERPETUAL");
+}
+
+TEST(FixGroup, FailsOnlyWhenThereIsNoGroupToRead) {
+    const auto parsed = parse_message(wire(kHandVerified));
+    ASSERT_TRUE(parsed.has_value()) << parsed.error();
+
+    const auto missing = read_group(*parsed, tag::no_md_entries, kSnapshotEntryTags);
+    ASSERT_FALSE(missing.has_value());
+    EXPECT_NE(missing.error().find("NumInGroup"), std::string::npos) << missing.error();
+
+    const std::array<field, 2> body = {
+        field{.tag = tag::no_md_entries, .value = "two"},
+        field{.tag = tag::md_entry_type, .value = "0"},
+    };
+    const auto bad_count = parse_message(build_message(header_for("X", 1), body));
+    ASSERT_TRUE(bad_count.has_value()) << bad_count.error();
+    const auto unparsable = read_group(*bad_count, tag::no_md_entries, kSnapshotEntryTags);
+    ASSERT_FALSE(unparsable.has_value());
+    EXPECT_NE(unparsable.error().find("non-negative"), std::string::npos) << unparsable.error();
 }

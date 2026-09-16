@@ -50,6 +50,11 @@ secondary/future target (real market data here is L2, not L3).
   `100090` (plus `100092`/`100093` on `35=W`), then `262` (MDReqID) and `268`
   (NoMDEntries). Each entry is `269`/`270`/`271`/`272`
   (MDEntryType/Px/Size/Date), preceded by `279` (MDUpdateAction) on `35=X`.
+  So the two entry shapes differ, and the entry delimiter differs with them:
+  `269` on `35=W`, `279` on `35=X`. `fix::read_group`
+  (`src/feed_handler/fix/fix_message.h`) takes the member tags per call for
+  that reason — reading a `35=X` with the `35=W` shape is a different call, not
+  a tolerated variation of the same one.
 
 ### Session keepalive and sequencing
 
