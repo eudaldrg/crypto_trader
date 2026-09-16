@@ -7,7 +7,6 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
-#include <string_view>
 #include <vector>
 
 #include "feed_handler/journal_format.h"
