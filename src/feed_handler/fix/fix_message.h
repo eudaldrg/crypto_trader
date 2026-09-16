@@ -236,6 +236,23 @@ std::expected<ParsedMessage, std::string> ParseMessage(std::string_view raw);
 ///
 ///     const std::string raw = BuildMessage(header, body);  // named, outlives...
 ///     const auto parsed = ParseMessage(raw);               // ...this
+///
+/// Deleting is simpler than the alternative of having this overload take
+/// ownership of `raw` (move it into a member of `ParsedMessage` and parse into
+/// that instead of rejecting it). That is architecturally possible, but
+/// `ParsedMessage` holds only views (`FieldView`s and `msg_type_` are
+/// `string_view`s, nothing owned) so it can stay a cheap, trivially-movable
+/// type -- the one production caller (deribit_fix_client.cpp) always parses a
+/// view into `Framer`'s own long-lived buffer, so nothing there would ever use
+/// an owning overload. Making `ParsedMessage` sometimes own its bytes would
+/// also make it self-referential (views pointing into a buffer stored in a
+/// sibling member), which breaks under the compiler-generated move the moment
+/// that buffer is short enough to be stored inline (SSO): moving the
+/// containing `ParsedMessage` would relocate the inline bytes out from under
+/// the views taken before the move. Solvable (heap-box the owned buffer, or
+/// hand-write `ParsedMessage`'s move/copy) but real complexity, added only to
+/// serve callers -- so far, only tests -- that can just hoist to a named
+/// variable for free instead.
 std::expected<ParsedMessage, std::string> ParseMessage(std::string&& raw) = delete;
 
 /// Keeps a string literal working. Without it, `ParseMessage("8=FIX.4.4...")`
