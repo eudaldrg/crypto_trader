@@ -8,69 +8,69 @@
 
 namespace feed_handler {
 
-journal_writer::journal_writer(const std::filesystem::path& path, const config& cfg)
+JournalWriter::JournalWriter(const std::filesystem::path& path, const Config& cfg)
     : buffer_(std::max<std::size_t>(cfg.buffer_bytes, 1)), path_(path.string()) {
     // pubsetbuf only has an effect before the stream is opened, hence the
     // deliberate open-after-construct dance.
     out_.rdbuf()->pubsetbuf(buffer_.data(), static_cast<std::streamsize>(buffer_.size()));
     out_.open(path, std::ios::binary | std::ios::out | std::ios::trunc);
     if (!out_.is_open()) {
-        throw std::runtime_error("journal_writer: cannot open " + path_);
+        throw std::runtime_error("JournalWriter: cannot open " + path_);
     }
 
     std::array<std::byte, journal::kFileHeaderSize> header{};
     std::span<std::byte> view(header);
     std::ranges::copy(journal::kMagic, view.begin());
-    journal::store_le<std::uint16_t>(view.subspan(8), journal::kFormatVersion);
-    journal::store_le<std::uint16_t>(view.subspan(10),
-                                     static_cast<std::uint16_t>(journal::kFileHeaderSize));
-    journal::store_le<std::uint32_t>(view.subspan(12), 0);
+    journal::StoreLe<std::uint16_t>(view.subspan(8), journal::kFormatVersion);
+    journal::StoreLe<std::uint16_t>(view.subspan(10),
+                                    static_cast<std::uint16_t>(journal::kFileHeaderSize));
+    journal::StoreLe<std::uint32_t>(view.subspan(12), 0);
     // The realtime/monotonic pair must be sampled as close together as
     // possible: it is the only anchor tying per-record monotonic readings back
     // to wall clock for this incarnation.
-    journal::store_le<std::uint64_t>(view.subspan(16), realtime_now_ns());
-    journal::store_le<std::uint64_t>(view.subspan(24), monotonic_now_ns());
+    journal::StoreLe<std::uint64_t>(view.subspan(16), RealtimeNowNs());
+    journal::StoreLe<std::uint64_t>(view.subspan(24), MonotonicNowNs());
 
     const std::size_t name_bytes = std::min(cfg.exchange.size(), journal::kExchangeFieldSize);
     for (std::size_t index = 0; index < name_bytes; ++index) {
         view[32 + index] = static_cast<std::byte>(cfg.exchange[index]);
     }
-    journal::store_le<std::uint64_t>(view.subspan(48), cfg.incarnation);
-    journal::store_le<std::uint32_t>(view.subspan(56), 0);
-    journal::store_le<std::uint32_t>(view.subspan(60), journal::crc32_of(view.first(60)));
+    journal::StoreLe<std::uint64_t>(view.subspan(48), cfg.incarnation);
+    journal::StoreLe<std::uint32_t>(view.subspan(56), 0);
+    journal::StoreLe<std::uint32_t>(view.subspan(60), journal::Crc32Of(view.first(60)));
 
     out_.write(std::bit_cast<const char*>(view.data()), static_cast<std::streamsize>(view.size()));
     if (!out_) {
-        throw std::runtime_error("journal_writer: cannot write header to " + path_);
+        throw std::runtime_error("JournalWriter: cannot write header to " + path_);
     }
 }
 
-journal_writer::~journal_writer() {
+JournalWriter::~JournalWriter() {
     // Best effort: a destructor must not throw, and a failure here is already
     // reflected by good()/error() for anything that cares.
     out_.flush();
 }
 
-void journal_writer::on_frame(const capture_frame& frame) {
-    write_record(journal::record_type::wire_message, frame);
+void JournalWriter::OnFrame(const CaptureFrame& frame) {
+    WriteRecord(journal::RecordType::kWireMessage, frame);
 }
 
-void journal_writer::write_incarnation_marker(const capture_frame& frame) {
-    write_record(journal::record_type::connection_incarnation, frame);
+void JournalWriter::WriteIncarnationMarker(const CaptureFrame& frame) {
+    WriteRecord(journal::RecordType::kConnectionIncarnation, frame);
 }
 
-void journal_writer::write_record(journal::record_type type, const capture_frame& frame) {
-    if (!good()) {
+void JournalWriter::WriteRecord(journal::RecordType type, const CaptureFrame& frame) {
+    if (!Good()) {
         return;
     }
     if (frame.capture_sequence <= last_sequence_) {
         // Writing an out-of-order record would silently break the ordering
         // guarantee Replay mode is built on, so refuse rather than corrupt.
-        fail("out-of-order capture sequence");
+        Fail("out-of-order capture sequence");
         return;
     }
     if (frame.payload.size() > journal::kMaxPayloadBytes) {
-        fail("payload exceeds kMaxPayloadBytes");
+        Fail("payload exceeds kMaxPayloadBytes");
         return;
     }
 
@@ -78,15 +78,15 @@ void journal_writer::write_record(journal::record_type type, const capture_frame
     std::span<std::byte> view(header);
     view[0] = static_cast<std::byte>(type);
     view[1] = std::byte{0};
-    journal::store_le<std::uint16_t>(view.subspan(2), 0);
-    journal::store_le<std::uint32_t>(view.subspan(4),
-                                     static_cast<std::uint32_t>(frame.payload.size()));
-    journal::store_le<std::uint64_t>(view.subspan(8), frame.capture_sequence);
-    journal::store_le<std::uint64_t>(view.subspan(16), frame.monotonic_ns);
+    journal::StoreLe<std::uint16_t>(view.subspan(2), 0);
+    journal::StoreLe<std::uint32_t>(view.subspan(4),
+                                    static_cast<std::uint32_t>(frame.payload.size()));
+    journal::StoreLe<std::uint64_t>(view.subspan(8), frame.capture_sequence);
+    journal::StoreLe<std::uint64_t>(view.subspan(16), frame.monotonic_ns);
 
-    const std::uint32_t crc = journal::crc32_update(journal::crc32_of(view), frame.payload);
+    const std::uint32_t crc = journal::Crc32Update(journal::Crc32Of(view), frame.payload);
     std::array<std::byte, journal::kRecordTrailerSize> trailer{};
-    journal::store_le<std::uint32_t>(trailer, crc);
+    journal::StoreLe<std::uint32_t>(trailer, crc);
 
     out_.write(std::bit_cast<const char*>(view.data()), static_cast<std::streamsize>(view.size()));
     if (!frame.payload.empty()) {
@@ -96,7 +96,7 @@ void journal_writer::write_record(journal::record_type type, const capture_frame
     out_.write(std::bit_cast<const char*>(trailer.data()),
                static_cast<std::streamsize>(trailer.size()));
     if (!out_) {
-        fail("write failed");
+        Fail("write failed");
         return;
     }
 
@@ -104,14 +104,14 @@ void journal_writer::write_record(journal::record_type type, const capture_frame
     ++records_written_;
 }
 
-void journal_writer::flush() {
+void JournalWriter::Flush() {
     out_.flush();
-    if (!out_ && good()) {
-        fail("flush failed");
+    if (!out_ && Good()) {
+        Fail("flush failed");
     }
 }
 
-void journal_writer::fail(std::string reason) {
+void JournalWriter::Fail(std::string reason) {
     if (error_.empty()) {
         error_ = std::move(reason);
     }

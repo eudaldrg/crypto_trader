@@ -27,35 +27,35 @@ constexpr std::string_view kHexDigits = "0123456789ABCDEF";
 constexpr std::size_t kSha256Bytes = 32;
 constexpr std::size_t kSha512Bytes = 64;
 
-struct mac_deleter {
+struct MacDeleter {
     void operator()(EVP_MAC* mac) const {
         EVP_MAC_free(mac);
     }
 };
-struct mac_ctx_deleter {
+struct MacCtxDeleter {
     void operator()(EVP_MAC_CTX* ctx) const {
         EVP_MAC_CTX_free(ctx);
     }
 };
 
-bool is_unreserved(char character) {
+bool IsUnreserved(char character) {
     const auto value = static_cast<unsigned char>(character);
     return (std::isalnum(value) != 0) || character == '-' || character == '_' || character == '.' ||
            character == '~';
 }
 
-std::span<const std::byte> bytes_of(std::string_view text) {
+std::span<const std::byte> BytesOf(std::string_view text) {
     return {std::bit_cast<const std::byte*>(text.data()), text.size()};
 }
 
 /// HMAC-SHA512 via OpenSSL 3's EVP_MAC interface.
-std::expected<std::array<std::byte, kSha512Bytes>, std::string> hmac_sha512(
+std::expected<std::array<std::byte, kSha512Bytes>, std::string> HmacSha512(
     std::span<const std::byte> key, std::span<const std::byte> message) {
-    const std::unique_ptr<EVP_MAC, mac_deleter> mac(EVP_MAC_fetch(nullptr, "HMAC", nullptr));
+    const std::unique_ptr<EVP_MAC, MacDeleter> mac(EVP_MAC_fetch(nullptr, "HMAC", nullptr));
     if (!mac) {
         return std::unexpected("kraken: OpenSSL has no HMAC implementation");
     }
-    const std::unique_ptr<EVP_MAC_CTX, mac_ctx_deleter> ctx(EVP_MAC_CTX_new(mac.get()));
+    const std::unique_ptr<EVP_MAC_CTX, MacCtxDeleter> ctx(EVP_MAC_CTX_new(mac.get()));
     if (!ctx) {
         return std::unexpected("kraken: EVP_MAC_CTX_new failed");
     }
@@ -87,7 +87,7 @@ std::expected<std::array<std::byte, kSha512Bytes>, std::string> hmac_sha512(
     return digest;
 }
 
-std::expected<std::array<std::byte, kSha256Bytes>, std::string> sha256(
+std::expected<std::array<std::byte, kSha256Bytes>, std::string> Sha256(
     std::span<const std::byte> data) {
     std::array<std::byte, kSha256Bytes> digest{};
     unsigned int produced = 0;
@@ -103,8 +103,8 @@ std::expected<std::array<std::byte, kSha256Bytes>, std::string> sha256(
 /// value"; `reason` is filled in only when the file existed but could not be
 /// used, because a missing file is the ordinary first run and not worth a
 /// warning.
-std::optional<std::uint64_t> read_high_water_mark(const std::filesystem::path& path,
-                                                  std::string& reason) {
+std::optional<std::uint64_t> ReadHighWaterMark(const std::filesystem::path& path,
+                                               std::string& reason) {
     std::error_code error;
     if (!std::filesystem::exists(path, error) || error) {
         return std::nullopt;
@@ -136,7 +136,7 @@ std::optional<std::uint64_t> read_high_water_mark(const std::filesystem::path& p
 /// *truncated*, i.e. smaller, mark behind, which is the one direction that
 /// matters here. Returns false on any failure -- the caller treats persistence
 /// as best effort.
-bool write_high_water_mark(const std::filesystem::path& path, std::uint64_t value) {
+bool WriteHighWaterMark(const std::filesystem::path& path, std::uint64_t value) {
     std::error_code error;
     const std::filesystem::path directory = path.parent_path();
     if (!directory.empty()) {
@@ -172,11 +172,11 @@ bool write_high_water_mark(const std::filesystem::path& path, std::uint64_t valu
 
 }  // namespace
 
-std::string url_encode(std::string_view value) {
+std::string UrlEncode(std::string_view value) {
     std::string encoded;
     encoded.reserve(value.size());
     for (const char character : value) {
-        if (is_unreserved(character)) {
+        if (IsUnreserved(character)) {
             encoded.push_back(character);
         } else if (character == ' ') {
             encoded.push_back('+');
@@ -190,20 +190,20 @@ std::string url_encode(std::string_view value) {
     return encoded;
 }
 
-std::string encode_post_data(std::span<const std::pair<std::string, std::string>> params) {
+std::string EncodePostData(std::span<const std::pair<std::string, std::string>> params) {
     std::string body;
     for (const auto& [key, value] : params) {
         if (!body.empty()) {
             body.push_back('&');
         }
-        body += url_encode(key);
+        body += UrlEncode(key);
         body.push_back('=');
-        body += url_encode(value);
+        body += UrlEncode(value);
     }
     return body;
 }
 
-std::string base64_encode(std::span<const std::byte> data) {
+std::string Base64Encode(std::span<const std::byte> data) {
     if (data.empty()) {
         return {};
     }
@@ -218,7 +218,7 @@ std::string base64_encode(std::span<const std::byte> data) {
     return {std::bit_cast<const char*>(encoded.data()), static_cast<std::size_t>(written)};
 }
 
-std::expected<std::vector<std::byte>, std::string> base64_decode(std::string_view text) {
+std::expected<std::vector<std::byte>, std::string> Base64Decode(std::string_view text) {
     std::string cleaned;
     cleaned.reserve(text.size());
     for (const char character : text) {
@@ -257,11 +257,11 @@ std::expected<std::vector<std::byte>, std::string> base64_decode(std::string_vie
     return result;
 }
 
-std::expected<std::string, std::string> sign_private_request(std::string_view url_path,
-                                                             std::string_view nonce,
-                                                             std::string_view post_data,
-                                                             std::string_view api_secret_b64) {
-    auto secret = base64_decode(api_secret_b64);
+std::expected<std::string, std::string> SignPrivateRequest(std::string_view url_path,
+                                                           std::string_view nonce,
+                                                           std::string_view post_data,
+                                                           std::string_view api_secret_b64) {
+    auto secret = Base64Decode(api_secret_b64);
     if (!secret) {
         return std::unexpected("kraken: API secret is not valid base64");
     }
@@ -271,7 +271,7 @@ std::expected<std::string, std::string> sign_private_request(std::string_view ur
     nonce_and_body += nonce;
     nonce_and_body += post_data;
 
-    const auto body_digest = sha256(bytes_of(nonce_and_body));
+    const auto body_digest = Sha256(BytesOf(nonce_and_body));
     if (!body_digest) {
         OPENSSL_cleanse(secret->data(), secret->size());
         return std::unexpected(body_digest.error());
@@ -279,44 +279,44 @@ std::expected<std::string, std::string> sign_private_request(std::string_view ur
 
     std::vector<std::byte> message;
     message.reserve(url_path.size() + body_digest->size());
-    const auto path_bytes = bytes_of(url_path);
+    const auto path_bytes = BytesOf(url_path);
     message.insert(message.end(), path_bytes.begin(), path_bytes.end());
     message.insert(message.end(), body_digest->begin(), body_digest->end());
 
-    const auto signature = hmac_sha512(*secret, message);
+    const auto signature = HmacSha512(*secret, message);
     OPENSSL_cleanse(secret->data(), secret->size());
     if (!signature) {
         return std::unexpected(signature.error());
     }
-    return base64_encode(*signature);
+    return Base64Encode(*signature);
 }
 
-std::uint64_t nonce_generator::next() {
+std::uint64_t NonceGenerator::Next() {
     constexpr std::uint64_t kNanosPerMicro = 1000;
-    return next_from(realtime_now_ns() / kNanosPerMicro);
+    return NextFrom(RealtimeNowNs() / kNanosPerMicro);
 }
 
-std::uint64_t nonce_generator::next_from(std::uint64_t now_micros) {
+std::uint64_t NonceGenerator::NextFrom(std::uint64_t now_micros) {
     last_ = std::max(now_micros, last_ + 1);
     return last_;
 }
 
-void nonce_generator::seed_at_least(std::uint64_t value) {
+void NonceGenerator::SeedAtLeast(std::uint64_t value) {
     last_ = std::max(last_, value);
 }
 
-persistent_nonce_source::persistent_nonce_source(std::filesystem::path state_file)
+PersistentNonceSource::PersistentNonceSource(std::filesystem::path state_file)
     : state_file_(std::move(state_file)) {
     if (state_file_.empty()) {
         return;
     }
 
     std::string reason;
-    const std::optional<std::uint64_t> persisted = read_high_water_mark(state_file_, reason);
+    const std::optional<std::uint64_t> persisted = ReadHighWaterMark(state_file_, reason);
     if (!persisted) {
         if (!reason.empty()) {
-            log_warn("kraken: ignoring nonce state file " + state_file_.string() + " (" + reason +
-                     "); falling back to the wall clock");
+            LogWarn("kraken: ignoring nonce state file " + state_file_.string() + " (" + reason +
+                    "); falling back to the wall clock");
         }
         return;
     }
@@ -325,38 +325,38 @@ persistent_nonce_source::persistent_nonce_source(std::filesystem::path state_fil
     // Seeding the mark rather than the next value keeps the max(now, last + 1)
     // rule as the single place progress is decided: the next nonce comes out
     // as max(persisted + 1, now_micros).
-    generator_.seed_at_least(*persisted);
-    log_info("kraken: nonce high-water mark " + std::to_string(*persisted) + " restored from " +
-             state_file_.string());
+    generator_.SeedAtLeast(*persisted);
+    LogInfo("kraken: nonce high-water mark " + std::to_string(*persisted) + " restored from " +
+            state_file_.string());
 }
 
-std::uint64_t persistent_nonce_source::next() {
-    const std::uint64_t value = generator_.next();
-    persist(value);
+std::uint64_t PersistentNonceSource::Next() {
+    const std::uint64_t value = generator_.Next();
+    Persist(value);
     return value;
 }
 
-std::uint64_t persistent_nonce_source::next_from(std::uint64_t now_micros) {
-    const std::uint64_t value = generator_.next_from(now_micros);
-    persist(value);
+std::uint64_t PersistentNonceSource::NextFrom(std::uint64_t now_micros) {
+    const std::uint64_t value = generator_.NextFrom(now_micros);
+    Persist(value);
     return value;
 }
 
-void persistent_nonce_source::persist(std::uint64_t value) {
+void PersistentNonceSource::Persist(std::uint64_t value) {
     if (state_file_.empty()) {
         return;
     }
     // At most one write per signed REST call, i.e. one per (re)connect, so
     // there is nothing to gain from batching it -- and a batched mark is
     // exactly the mark that would be stale after a crash.
-    if (write_high_water_mark(state_file_, value)) {
+    if (WriteHighWaterMark(state_file_, value)) {
         write_failed_ = false;
         return;
     }
     if (!write_failed_) {
         write_failed_ = true;
-        log_warn("kraken: cannot persist the nonce high-water mark to " + state_file_.string() +
-                 "; continuing with the in-memory wall-clock nonce only");
+        LogWarn("kraken: cannot persist the nonce high-water mark to " + state_file_.string() +
+                "; continuing with the in-memory wall-clock nonce only");
     }
 }
 

@@ -32,11 +32,11 @@ constexpr std::chrono::milliseconds kShutdownPollInterval{100};
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 volatile std::sig_atomic_t g_shutdown_requested = 0;
 
-extern "C" void request_shutdown(int /*signal*/) {
+extern "C" void RequestShutdown(int /*signal*/) {
     g_shutdown_requested = 1;
 }
 
-std::string env_or_empty(const char* name) {
+std::string EnvOrEmpty(const char* name) {
     const char* value = std::getenv(name);
     return value == nullptr ? std::string{} : std::string(value);
 }
@@ -45,74 +45,74 @@ std::string env_or_empty(const char* name) {
 /// capture: the journal holds raw bytes, and nothing downstream of it exists
 /// yet to need a tick size (decisions/0004 keeps reference data out of the
 /// journal entirely).
-void log_instrument_reference(feed_handler::kraken::rest_client& rest) {
-    const auto loaded = rest.load_asset_pairs();
+void LogInstrumentReference(feed_handler::kraken::RestClient& rest) {
+    const auto loaded = rest.LoadAssetPairs();
     if (!loaded) {
-        feed_handler::log_warn("AssetPairs lookup failed, continuing without reference data: " +
-                               loaded.error());
+        feed_handler::LogWarn("AssetPairs lookup failed, continuing without reference data: " +
+                              loaded.error());
         return;
     }
-    const feed_handler::kraken::asset_pair* pair = rest.find_asset_pair(kSymbol);
+    const feed_handler::kraken::AssetPair* pair = rest.FindAssetPair(kSymbol);
     if (pair == nullptr) {
         // The XBT/BTC trap: REST reports wsname "XBT/USD" for the instrument
         // WS v2 calls "BTC/USD" (exchanges/kraken.md).
-        feed_handler::log_warn(std::string("no AssetPairs entry for ") + kSymbol +
-                               ", continuing without reference data");
+        feed_handler::LogWarn(std::string("no AssetPairs entry for ") + kSymbol +
+                              ", continuing without reference data");
         return;
     }
-    feed_handler::log_info("loaded " + std::to_string(*loaded) + " asset pairs; " + kSymbol +
-                           " is " + pair->rest_name + " tick_size=" + pair->tick_size +
-                           " price_decimals=" + std::to_string(pair->price_decimals) +
-                           " lot_decimals=" + std::to_string(pair->qty_decimals));
+    feed_handler::LogInfo("loaded " + std::to_string(*loaded) + " asset pairs; " + kSymbol +
+                          " is " + pair->rest_name + " tick_size=" + pair->tick_size +
+                          " price_decimals=" + std::to_string(pair->price_decimals) +
+                          " lot_decimals=" + std::to_string(pair->qty_decimals));
 }
 
 }  // namespace
 
 int main() {
-    feed_handler::kraken::credentials creds{
-        .api_key = env_or_empty("KRAKEN_API_KEY"),
-        .api_secret_b64 = env_or_empty("KRAKEN_API_SECRET"),
+    feed_handler::kraken::Credentials creds{
+        .api_key = EnvOrEmpty("KRAKEN_API_KEY"),
+        .api_secret_b64 = EnvOrEmpty("KRAKEN_API_SECRET"),
     };
     if (creds.api_key.empty() || creds.api_secret_b64.empty()) {
-        feed_handler::log_error(
+        feed_handler::LogError(
             "KRAKEN_API_KEY and KRAKEN_API_SECRET must be set in the "
             "environment (level3 is an authenticated channel)");
         return 1;
     }
 
-    std::signal(SIGINT, request_shutdown);
-    std::signal(SIGTERM, request_shutdown);
+    std::signal(SIGINT, RequestShutdown);
+    std::signal(SIGTERM, RequestShutdown);
 
-    // One rest_client for the whole process: it owns the nonce high-water mark
+    // One RestClient for the whole process: it owns the nonce high-water mark
     // that keeps signed calls strictly increasing across reconnects
     // (exchanges/kraken.md), so it must never be rebuilt per connection. The
     // state file extends that guarantee across restarts -- best effort, and
     // never a reason not to start (kraken_signing.h).
-    feed_handler::kraken::rest_client rest(
-        std::string(feed_handler::kraken::rest_client::kDefaultBaseUrl),
+    feed_handler::kraken::RestClient rest(
+        std::string(feed_handler::kraken::RestClient::kDefaultBaseUrl),
         std::filesystem::path(kStateDirectory) / kNonceStateFile);
-    log_instrument_reference(rest);
+    LogInstrumentReference(rest);
 
-    feed_handler::capture_session session({
+    feed_handler::CaptureSession session({
         .directory = kJournalDirectory,
         .exchange = "kraken",
     });
 
-    feed_handler::kraken::ws_client client(rest, creds, session, {.symbol = kSymbol});
-    client.start();
+    feed_handler::kraken::WsClient client(rest, creds, session, {.symbol = kSymbol});
+    client.Start();
 
-    while (g_shutdown_requested == 0 && !client.fatal()) {
+    while (g_shutdown_requested == 0 && !client.Fatal()) {
         std::this_thread::sleep_for(kShutdownPollInterval);
     }
 
-    const bool fatal = client.fatal();
-    feed_handler::log_info(fatal ? "capture failed, shutting down" : "shutdown requested");
-    client.stop();
-    session.close();
-    feed_handler::log_info("captured " + std::to_string(client.messages_received()) +
-                           " messages across " + std::to_string(session.incarnation()) +
-                           " incarnation(s), " + std::to_string(session.total_records_written()) +
-                           " journal records, " + std::to_string(client.forced_reconnects()) +
-                           " watchdog-forced reconnect(s)");
+    const bool fatal = client.Fatal();
+    feed_handler::LogInfo(fatal ? "capture failed, shutting down" : "shutdown requested");
+    client.Stop();
+    session.Close();
+    feed_handler::LogInfo("captured " + std::to_string(client.MessagesReceived()) +
+                          " messages across " + std::to_string(session.Incarnation()) +
+                          " incarnation(s), " + std::to_string(session.TotalRecordsWritten()) +
+                          " journal records, " + std::to_string(client.ForcedReconnects()) +
+                          " watchdog-forced reconnect(s)");
     return fatal ? 1 : 0;
 }

@@ -60,63 +60,63 @@ inline constexpr std::size_t kMaxBodyLength = 1U << 20U;
 /// literals at every call site: a transposed tag number is otherwise a silent
 /// wire bug that only the exchange notices.
 namespace tag {
-inline constexpr int begin_string = 8;
-inline constexpr int body_length = 9;
-inline constexpr int check_sum = 10;
-inline constexpr int msg_type = 35;
-inline constexpr int msg_seq_num = 34;
-inline constexpr int sender_comp_id = 49;
-inline constexpr int target_comp_id = 56;
-inline constexpr int sending_time = 52;
-inline constexpr int poss_dup_flag = 43;
-inline constexpr int test_req_id = 112;
-inline constexpr int encrypt_method = 98;
-inline constexpr int heart_bt_int = 108;
-inline constexpr int raw_data = 96;
-inline constexpr int username = 553;
-inline constexpr int password = 554;
-inline constexpr int text = 58;
-inline constexpr int symbol = 55;
-inline constexpr int no_related_sym = 146;
-inline constexpr int md_req_id = 262;
-inline constexpr int subscription_request_type = 263;
-inline constexpr int market_depth = 264;
-inline constexpr int no_md_entry_types = 267;
-inline constexpr int no_md_entries = 268;
-inline constexpr int md_entry_type = 269;
-inline constexpr int md_entry_px = 270;
-inline constexpr int md_entry_size = 271;
-inline constexpr int md_entry_date = 272;
-inline constexpr int md_update_action = 279;
+inline constexpr int kBeginString = 8;
+inline constexpr int kBodyLength = 9;
+inline constexpr int kCheckSum = 10;
+inline constexpr int kMsgType = 35;
+inline constexpr int kMsgSeqNum = 34;
+inline constexpr int kSenderCompId = 49;
+inline constexpr int kTargetCompId = 56;
+inline constexpr int kSendingTime = 52;
+inline constexpr int kPossDupFlag = 43;
+inline constexpr int kTestReqId = 112;
+inline constexpr int kEncryptMethod = 98;
+inline constexpr int kHeartBtInt = 108;
+inline constexpr int kRawData = 96;
+inline constexpr int kUsername = 553;
+inline constexpr int kPassword = 554;
+inline constexpr int kText = 58;
+inline constexpr int kSymbol = 55;
+inline constexpr int kNoRelatedSym = 146;
+inline constexpr int kMdReqId = 262;
+inline constexpr int kSubscriptionRequestType = 263;
+inline constexpr int kMarketDepth = 264;
+inline constexpr int kNoMdEntryTypes = 267;
+inline constexpr int kNoMdEntries = 268;
+inline constexpr int kMdEntryType = 269;
+inline constexpr int kMdEntryPx = 270;
+inline constexpr int kMdEntrySize = 271;
+inline constexpr int kMdEntryDate = 272;
+inline constexpr int kMdUpdateAction = 279;
 }  // namespace tag
 
 /// The message types this project sends or reacts to (exchanges/deribit.md).
 namespace msg_type {
-inline constexpr std::string_view heartbeat = "0";
-inline constexpr std::string_view test_request = "1";
-inline constexpr std::string_view resend_request = "2";
-inline constexpr std::string_view reject = "3";
-inline constexpr std::string_view sequence_reset = "4";
-inline constexpr std::string_view logout = "5";
-inline constexpr std::string_view logon = "A";
-inline constexpr std::string_view market_data_request = "V";
-inline constexpr std::string_view market_data_request_reject = "Y";
-inline constexpr std::string_view market_data_snapshot_full_refresh = "W";
-inline constexpr std::string_view market_data_incremental_refresh = "X";
+inline constexpr std::string_view kHeartbeat = "0";
+inline constexpr std::string_view kTestRequest = "1";
+inline constexpr std::string_view kResendRequest = "2";
+inline constexpr std::string_view kReject = "3";
+inline constexpr std::string_view kSequenceReset = "4";
+inline constexpr std::string_view kLogout = "5";
+inline constexpr std::string_view kLogon = "A";
+inline constexpr std::string_view kMarketDataRequest = "V";
+inline constexpr std::string_view kMarketDataRequestReject = "Y";
+inline constexpr std::string_view kMarketDataSnapshotFullRefresh = "W";
+inline constexpr std::string_view kMarketDataIncrementalRefresh = "X";
 }  // namespace msg_type
 
 /// One outbound field. Values are owned `std::string`s rather than views
 /// because most of them (sequence numbers, timestamps, the Logon password) are
 /// computed at build time; session/control messages are not a hot path, so the
 /// copies are not worth the lifetime hazard of holding views.
-struct field {
+struct Field {
     int tag = 0;
     std::string value;
 };
 
 /// The standard header fields every outbound session message carries, in the
 /// order the probe (and therefore Deribit) sends them.
-struct session_header {
+struct SessionHeader {
     std::string_view msg_type;        // 35
     std::string_view sender_comp_id;  // 49
     std::string_view target_comp_id;  // 56
@@ -127,72 +127,72 @@ struct session_header {
 /// Wraps `fields` -- already in wire order and starting with MsgType(35) -- in
 /// the BeginString/BodyLength prefix and CheckSum trailer. The generic bottom
 /// layer: it knows the envelope arithmetic and nothing else.
-std::string build_message(std::span<const field> fields);
+std::string BuildMessage(std::span<const Field> fields);
 
 /// Renders `header` into its standard fields, appends `body`, and wraps the
 /// result. This is the entry point exchange-specific code uses.
-std::string build_message(const session_header& header, std::span<const field> body);
+std::string BuildMessage(const SessionHeader& header, std::span<const Field> body);
 
 /// FIX UTCTimestamp (tag 52) for `realtime_ns`: "YYYYMMDD-HH:MM:SS.sss", UTC,
 /// millisecond precision -- the same precision simplefix's
 /// append_utc_timestamp produced in the probe Deribit accepted.
-std::string format_utc_timestamp(std::uint64_t realtime_ns);
+std::string FormatUtcTimestamp(std::uint64_t realtime_ns);
 
 /// CheckSum of every byte in `bytes`, as the three zero-padded digits that go
 /// in tag 10. Exposed for tests that verify the arithmetic directly.
-std::string format_checksum(std::string_view bytes);
+std::string FormatChecksum(std::string_view bytes);
 
 /// A parsed message's fields, in wire order.
 ///
 /// Lifetime: every value is a view into the buffer `parse_message` was handed
-/// (the same non-owning convention as `capture_frame`, decisions/0004). When
+/// (the same non-owning convention as `CaptureFrame`, decisions/0004). When
 /// that buffer is a `framer`'s, it stays valid only until the next
-/// append()/next_message() call. A `parsed_message` is also viewed *into* --
-/// `read_group()` hands back spans over this object's field list -- so it must
+/// append()/next_message() call. A `ParsedMessage` is also viewed *into* --
+/// `ReadGroup()` hands back spans over this object's field list -- so it must
 /// itself outlive anything read out of it, which is why a temporary
-/// `parsed_message` is rejected at compile time (see `read_group` below).
+/// `ParsedMessage` is rejected at compile time (see `ReadGroup` below).
 ///
 /// The field list stays flat and ordered rather than being turned into a tree:
 /// `get()` returns the FIRST occurrence of a tag, which is right for the
 /// top-level session fields and meaningless for a tag that repeats inside a
 /// group. Repeating groups are read on top of this ordered list by
-/// `read_group()` below -- that is what the ordering is preserved for -- so a
+/// `ReadGroup()` below -- that is what the ordering is preserved for -- so a
 /// group member is reached through a `group_entry`, never through `get()`.
 ///
 /// Still not supported, deliberately: nested groups (a group whose member is
-/// itself a NumInGroup field). `read_group()` handles one flat group, which is
+/// itself a NumInGroup field). `ReadGroup()` handles one flat group, which is
 /// the shape every group this project meets actually has (exchanges/deribit.md:
 /// NoMDEntries, NoMDEntryTypes, NoRelatedSym). Building the general
 /// group-of-groups walker would need a data dictionary to know which tags nest,
 /// and nothing here has a use for one.
-class parsed_message {
+class ParsedMessage {
   public:
-    struct field_view {
+    struct FieldView {
         int tag = 0;
         std::string_view value;
     };
 
     /// Every field in wire order, including BeginString(8), BodyLength(9) and
     /// CheckSum(10).
-    std::span<const field_view> fields() const {
+    std::span<const FieldView> Fields() const {
         return fields_;
     }
 
     /// The fields between BodyLength and CheckSum, i.e. starting at MsgType.
-    std::span<const field_view> body_fields() const;
+    std::span<const FieldView> BodyFields() const;
 
     /// First value carrying `tag`, or nullopt. See the repeating-group caveat
-    /// above: for a tag that repeats inside a group, use `read_group()`.
-    std::optional<std::string_view> get(int tag) const;
+    /// above: for a tag that repeats inside a group, use `ReadGroup()`.
+    std::optional<std::string_view> Get(int tag) const;
 
     /// First value carrying `tag`, parsed as a decimal integer. nullopt if the
     /// tag is absent or its value is not a well-formed integer.
-    std::optional<std::int64_t> get_int(int tag) const;
+    std::optional<std::int64_t> GetInt(int tag) const;
 
-    std::size_t count(int tag) const;
+    std::size_t Count(int tag) const;
 
     /// Value of MsgType(35). Never empty on a successfully parsed message.
-    std::string_view msg_type() const {
+    std::string_view MsgType() const {
         return msg_type_;
     }
 
@@ -201,9 +201,9 @@ class parsed_message {
     }
 
   private:
-    friend std::expected<parsed_message, std::string> parse_message(std::string_view raw);
+    friend std::expected<ParsedMessage, std::string> ParseMessage(std::string_view raw);
 
-    std::vector<field_view> fields_;
+    std::vector<FieldView> fields_;
     std::string_view msg_type_;
 };
 
@@ -212,7 +212,7 @@ class parsed_message {
 /// CheckSum field, MsgType must be the first body field, and the CheckSum must
 /// match a recomputation. A message failing any of those is corrupt and comes
 /// back as an error rather than as partially-trusted fields.
-std::expected<parsed_message, std::string> parse_message(std::string_view raw);
+std::expected<ParsedMessage, std::string> ParseMessage(std::string_view raw);
 
 /// One repetition of a repeating group: a view over exactly the fields that
 /// belong to that repetition, in wire order.
@@ -225,45 +225,45 @@ std::expected<parsed_message, std::string> parse_message(std::string_view raw);
 /// no 35=W entry (exchanges/deribit.md), and even within one message an
 /// optional member may simply be absent.
 ///
-/// Lifetime: a view into the `parsed_message` the group was read from, which is
+/// Lifetime: a view into the `ParsedMessage` the group was read from, which is
 /// itself a view into the buffer that was parsed. Both must outlive it.
-class group_entry {
+class GroupEntry {
   public:
-    group_entry() = default;
-    explicit group_entry(std::span<const parsed_message::field_view> fields) : fields_(fields) {}
+    GroupEntry() = default;
+    explicit GroupEntry(std::span<const ParsedMessage::FieldView> fields) : fields_(fields) {}
 
     /// This entry's fields, in wire order, starting with the delimiter tag.
-    std::span<const parsed_message::field_view> fields() const {
+    std::span<const ParsedMessage::FieldView> Fields() const {
         return fields_;
     }
 
     /// First value carrying `tag` within this entry, or nullopt.
-    std::optional<std::string_view> get(int tag) const;
+    std::optional<std::string_view> Get(int tag) const;
 
     /// As `get`, parsed as a decimal integer. nullopt if the tag is absent from
     /// this entry or its value is not a well-formed integer.
-    std::optional<std::int64_t> get_int(int tag) const;
+    std::optional<std::int64_t> GetInt(int tag) const;
 
     std::size_t size() const {
         return fields_.size();
     }
 
   private:
-    std::span<const parsed_message::field_view> fields_;
+    std::span<const ParsedMessage::FieldView> fields_;
 };
 
 /// The entries of one repeating group, in wire order.
-struct repeating_group {
-    std::vector<group_entry> entries;
+struct RepeatingGroup {
+    std::vector<GroupEntry> entries;
 
     /// What NumInGroup claimed. Equal to `entries.size()` on a well-formed
-    /// message; larger when the message lied (see `read_group`).
+    /// message; larger when the message lied (see `ReadGroup`).
     std::size_t declared_count = 0;
 
     /// True when fewer repetitions were actually on the wire than NumInGroup
     /// claimed -- i.e. the message is malformed and `entries` is what could be
     /// salvaged from it.
-    bool truncated() const {
+    bool Truncated() const {
         return entries.size() < declared_count;
     }
 
@@ -273,7 +273,7 @@ struct repeating_group {
     bool empty() const {
         return entries.empty();
     }
-    const group_entry& operator[](std::size_t index) const {
+    const GroupEntry& operator[](std::size_t index) const {
         return entries[index];
     }
     auto begin() const {
@@ -288,7 +288,7 @@ struct repeating_group {
 /// `count_tag` (e.g. NoMDEntries(268)), whose repetitions are made of
 /// `member_tags`.
 ///
-/// A free function rather than a `parsed_message` member on purpose: the parser
+/// A free function rather than a `ParsedMessage` member on purpose: the parser
 /// keeps producing one flat ordered list and knows nothing about groups, and
 /// this layers on top of that list without re-parsing -- which is exactly what
 /// preserving wire order buys.
@@ -327,12 +327,12 @@ struct repeating_group {
 /// into `message`'s own field list, so `message` must outlive the group (and
 /// the buffer `message` was parsed from must outlive both). Bind the parsed
 /// message to a named variable first -- see the deleted rvalue overload below.
-std::expected<repeating_group, std::string> read_group(const parsed_message& message, int count_tag,
-                                                       std::span<const int> member_tags);
+std::expected<RepeatingGroup, std::string> ReadGroup(const ParsedMessage& message, int count_tag,
+                                                     std::span<const int> member_tags);
 
-/// Rejects a temporary `parsed_message` at compile time. The natural-looking
+/// Rejects a temporary `ParsedMessage` at compile time. The natural-looking
 ///
-///     auto group = read_group(*parse_message(raw), tag::no_md_entries, {...});
+///     auto group = ReadGroup(*parse_message(raw), tag::no_md_entries, {...});
 ///
 /// would otherwise compile without a warning and dangle: `parse_message`
 /// returns an `std::expected` prvalue, that temporary dies at the end of the
@@ -344,24 +344,24 @@ std::expected<repeating_group, std::string> read_group(const parsed_message& mes
 ///
 ///     const auto parsed = parse_message(raw);            // named, outlives...
 ///     if (!parsed) { ... }
-///     const auto group = read_group(*parsed, tag::no_md_entries, {...});  // ...this
-std::expected<repeating_group, std::string> read_group(parsed_message&& message, int count_tag,
-                                                       std::span<const int> member_tags) = delete;
+///     const auto group = ReadGroup(*parsed, tag::no_md_entries, {...});  // ...this
+std::expected<RepeatingGroup, std::string> ReadGroup(ParsedMessage&& message, int count_tag,
+                                                     std::span<const int> member_tags) = delete;
 
 /// Convenience overload so call sites can write the member tags inline:
-/// `read_group(msg, tag::no_md_entries, {tag::md_update_action, ...})`.
+/// `ReadGroup(msg, tag::no_md_entries, {tag::md_update_action, ...})`.
 /// std::span is not constructible from a braced list until C++26.
-inline std::expected<repeating_group, std::string> read_group(
-    const parsed_message& message, int count_tag, std::initializer_list<int> member_tags) {
-    return read_group(message, count_tag,
-                      std::span<const int>(member_tags.begin(), member_tags.size()));
+inline std::expected<RepeatingGroup, std::string> ReadGroup(
+    const ParsedMessage& message, int count_tag, std::initializer_list<int> member_tags) {
+    return ReadGroup(message, count_tag,
+                     std::span<const int>(member_tags.begin(), member_tags.size()));
 }
 
 /// The same rvalue guard for the braced-list convenience overload: without it,
 /// the inline-member-tags spelling -- which is the one a call site is most
 /// likely to reach for -- would still silently dangle.
-std::expected<repeating_group, std::string> read_group(
-    parsed_message&& message, int count_tag, std::initializer_list<int> member_tags) = delete;
+std::expected<RepeatingGroup, std::string> ReadGroup(
+    ParsedMessage&& message, int count_tag, std::initializer_list<int> member_tags) = delete;
 
 /// Reassembles whole FIX messages from a stream that arrives in arbitrary
 /// chunks.
@@ -380,14 +380,14 @@ std::expected<repeating_group, std::string> read_group(
 ///
 /// Not thread safe, and does not need to be: one framer per connection, driven
 /// by that connection's own thread (decisions/0004, threading model).
-class framer {
+class Framer {
   public:
-    explicit framer(std::size_t max_body_length = kMaxBodyLength);
+    explicit Framer(std::size_t max_body_length = kMaxBodyLength);
 
     /// Appends bytes read from the socket. May invalidate any view previously
     /// returned by next_message().
-    void append(std::string_view bytes);
-    void append(std::span<const std::byte> bytes);
+    void Append(std::string_view bytes);
+    void Append(std::span<const std::byte> bytes);
 
     /// The next complete message, as a view into this framer's buffer, valid
     /// only until the next append()/next_message() call. nullopt means "need
@@ -396,31 +396,31 @@ class framer {
     /// The returned bytes are structurally delimited but NOT yet validated:
     /// run parse_message() on them, which is where BodyLength and CheckSum are
     /// checked. Framing is a transport concern, message validity is not.
-    std::optional<std::string_view> next_message();
+    std::optional<std::string_view> NextMessage();
 
     /// False once the stream stopped looking like FIX. Sticky.
-    bool good() const {
+    bool Good() const {
         return error_.empty();
     }
 
     /// Empty while good(). Never contains payload bytes -- only a description
     /// of what was structurally wrong.
-    const std::string& error() const {
+    const std::string& Error() const {
         return error_;
     }
 
     /// Bytes held but not yet returned as a message.
-    std::size_t buffered_bytes() const {
+    std::size_t BufferedBytes() const {
         return buffer_.size() - consumed_;
     }
 
-    std::uint64_t messages_framed() const {
+    std::uint64_t MessagesFramed() const {
         return messages_framed_;
     }
 
   private:
-    void fail(std::string reason);
-    void compact();
+    void Fail(std::string reason);
+    void Compact();
 
     std::string buffer_;
     std::string error_;

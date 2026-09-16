@@ -15,7 +15,7 @@
 // Credential handling follows the Kraken rules: `client_secret` exists only to
 // be hashed into the Logon password, and neither it nor the derived password
 // is ever logged or journaled. decisions/0004 keeps outbound traffic out of
-// the journal structurally (journal_writer has no outbound path), which is
+// the journal structurally (JournalWriter has no outbound path), which is
 // what stops a Logon from ever reaching disk.
 #pragma once
 
@@ -41,7 +41,7 @@ inline constexpr std::size_t kLogonNonceBytes = 32;
 /// Deribit's own HeartBtInt in the accepted Logon.
 inline constexpr int kHeartbeatIntervalSeconds = 30;
 
-struct session_config {
+struct SessionConfig {
     /// Deribit client id. Doubles as SenderCompID(49) and Username(553).
     std::string client_id;
     /// Deribit client secret. Never logged, journaled or echoed in an error.
@@ -51,11 +51,11 @@ struct session_config {
     /// Source of SendingTime(52). A plain function pointer rather than a
     /// std::function so it costs nothing and so tests can pin the timestamp
     /// and compare whole messages byte for byte.
-    std::uint64_t (*clock_ns)() = &realtime_now_ns;
+    std::uint64_t (*clock_ns)() = &RealtimeNowNs;
 };
 
 /// The two Logon fields derived from the client secret.
-struct logon_credentials {
+struct LogonCredentials {
     /// RawData(96) = "<timestamp_ms>.<base64(nonce)>".
     std::string raw_data;
     /// Password(554) = base64(SHA256(RawData || client_secret)).
@@ -69,35 +69,34 @@ struct logon_credentials {
 /// against an independently computed known answer (Python hashlib/base64, the
 /// same computation experiments/deribit_fix_probe.py performs) rather than
 /// merely against itself.
-logon_credentials make_logon_credentials(std::uint64_t timestamp_ms,
-                                         std::span<const std::byte> nonce,
-                                         std::string_view client_secret);
+LogonCredentials MakeLogonCredentials(std::uint64_t timestamp_ms, std::span<const std::byte> nonce,
+                                      std::string_view client_secret);
 
 /// kLogonNonceBytes bytes from OpenSSL's CSPRNG. A predictable nonce would let
 /// a captured Logon be replayed, so this must not fall back to a plain PRNG --
 /// it reports failure instead.
-std::expected<std::array<std::byte, kLogonNonceBytes>, std::string> generate_logon_nonce();
+std::expected<std::array<std::byte, kLogonNonceBytes>, std::string> GenerateLogonNonce();
 
 /// Outcome of checking one inbound MsgSeqNum(34).
-enum class sequence_status : std::uint8_t {
+enum class SequenceStatus : std::uint8_t {
     /// Exactly the expected number.
-    in_sequence,
+    kInSequence,
     /// Higher than expected: messages were lost. v1 does not repair this.
-    gap,
+    kGap,
     /// Lower than expected and not flagged as a resend: the session state is
     /// inconsistent, which FIX treats as fatal to the session.
-    duplicate,
+    kDuplicate,
     /// PossDupFlag(43)=Y -- an administratively resent message, which is
     /// explicitly not a gap and must not advance the expectation.
-    possible_duplicate,
+    kPossibleDuplicate,
     /// No usable MsgSeqNum(34) on the message at all.
-    malformed,
+    kMalformed,
 };
 
-std::string_view to_string(sequence_status status);
+std::string_view ToString(SequenceStatus status);
 
-struct inbound_check {
-    sequence_status status = sequence_status::malformed;
+struct InboundCheck {
+    SequenceStatus status = SequenceStatus::kMalformed;
     /// What the session expected to receive.
     std::uint64_t expected = 0;
     /// What actually arrived (0 when status is malformed).
@@ -108,13 +107,13 @@ struct inbound_check {
     /// True when the session can no longer be trusted and the connection
     /// should be torn down and re-logged-on. This is the single thing the
     /// future client has to branch on.
-    bool session_broken() const {
-        return status == sequence_status::gap || status == sequence_status::duplicate ||
-               status == sequence_status::malformed;
+    bool SessionBroken() const {
+        return status == SequenceStatus::kGap || status == SequenceStatus::kDuplicate ||
+               status == SequenceStatus::kMalformed;
     }
 
     /// One-line, credential-free description for a log record.
-    std::string describe() const;
+    std::string Describe() const;
 };
 
 /// One FIX session's message construction and sequence state.
@@ -125,39 +124,38 @@ struct inbound_check {
 /// Every build_* call consumes an outbound MsgSeqNum(34), so messages must be
 /// sent in the order they were built -- the exchange rejects a session whose
 /// inbound numbering has holes, and a built-but-unsent message leaves one.
-class fix_session {
+class FixSession {
   public:
-    explicit fix_session(session_config cfg);
+    explicit FixSession(SessionConfig cfg);
 
     /// Logon(35=A) with a freshly generated nonce. Fails only if the CSPRNG
     /// does; no sequence number is consumed in that case.
-    std::expected<std::string, std::string> build_logon();
+    std::expected<std::string, std::string> BuildLogon();
 
     /// Logon(35=A) from a caller-supplied timestamp and nonce. The test seam,
     /// and the reason the crypto is verifiable against a reference value.
-    std::string build_logon_with_nonce(std::uint64_t timestamp_ms,
-                                       std::span<const std::byte> nonce);
+    std::string BuildLogonWithNonce(std::uint64_t timestamp_ms, std::span<const std::byte> nonce);
 
     /// MarketDataRequest(35=V): snapshot + updates, full depth, Bid and Offer,
     /// one symbol (exchanges/deribit.md).
-    std::string build_market_data_request(std::string_view md_req_id, std::string_view symbol);
+    std::string BuildMarketDataRequest(std::string_view md_req_id, std::string_view symbol);
 
     /// Heartbeat(35=0) sent on our own timer.
-    std::string build_heartbeat();
+    std::string BuildHeartbeat();
 
     /// Heartbeat(35=0) answering a TestRequest, echoing its TestReqID(112).
     /// Failing to echo it is why an otherwise-healthy session gets logged out.
-    std::string build_heartbeat_response(std::string_view test_req_id);
+    std::string BuildHeartbeatResponse(std::string_view test_req_id);
 
     /// TestRequest(35=1), for prodding a peer that has gone quiet.
-    std::string build_test_request(std::string_view test_req_id);
+    std::string BuildTestRequest(std::string_view test_req_id);
 
     /// Logout(35=5) for a clean shutdown.
-    std::string build_logout(std::string_view text = {});
+    std::string BuildLogout(std::string_view text = {});
 
     /// Checks `message`'s MsgSeqNum(34) against the expectation and advances
     /// it. Honours PossDupFlag(43).
-    inbound_check on_inbound(const fix::parsed_message& message);
+    InboundCheck OnInbound(const fix::ParsedMessage& message);
 
     /// Same check from a bare sequence number, for a caller that already has
     /// one (and for tests).
@@ -167,36 +165,36 @@ class fix_session {
     /// (decisions/0004 -- no ResendRequest/SequenceReset gap fill), so holding
     /// the old expectation would only turn one lost message into an endless
     /// stream of identical gap reports before the reconnect lands.
-    inbound_check on_inbound_seq_num(std::uint64_t msg_seq_num, bool possible_duplicate = false);
+    InboundCheck OnInboundSeqNum(std::uint64_t msg_seq_num, bool possible_duplicate = false);
 
     /// Restarts both counters for a new session. Deribit accepted a fresh
     /// session starting at MsgSeqNum 1 without ResetSeqNumFlag(141) in the
     /// probe, so no 141 is sent; a reconnect simply calls this.
-    void reset_sequence_numbers();
+    void ResetSequenceNumbers();
 
     /// MsgSeqNum(34) the next outbound message will carry.
-    std::uint64_t next_outbound_seq_num() const {
+    std::uint64_t NextOutboundSeqNum() const {
         return next_outbound_;
     }
 
     /// MsgSeqNum(34) the next inbound message is expected to carry.
-    std::uint64_t expected_inbound_seq_num() const {
+    std::uint64_t ExpectedInboundSeqNum() const {
         return expected_inbound_;
     }
 
-    std::uint64_t gaps_detected() const {
+    std::uint64_t GapsDetected() const {
         return gaps_detected_;
     }
 
-    const session_config& config() const {
+    const SessionConfig& Config() const {
         return cfg_;
     }
 
   private:
-    fix::session_header next_header(std::string_view type);
-    std::string send(std::string_view type, std::span<const fix::field> body);
+    fix::SessionHeader NextHeader(std::string_view type);
+    std::string Send(std::string_view type, std::span<const fix::Field> body);
 
-    session_config cfg_;
+    SessionConfig cfg_;
     std::string sending_time_;
     std::uint64_t next_outbound_ = 1;
     std::uint64_t expected_inbound_ = 1;

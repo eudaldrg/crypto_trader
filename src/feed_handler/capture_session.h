@@ -29,28 +29,28 @@ namespace feed_handler {
 /// the exchange so a directory listing sorts by connection order, and the
 /// timestamp keeps files from separate process runs (which both start
 /// counting incarnations at 1) from colliding.
-std::string journal_file_name(std::string_view exchange, std::uint64_t incarnation,
-                              std::uint64_t realtime_ns);
+std::string JournalFileName(std::string_view exchange, std::uint64_t incarnation,
+                            std::uint64_t realtime_ns);
 
 /// Owns one journal file at a time and fans every captured frame out to it
 /// plus any additional registered sinks. Not thread safe: it belongs to the
-/// connection's own thread, like the journal_writer it wraps, and every sink
+/// connection's own thread, like the JournalWriter it wraps, and every sink
 /// registered with it is called on that same thread.
 ///
 /// The journal writer is deliberately not one of the registered sinks: it is
 /// the always-present one that makes capture durable, it is the only sink
 /// whose failure the return value of on_wire_message() reports, and it is the
-/// only one that needs the stamped capture_frame for the incarnation marker
+/// only one that needs the stamped CaptureFrame for the incarnation marker
 /// (see begin_incarnation). Additional sinks are strictly downstream of it.
-class capture_session {
+class CaptureSession {
   public:
-    struct config {
+    struct Config {
         std::filesystem::path directory = "journal";
         /// Short exchange tag; also the journal file name prefix.
         std::string exchange = "kraken";
     };
 
-    explicit capture_session(config cfg) : cfg_(std::move(cfg)) {}
+    explicit CaptureSession(Config cfg) : cfg_(std::move(cfg)) {}
 
     /// Registers an additional sink to receive every frame this session
     /// captures, after the journal writer has taken it. NON-OWNING: `sink` must
@@ -61,7 +61,7 @@ class capture_session {
     /// and does not change this call -- it changes what a sink does inside
     /// on_frame, which is exactly what the frame-ownership contract in
     /// message_sink.h was written to make possible.
-    void add_sink(message_sink& sink) {
+    void AddSink(MessageSink& sink) {
         sinks_.push_back(&sink);
     }
 
@@ -75,50 +75,50 @@ class capture_session {
     /// `reason` is journaled verbatim as the marker payload and passed to the
     /// sinks unchanged: free-form text, never anything carrying a credential.
     /// `source` is what every frame of this incarnation will be stamped with.
-    std::expected<std::filesystem::path, std::string> begin_incarnation(std::string_view reason,
-                                                                        frame_source source);
+    std::expected<std::filesystem::path, std::string> BeginIncarnation(std::string_view reason,
+                                                                       FrameSource source);
 
     /// Journals one inbound wire message and hands it to every registered sink.
     /// Returns false if there is no open incarnation (nothing to write into) or
     /// the journal write failed -- the return value is about durability only,
     /// never about what another sink did with the frame.
-    bool on_wire_message(std::span<const std::byte> payload, frame_source source);
+    bool OnWireMessage(std::span<const std::byte> payload, FrameSource source);
 
     /// Flushes and closes the current file. Safe to call twice.
-    void close();
+    void Close();
 
-    std::uint64_t incarnation() const {
+    std::uint64_t Incarnation() const {
         return incarnation_;
     }
 
     /// Records written into the current file, including its incarnation
     /// marker; 0 when no file is open.
-    std::uint64_t records_written() const {
-        return writer_ == nullptr ? 0 : writer_->records_written();
+    std::uint64_t RecordsWritten() const {
+        return writer_ == nullptr ? 0 : writer_->RecordsWritten();
     }
 
     /// Total records written across every incarnation this session opened.
-    std::uint64_t total_records_written() const {
-        return closed_records_ + records_written();
+    std::uint64_t TotalRecordsWritten() const {
+        return closed_records_ + RecordsWritten();
     }
 
-    const std::filesystem::path& current_path() const {
+    const std::filesystem::path& CurrentPath() const {
         return current_path_;
     }
 
     /// Empty while healthy; a sticky writer failure otherwise.
-    std::string_view error() const {
-        return writer_ == nullptr ? std::string_view{} : std::string_view(writer_->error());
+    std::string_view Error() const {
+        return writer_ == nullptr ? std::string_view{} : std::string_view(writer_->Error());
     }
 
   private:
-    config cfg_;
-    std::unique_ptr<journal_writer> writer_;
+    Config cfg_;
+    std::unique_ptr<JournalWriter> writer_;
     /// Non-owning, in registration order. Expected to hold one or two entries,
     /// so a vector walk is the whole dispatch cost.
-    std::vector<message_sink*> sinks_;
+    std::vector<MessageSink*> sinks_;
     std::filesystem::path current_path_;
-    capture_stamper stamper_;
+    CaptureStamper stamper_;
     std::uint64_t incarnation_ = 0;
     std::uint64_t closed_records_ = 0;
 };

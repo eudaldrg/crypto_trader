@@ -36,32 +36,32 @@ namespace feed_handler::kraken {
 /// What every frame this client captures is: Kraken WebSocket v2 JSON text.
 ///
 /// Stamped onto each frame by this client rather than taken from the
-/// capture_session's configuration, because the client is the only thing that
+/// CaptureSession's configuration, because the client is the only thing that
 /// knows first-hand what shape the bytes it just received are in. A session
 /// configured by the binary that owns it could be handed the wrong answer and
 /// nothing would notice until an order book parsed JSON as tag=value.
-inline constexpr frame_source kWireSource = frame_source::kraken_json;
+inline constexpr FrameSource kWireSource = FrameSource::kRakenJson;
 
 /// The bits of an inbound message this client cares about. Book content is
 /// deliberately not parsed: v1 journals raw bytes and the order book that
 /// would consume them does not exist yet (decisions/0004).
-enum class message_kind : std::uint8_t {
-    unknown,
+enum class MessageKind : std::uint8_t {
+    kUnknown,
     /// A `"method"` response saying the subscribe succeeded.
-    subscribe_ack,
+    kSubscribeAck,
     /// A `"method"` response saying it failed -- the one case worth shouting
     /// about, because the connection stays open and simply never delivers data.
-    subscribe_error,
+    kSubscribeError,
     /// Any other failed method response.
-    method_error,
-    heartbeat,
-    status,
-    book_snapshot,
-    book_update,
+    kMethodError,
+    kHeartbeat,
+    kStatus,
+    kBookSnapshot,
+    kBookUpdate,
 };
 
-struct message_classification {
-    message_kind kind = message_kind::unknown;
+struct MessageClassification {
+    MessageKind kind = MessageKind::kUnknown;
     /// Exchange-supplied error/status text, for the log line. Inbound only, so
     /// it can never contain our token.
     std::string detail;
@@ -69,16 +69,16 @@ struct message_classification {
 
 /// Minimal top-level classification of one inbound Kraken v2 message.
 /// Single pass over the top-level object; nothing inside `data` is touched.
-message_classification classify_message(std::string_view json);
+MessageClassification ClassifyMessage(std::string_view json);
 
 /// Builds the level3 subscribe payload (exchanges/kraken.md).
 ///
 /// The result carries a live credential in-body: it must never be journaled
-/// or logged. journal_writer has no outbound path at all, which is what keeps
+/// or logged. JournalWriter has no outbound path at all, which is what keeps
 /// that structural rather than a rule to remember.
-std::string build_subscribe_message(std::string_view symbol, std::string_view token);
+std::string BuildSubscribeMessage(std::string_view symbol, std::string_view token);
 
-struct ws_client_config {
+struct WsClientConfig {
     std::string url = "wss://ws-l3.kraken.com/v2";
     /// WS v2 spells bitcoin "BTC", not REST's "XBT" (exchanges/kraken.md).
     std::string symbol = "BTC/USD";
@@ -102,73 +102,72 @@ struct ws_client_config {
     std::uint32_t max_reconnect_wait_ms = 30'000;
 };
 
-class ws_client {
+class WsClient {
   public:
     /// `rest` must outlive this client and be shared across reconnects: it
     /// owns the nonce high-water mark that keeps signed calls strictly
     /// increasing (exchanges/kraken.md), so a per-reconnect instance would
     /// reintroduce the nonce collision it exists to prevent.
-    ws_client(rest_client& rest, credentials creds, capture_session& session,
-              ws_client_config cfg = {});
+    WsClient(RestClient& rest, Credentials creds, CaptureSession& session, WsClientConfig cfg = {});
 
-    ws_client(const ws_client&) = delete;
-    ws_client& operator=(const ws_client&) = delete;
-    ws_client(ws_client&&) = delete;
-    ws_client& operator=(ws_client&&) = delete;
-    ~ws_client();
+    WsClient(const WsClient&) = delete;
+    WsClient& operator=(const WsClient&) = delete;
+    WsClient(WsClient&&) = delete;
+    WsClient& operator=(WsClient&&) = delete;
+    ~WsClient();
 
     /// Starts the IXWebSocket thread and the watchdog thread. Returns
     /// immediately; everything after this happens on those threads.
-    void start();
+    void Start();
 
     /// Permanent shutdown: stops the watchdog, closes the socket and joins
     /// IXWebSocket's thread. Idempotent.
-    void stop();
+    void Stop();
 
     /// Handles one inbound Kraken wire message: journal it, then classify it.
     /// Normally called by IXWebSocket's callback on its own thread.
     ///
     /// Public so the capture paths that matter -- the frame identity it stamps,
     /// and what it does when the journal write fails -- are testable without a
-    /// live socket, in the same spirit as rest_client::parse_asset_pairs. It is
+    /// live socket, in the same spirit as RestClient::parse_asset_pairs. It is
     /// not a send path: nothing outbound goes through here.
-    void handle_message(const std::string& payload);
+    void HandleMessage(const std::string& payload);
 
     /// True when capture cannot continue: a journal file could not be opened,
     /// or a write into an open one failed. The owning process should shut down
     /// rather than stay connected while dropping data on the floor.
-    bool fatal() const {
+    bool Fatal() const {
         return fatal_.load(std::memory_order_acquire);
     }
 
-    std::uint64_t messages_received() const {
+    std::uint64_t MessagesReceived() const {
         return messages_received_.load(std::memory_order_relaxed);
     }
 
-    std::uint64_t forced_reconnects() const {
+    std::uint64_t ForcedReconnects() const {
         return forced_reconnects_.load(std::memory_order_relaxed);
     }
 
   private:
-    void handle_open();
-    void run_watchdog();
+    void HandleOpen();
+    void RunWatchdog();
     /// Closes the current connection so IXWebSocket's automatic reconnection
     /// re-establishes it. Deliberately close(), not stop(): stop() joins the
     /// library's thread and ends reconnection for good.
-    void force_reconnect(std::string_view reason);
+    void ForceReconnect(std::string_view reason);
     /// Sleeps, interruptibly, after a failed connection setup so a persistent
     /// failure cannot spin on Kraken's REST endpoint.
-    void back_off_after_setup_failure();
+    void BackOffAfterSetupFailure();
     /// Floors how often a connection can be set up, since every setup costs a
     /// signed REST token call. Returns true if shutdown was requested (or
     /// capture failed) while waiting, in which case the caller must abandon the
     /// setup.
-    bool throttle_connection_setup();
+    bool ThrottleConnectionSetup();
     /// Returns true if shutdown was requested, or capture failed, while
     /// waiting -- both mean "stop what you were about to do". Every wait in
     /// this client goes through here, which is what makes the notify_all() on
     /// the fatal path actually end them.
-    bool wait_for_stop(std::uint64_t millis);
+    bool WaitForStop(std::uint64_t millis);
     /// Latches the capture failure and wakes every waiter.
     ///
     /// The mutation is made under `stop_mutex_`, not just the notify: a waiter
@@ -179,14 +178,14 @@ class ws_client {
     /// deliberately left outside the lock: by then the new state is already
     /// published, so notifying after unlocking only saves the woken thread from
     /// waking straight onto a mutex this thread still holds.
-    void latch_fatal();
+    void LatchFatal();
 
-    rest_client& rest_;
-    credentials creds_;
-    capture_session& session_;
-    ws_client_config cfg_;
+    RestClient& rest_;
+    Credentials creds_;
+    CaptureSession& session_;
+    WsClientConfig cfg_;
     std::unique_ptr<ix::WebSocket> ws_;
-    staleness_watchdog watchdog_;
+    StalenessWatchdog watchdog_;
 
     std::thread watchdog_thread_;
     std::mutex stop_mutex_;

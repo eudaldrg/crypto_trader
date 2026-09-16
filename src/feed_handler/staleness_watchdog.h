@@ -19,14 +19,14 @@ namespace feed_handler {
 /// Not a timer thread of its own -- a piece of state a poller consults.
 /// note_activity() runs on the connection's thread while is_stale() runs on
 /// whichever thread polls, so the state is atomic.
-class staleness_watchdog {
+class StalenessWatchdog {
   public:
-    explicit staleness_watchdog(std::uint64_t timeout_ns) : timeout_ns_(timeout_ns) {}
+    explicit StalenessWatchdog(std::uint64_t timeout_ns) : timeout_ns_(timeout_ns) {}
 
     /// Records inbound traffic at `now_ns`, arming the watchdog if it was
     /// disarmed. Called for every inbound frame, including transport-level
     /// pongs: any byte from the peer proves the connection is not half-open.
-    void note_activity(std::uint64_t now_ns) {
+    void NoteActivity(std::uint64_t now_ns) {
         last_activity_ns_.store(now_ns, std::memory_order_relaxed);
         armed_.store(true, std::memory_order_release);
     }
@@ -35,29 +35,29 @@ class staleness_watchdog {
     /// deliberately disconnected: silence during a reconnect is expected, and
     /// a still-armed watchdog would otherwise fire again and again, tearing
     /// down each new connection before it had a chance to deliver anything.
-    void disarm() {
+    void Disarm() {
         armed_.store(false, std::memory_order_release);
     }
 
-    bool armed() const {
+    bool Armed() const {
         return armed_.load(std::memory_order_acquire);
     }
 
     /// True once `timeout_ns` has elapsed since the last recorded activity.
     /// A zero timeout disables the check entirely.
-    bool is_stale(std::uint64_t now_ns) const {
-        if (timeout_ns_ == 0 || !armed()) {
+    bool IsStale(std::uint64_t now_ns) const {
+        if (timeout_ns_ == 0 || !Armed()) {
             return false;
         }
         const std::uint64_t last = last_activity_ns_.load(std::memory_order_relaxed);
         return now_ns > last && (now_ns - last) >= timeout_ns_;
     }
 
-    std::uint64_t timeout_ns() const {
+    std::uint64_t TimeoutNs() const {
         return timeout_ns_;
     }
 
-    std::uint64_t last_activity_ns() const {
+    std::uint64_t LastActivityNs() const {
         return last_activity_ns_.load(std::memory_order_relaxed);
     }
 

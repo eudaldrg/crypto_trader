@@ -1,5 +1,5 @@
 // Append-only v1 capture journal writer -- the always-present `message_sink`
-// every capture_session owns, and the only one that makes capture durable.
+// every CaptureSession owns, and the only one that makes capture durable.
 // See decisions/0004-feed-handler-architecture.md and journal_format.h for the
 // on-disk layout.
 #pragma once
@@ -20,16 +20,16 @@ namespace feed_handler {
 ///
 /// Deliberately a dumb sink: it journals whatever frame it is handed and never
 /// originates traffic of its own. Keeping outbound requests out of the journal
-/// is therefore just "don't call on_frame for them" -- there is no outbound
+/// is therefore just "don't call OnFrame for them" -- there is no outbound
 /// path through this class to accidentally take (exchanges/kraken.md: the WS
 /// subscribe payload carries a live token in-body).
 ///
 /// Writes are buffered and NOT fsync'd per record (decisions/0004's
 /// backpressure note): they happen synchronously on the connection's own
 /// thread, so one instance belongs to exactly one thread and needs no locking.
-class journal_writer final : public message_sink {
+class JournalWriter final : public MessageSink {
   public:
-    struct config {
+    struct Config {
         /// Short exchange tag, e.g. "kraken". Truncated to 16 bytes on disk.
         std::string exchange;
         /// Connection-incarnation ordinal for this file, monotonically
@@ -45,16 +45,16 @@ class journal_writer final : public message_sink {
     /// Throws std::runtime_error if the file cannot be opened or the header
     /// cannot be written -- this happens once at connection setup, never on
     /// the per-message path.
-    journal_writer(const std::filesystem::path& path, const config& cfg);
+    JournalWriter(const std::filesystem::path& path, const Config& cfg);
 
-    journal_writer(const journal_writer&) = delete;
-    journal_writer& operator=(const journal_writer&) = delete;
-    journal_writer(journal_writer&&) = delete;
-    journal_writer& operator=(journal_writer&&) = delete;
-    ~journal_writer() override;
+    JournalWriter(const JournalWriter&) = delete;
+    JournalWriter& operator=(const JournalWriter&) = delete;
+    JournalWriter(JournalWriter&&) = delete;
+    JournalWriter& operator=(JournalWriter&&) = delete;
+    ~JournalWriter() override;
 
     /// Journals `frame` as a `wire_message` record. Inbound wire bytes only.
-    void on_frame(const capture_frame& frame) override;
+    void OnFrame(const CaptureFrame& frame) override;
 
     /// Journals the explicit "new connection incarnation, fresh snapshot
     /// follows" marker. `frame.payload` is a free-form reason string rather
@@ -64,37 +64,37 @@ class journal_writer final : public message_sink {
     /// Deliberately its own concrete method rather than an override of
     /// message_sink::on_incarnation(): the marker is a record and needs a
     /// stamped frame, and the only thing entitled to allocate a capture
-    /// sequence number is the capture_session's stamper. on_incarnation() is
+    /// sequence number is the CaptureSession's stamper. on_incarnation() is
     /// the notification other sinks get; this is the record. Hence this writer
     /// leaves that interface method at its inherited no-op.
-    void write_incarnation_marker(const capture_frame& frame);
+    void WriteIncarnationMarker(const CaptureFrame& frame);
 
-    void flush();
+    void Flush();
 
     /// False once any write has failed or an out-of-order frame was rejected.
     /// Sticky: the file is considered unreliable from that point on.
-    bool good() const {
+    bool Good() const {
         return error_.empty();
     }
 
     /// Empty while good(). Never contains payload bytes.
-    const std::string& error() const {
+    const std::string& Error() const {
         return error_;
     }
 
-    std::uint64_t records_written() const {
+    std::uint64_t RecordsWritten() const {
         return records_written_;
     }
 
     /// Highest capture sequence number accepted so far; 0 before the first
     /// record.
-    std::uint64_t last_sequence() const {
+    std::uint64_t LastSequence() const {
         return last_sequence_;
     }
 
   private:
-    void write_record(journal::record_type type, const capture_frame& frame);
-    void fail(std::string reason);
+    void WriteRecord(journal::RecordType type, const CaptureFrame& frame);
+    void Fail(std::string reason);
 
     std::ofstream out_;
     std::vector<char> buffer_;
