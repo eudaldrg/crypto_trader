@@ -66,7 +66,12 @@ this call is exactly the kind of thing the stated <100ns/insert goal would
 be judged on — revisit with real numbers then, not speculatively now.
 
 v1 has exactly one sink implementation: the journal writer. This is
-deliberately the *only* seam that changes across modes and threading models:
+deliberately the *only* seam that changes across modes and threading models.
+(The interface as built is not quite the one described here — it also carries a
+reconnect notification and a per-frame source identity, and the journal writer
+is a special always-present sink rather than one of many. See "MessageSink and
+capture_session: as implemented" below, which supersedes this paragraph and the
+`on_frame` signature above.)
 
 - **LiveTrading** later adds a second sink (the order book).
 - **Replay** swaps the live socket source for a journal-reading source that
@@ -487,6 +492,111 @@ classification path waits for the order book. The choices worth recording:
   (`NoMDEntries`, `NoMDEntryTypes`, `NoRelatedSym`) nests. That is the whole of
   the remaining limitation, and it is stated as such in `fix_message.h` rather
   than left as a general "groups are not supported" warning.
+
+### MessageSink and capture_session: as implemented (2026-09-16, revised)
+
+An independent code review found that the seam this ADR describes was not
+actually the seam that got built, and that both clients had a capture bug on a
+failure path. This subsection is the corrected shape; where it contradicts the
+Decision section above, **this is what the code does**.
+
+What the earlier text claimed and the code did not do:
+
+- "Every exchange connection emits capture frames into a `MessageSink`" was not
+  true of the implementation. `capture_session` held a concrete
+  `journal_writer` and both clients called `capture_session::on_wire_message`
+  directly; nothing ever went through the interface, and there was no way to
+  register a second sink at all. A second sink was not "a later addition", it
+  was impossible.
+- The one event a second sink cannot be correct without — a reconnect — was not
+  on the interface either. `write_incarnation_marker` was a `journal_writer`
+  method, so an order book had no way to learn that it must reset.
+- A frame carried no identity: nothing on a `capture_frame` said which exchange
+  or wire encoding produced it, so a sink fed by both clients would have had to
+  re-derive that from the raw bytes.
+
+What now exists:
+
+- **`message_sink` gains `on_incarnation(incarnation, reason)`** alongside the
+  pure-virtual `on_frame`, with a no-op default body. Most sinks have no state
+  to reset; an order book has nothing but.
+- **The incarnation marker record and the incarnation notification stay two
+  different things.** `journal_writer` keeps `write_incarnation_marker(frame)`
+  as its own concrete method, called directly by `capture_session`, and does
+  *not* override `on_incarnation`. The marker is a *record*: it needs a stamped
+  frame so it takes its place in this incarnation's capture sequence, and the
+  session's single `capture_stamper` is the only thing entitled to hand out a
+  sequence number. Routing it through `on_incarnation` instead would mean the
+  writer stamping its own frames from a second sequence source, which is
+  exactly what a single stamper exists to prevent. The notification form needs
+  no sequence number at all, so the two do not collapse into one call.
+- **`capture_session::add_sink(message_sink&)` registers additional non-owning
+  sinks** (a small `std::vector<message_sink*>`), which receive both `on_frame`
+  and `on_incarnation`. The journal writer is deliberately not one of them: it
+  is the always-present sink that makes capture durable, it is the only one
+  whose failure `on_wire_message` reports, and it always goes first — the same
+  "journal first, classify second" discipline both clients already follow, one
+  level down, so nothing a downstream sink does can decide whether a record is
+  written. Extra sinks *do* still see a frame whose journal write failed: what
+  failed is the disk, not the data. Sinks are told about an incarnation only
+  once it is actually usable, since every caller treats a failed
+  `begin_incarnation` as fatal to capture.
+- This is all the fan-out there is, on purpose: same thread, same call, no
+  queue. The cross-thread fan-in seam above is unchanged and still future work.
+  It will change what a sink does inside `on_frame`, not this call — which is
+  the whole point of the frame-ownership contract.
+- **`capture_frame` gains `frame_source source`** — an enum naming the wire
+  shape (`kraken_json`, `deribit_fix`, `unknown`), not just the exchange,
+  because what a sink has to decide is which parser the payload goes to. It is
+  supplied by the *client*, at the `on_wire_message`/`begin_incarnation` call
+  site, rather than configured on `capture_session`: the client is the only
+  thing that knows first-hand what it just received, whereas a session
+  configured by the binary that owns it could be handed the wrong answer and
+  nothing would notice until an order book parsed JSON as tag=value.
+- **`frame_source` is not in the journal format and needs no version bump.** A
+  journal file is one per (exchange, connection-incarnation) and its header
+  already carries the exchange tag, so a replay source recovers this once per
+  file rather than once per record.
+
+Two capture bugs fixed with it, both on the path an order book would sit on:
+
+- **Kraken now treats a failed journal write as fatal**, as Deribit already
+  did. It previously only logged, so after (say) a full disk the
+  `while (... && !client.fatal())` loop in `kraken_feed_handler` never noticed
+  and the process ran "healthy" while capturing nothing — the exact outcome the
+  "failing to open a journal file is fatal" rule exists to prevent, arrived at
+  from the other direction. A message arriving *before* the first incarnation
+  is deliberately still not fatal: that one is recoverable on the next connect.
+  Kraken's `wait_for_stop` predicate now includes `fatal()` too; the fatal
+  paths were already calling `notify_all()` on that condition variable, but a
+  predicate that only looked at `stopping_` sent the woken waiter straight back
+  to sleep for the rest of its timeout.
+- **Deribit now closes the capture session on every exit from its read loop**,
+  via an RAII guard rather than a `close()` before each `return` (there are a
+  dozen, and the next one added would have been missed). Previously *no* path
+  closed it: a gap, a peer Logout, framing loss, a `recv()` error and a
+  staleness reconnect all left the file open with up to a full 1 MiB write
+  buffer unflushed until the next successful connection's `begin_incarnation`
+  closed it — up to `max_reconnect_wait_ms` (30s) later, or never if the
+  exchange stayed down. Kraken already did the equivalent on its `Close` event,
+  for the reason its comment gives: a closed file is a complete, readable one.
+
+Testing notes worth keeping:
+
+- The Deribit loopback harness gained the ability to stop listening mid-test.
+  That is what makes "the journal was closed" observable at all: with the
+  listener still up, the client reconnects immediately and the *next*
+  `begin_incarnation` closes the previous file regardless, so the test would
+  pass either way. With nothing to reconnect to, the only thing that can have
+  closed the file is the path under test. "Closed" is asserted as "reads back
+  from disk in full, at clean EOF" rather than as a counter, since records sit
+  in the userspace buffer until something flushes it.
+- Kraken has no equivalent live-socket harness (IXWebSocket owns its thread and
+  fd, and a real connection would also need a signed REST token call), so
+  `ws_client::handle_message` is public and driven directly, in the same spirit
+  as `rest_client::parse_asset_pairs`. The journal failure it needs is produced
+  by latching the writer's sticky error with an oversized record, which is the
+  same sticky state a full disk leaves behind.
 
 ## Consequences
 
