@@ -200,12 +200,19 @@ tag=value bytes:
   timer: no message (including heartbeats) within N seconds forces a
   reconnect (new connection incarnation), regardless of what the transport
   library does or doesn't do on its own.
-- **Deribit (future, FIX)**: two independent sequencing layers — FIX
-  session-level `MsgSeqNum` (transport reliability, standard
-  `ResendRequest`/`SequenceReset` recovery) and MD-level
-  `MDUpdateAction`/full-refresh-vs-incremental (business-level). Neither
-  exchange hands this feed handler multiple incremental streams to merge, so
-  there's no fan-in-gap-merging problem to design for at this stage.
+- **Deribit (FIX)**: two independent sequencing layers — FIX session-level
+  `MsgSeqNum` (transport reliability) and MD-level
+  `MDUpdateAction`/full-refresh-vs-incremental (business-level). Standard FIX
+  repairs a session-level gap with `ResendRequest`/`SequenceReset`; **v1
+  deliberately does not implement that**, and an earlier draft of this bullet
+  describing it as the recovery mechanism here was wrong. A detected gap means
+  the session is no longer trustworthy, so the response is the same as
+  Kraken's: drop the connection, re-logon, take a fresh snapshot. That keeps
+  one recovery story across both exchanges instead of two, and gap-fill is
+  only worth building if a real session turns out to gap often enough that
+  reconnecting is too expensive. Neither exchange hands this feed handler
+  multiple incremental streams to merge, so there's no fan-in-gap-merging
+  problem to design for at this stage.
 - Instrument reference data (Kraken `GET /0/public/AssetPairs`) is fetched
   once at startup via REST and cached in memory — not part of the streaming
   journal.
@@ -292,6 +299,58 @@ binary. The choices worth recording:
   socket. Files are named `<exchange>-<incarnation>-<UTC timestamp>.journal`:
   the incarnation is what the format cares about, the timestamp keeps
   separate process runs (which all start counting at 1) from colliding.
+
+### Deribit FIX session layer: as implemented (2026-09-16)
+
+`src/feed_handler/fix/fix_message.*` (generic FIX.4.4 tag=value mechanics) and
+`src/feed_handler/deribit/deribit_fix_session.*` (Deribit's Logon /
+MarketDataRequest / Heartbeat construction and sequence tracking). Pure logic;
+the raw socket and the `capture_session` wiring are a separate slice. The
+choices worth recording:
+
+- **Split generic from exchange-specific.** The envelope arithmetic, the
+  framer and the field parser know nothing about Deribit, and the Deribit half
+  knows nothing about sockets. That split is what makes the first live Logon
+  debuggable: if the session is rejected, the envelope was already verified
+  offline against a reference implementation, so the fault is in the
+  credentials or the field set, not the framing.
+- **The framer finds a message's end from `BodyLength`, never by searching for
+  `10=`.** Those three bytes occur naturally inside prices and ids, so
+  scanning for them splits messages in the wrong place on real data.
+- **Framing and validation are separate steps.** The framer delimits bytes;
+  `parse_message` validates `BodyLength` and `CheckSum`. A structurally
+  delimited message with a bad checksum is therefore handed out and then
+  rejected, rather than silently swallowed by the framer — the client gets to
+  decide what a bad checksum means for the session. Framer errors are sticky
+  and there is deliberately **no resynchronisation** by hunting for the next
+  `8=FIX.4.4`: once framing is lost, every byte after it is unaligned, and the
+  answer is the same reconnect the gap policy above prescribes.
+- **Repeating groups are not parsed into a structure in v1.** `parse_message`
+  produces a flat, ordered field list; `get()` returns the first occurrence of
+  a tag, which is correct for top-level session fields and wrong for a group
+  member. Building groups outbound is unaffected (FIX groups are positional,
+  so an ordered field list is exactly right). This is a real corner cut, and
+  it has to be closed before `35=W`/`35=X` book content can be read — it is
+  flagged in `fix_message.h`, and the ordered list is kept precisely so a group
+  parser layers on without re-parsing.
+- **A detected sequence gap is reported, not repaired**, per the corrected
+  bullet above. The expectation advances past the gap rather than staying put,
+  so one lost message produces one gap report instead of an identical report
+  on every subsequent message while the reconnect is still in flight.
+  `PossDupFlag(43)=Y` is exempt from the check: an administrative resend
+  legitimately repeats a sequence number and must not tear down a healthy
+  session.
+- **The Logon password hash is pinned against two independent
+  implementations**, not against itself: a Python `hashlib`/`base64` known
+  answer for a fixed fake timestamp/nonce/secret, and a whole-message byte
+  comparison against `simplefix`'s own `encode()` — the library the probe
+  Deribit's testnet actually accepted was written with. Same discipline that
+  caught the Kraken HMAC bugs.
+- **base64/SHA-256 are re-implemented in the Deribit TU rather than shared
+  with `kraken_signing`.** A Deribit translation unit that has to include a
+  Kraken header to log on is exactly the coupling this second backend exists
+  to catch. If a third user appears, promote them to a shared helper — do not
+  let one exchange depend on another.
 
 ## Consequences
 
