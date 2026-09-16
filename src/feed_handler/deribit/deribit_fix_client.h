@@ -49,6 +49,14 @@
 
 namespace feed_handler::deribit {
 
+/// What every frame this client captures is: Deribit FIX.4.4 tag=value bytes.
+///
+/// Stamped onto each frame by this client rather than taken from the
+/// capture_session's configuration, for the same reason Kraken's equivalent is
+/// (kraken_ws_client.h): the client is the only thing that knows first-hand
+/// what shape the bytes it just received are in.
+inline constexpr frame_source kWireSource = frame_source::deribit_fix;
+
 /// What an inbound message is, to the extent this build needs to know. Book
 /// content is deliberately not parsed here even though `fix::read_group()` can
 /// now read a 35=W/35=X entry list: journaling raw bytes is v1's whole job,

@@ -246,7 +246,8 @@ void fix_client::run_one_connection() {
     last_outbound_ns_ = monotonic_now_ns();
 
     const auto path = capture_.begin_incarnation("deribit fix " + cfg_.symbol + " connected to " +
-                                                 cfg_.host + ":" + std::to_string(cfg_.port));
+                                                     cfg_.host + ":" + std::to_string(cfg_.port),
+                                                 kWireSource);
     if (!path) {
         // Same rule as Kraken: staying connected while unable to capture would
         // silently throw away the data this process exists to collect.
@@ -408,7 +409,7 @@ bool fix_client::drain_framed_messages(int fd) {
 }
 
 bool fix_client::journal_message(std::string_view raw) {
-    if (capture_.on_wire_message(bytes_of(raw))) {
+    if (capture_.on_wire_message(bytes_of(raw), kWireSource)) {
         return true;
     }
     const std::string_view reason = capture_.error();

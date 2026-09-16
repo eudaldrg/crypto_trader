@@ -250,8 +250,8 @@ void ws_client::handle_open() {
         return;
     }
 
-    const auto path =
-        session_.begin_incarnation("kraken level3 " + cfg_.symbol + " connected to " + cfg_.url);
+    const auto path = session_.begin_incarnation(
+        "kraken level3 " + cfg_.symbol + " connected to " + cfg_.url, kWireSource);
     if (!path) {
         // Staying connected while unable to capture would silently throw away
         // the data this process exists to collect.
@@ -273,7 +273,7 @@ void ws_client::handle_message(const std::string& payload) {
     // Journal first, classify second: a message this build does not understand
     // must still reach the file verbatim (decisions/0004, journal everything
     // inbound), and classification must never be able to cost a record.
-    if (!session_.on_wire_message(bytes_of(payload))) {
+    if (!session_.on_wire_message(bytes_of(payload), kWireSource)) {
         const std::string_view reason = session_.error();
         log_error(reason.empty() ? std::string("dropped a message: no journal file open")
                                  : "journal write failed: " + std::string(reason));

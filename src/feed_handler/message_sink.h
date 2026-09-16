@@ -6,8 +6,32 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <string_view>
 
 namespace feed_handler {
+
+/// Which connection produced a frame, and therefore what shape its bytes are
+/// in. Named after the wire encoding rather than just the exchange, because
+/// what a sink actually has to decide is which parser the payload goes to.
+///
+/// This exists so a sink fed by more than one connection -- the order book,
+/// once it exists -- can branch without re-deriving the answer from the raw
+/// bytes it was handed.
+///
+/// Deliberately NOT part of the on-disk journal format: a journal file is one
+/// per (exchange, connection-incarnation) and its header already carries the
+/// exchange tag, so a replay source recovers this once per file rather than
+/// once per record, and the format needs no version bump for it
+/// (journal_format.h).
+enum class frame_source : std::uint8_t {
+    /// Not stated. Nothing on a live path produces this; it is what a
+    /// default-constructed frame carries.
+    unknown = 0,
+    /// Kraken WebSocket v2 JSON text (kraken/kraken_ws_client.h).
+    kraken_json = 1,
+    /// Deribit FIX.4.4 tag=value bytes (deribit/deribit_fix_client.h).
+    deribit_fix = 2,
+};
 
 /// Raw wire bytes exactly as received from an exchange, plus the capture
 /// metadata the journal format records.
@@ -30,10 +54,16 @@ struct capture_frame {
     /// CLOCK_MONOTONIC reading taken when the frame was captured. Correlating
     /// it to wall clock needs the per-file anchor pair in the journal header.
     std::uint64_t monotonic_ns = 0;
+
+    /// Which connection/wire encoding this payload came off. Set by the
+    /// exchange client at the capture call site, since that is the only place
+    /// that knows first-hand what it just received.
+    frame_source source = frame_source::unknown;
 };
 
-/// Consumer of capture frames. v1 has exactly one implementation (the journal
-/// writer); LiveTrading later adds the order book as a second one.
+/// Consumer of capture frames: the journal writer, and -- once it exists --
+/// the order book. capture_session fans one frame out to the journal writer
+/// plus any number of registered sinks.
 ///
 /// Dispatch mechanism (virtual vs. a compile-time policy) is deliberately left
 /// open by decisions/0004 until there is a real hot-path sink to measure, so
@@ -49,6 +79,17 @@ class message_sink {
 
     /// Called once per inbound wire message, on the connection's own thread.
     virtual void on_frame(const capture_frame& frame) = 0;
+
+    /// Called when a new connection incarnation begins, before any of its
+    /// frames: "the connection was re-established, a fresh snapshot follows,
+    /// throw away whatever you built from the previous one". `reason` is the
+    /// same free-form text journaled in the incarnation marker record.
+    ///
+    /// This is the one event a stateful sink cannot be correct without -- a
+    /// reconnect is exactly when an order book has to reset -- but most sinks
+    /// have no state to reset, hence a no-op default rather than a second pure
+    /// virtual every implementation would have to write out.
+    virtual void on_incarnation(std::uint64_t /*incarnation*/, std::string_view /*reason*/) {}
 };
 
 /// Nanoseconds since an unspecified monotonic epoch (CLOCK_MONOTONIC).
@@ -66,9 +107,14 @@ std::uint64_t realtime_now_ns();
 class capture_stamper {
   public:
     /// Returns a frame viewing `payload` (no copy) stamped with the next
-    /// sequence number and the current monotonic time. Sequence numbers start
-    /// at 1, so 0 is always available as "no frame yet".
-    capture_frame stamp(std::span<const std::byte> payload);
+    /// sequence number, the current monotonic time and `source`. Sequence
+    /// numbers start at 1, so 0 is always available as "no frame yet".
+    ///
+    /// `source` defaults to unknown for the benefit of writer-level tests: the
+    /// journal format does not record it, so a test exercising the on-disk
+    /// bytes has nothing to say about it. Every live capture path states it.
+    capture_frame stamp(std::span<const std::byte> payload,
+                        frame_source source = frame_source::unknown);
 
     std::uint64_t last_sequence() const {
         return sequence_;

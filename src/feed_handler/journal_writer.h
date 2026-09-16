@@ -1,6 +1,7 @@
-// Append-only v1 capture journal writer -- the single `message_sink`
-// implementation in v1. See decisions/0004-feed-handler-architecture.md and
-// journal_format.h for the on-disk layout.
+// Append-only v1 capture journal writer -- the always-present `message_sink`
+// every capture_session owns, and the only one that makes capture durable.
+// See decisions/0004-feed-handler-architecture.md and journal_format.h for the
+// on-disk layout.
 #pragma once
 
 #include <cstdint>
@@ -59,6 +60,13 @@ class journal_writer final : public message_sink {
     /// follows" marker. `frame.payload` is a free-form reason string rather
     /// than wire data; the caller stamps it like any other frame so the marker
     /// takes its place in the same capture sequence.
+    ///
+    /// Deliberately its own concrete method rather than an override of
+    /// message_sink::on_incarnation(): the marker is a record and needs a
+    /// stamped frame, and the only thing entitled to allocate a capture
+    /// sequence number is the capture_session's stamper. on_incarnation() is
+    /// the notification other sinks get; this is the record. Hence this writer
+    /// leaves that interface method at its inherited no-op.
     void write_incarnation_marker(const capture_frame& frame);
 
     void flush();
