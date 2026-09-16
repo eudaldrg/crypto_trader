@@ -265,6 +265,14 @@ add_project_executable(kraken_feed_handler
 )
 target_link_libraries(kraken_feed_handler PRIVATE feed_handler)
 
+# The live Deribit FIX capture binary: decisions/0004's second exchange
+# backend, hand-rolled over a raw POSIX socket. Credentials come from the
+# environment; see the file's header comment.
+add_project_executable(deribit_feed_handler
+  src/feed_handler/deribit/deribit_feed_handler_main.cpp
+)
+target_link_libraries(deribit_feed_handler PRIVATE feed_handler)
+
 if(BUILD_TESTING)
   # Proves the FetchContent wiring for IXWebSocket/simdjson/GoogleTest
   # actually works end-to-end -- not feed handler behavior.
