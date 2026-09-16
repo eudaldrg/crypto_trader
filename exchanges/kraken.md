@@ -49,9 +49,20 @@ as the same asset rather than trusting `wsname` verbatim.
    reconnect loop (two calls within the same millisecond). The C++ client
    uses `max(current_microseconds_since_epoch, last_nonce_used + 1)`, which
    stays strictly increasing across same-microsecond bursts *and* backwards
-   NTP steps. No cross-process high-water mark is persisted: v1 assumes one
-   continuously running process per API key, so a restart that rewinds the
-   clock, or a second process sharing the key, would still need one.
+   NTP steps. The high-water mark is **also persisted** to a small local file
+   (`state/kraken-nonce.state` next to `journal/`, one decimal number, written
+   via temp file + rename after every signed call), so a restart cannot rewind
+   it either: on startup the next nonce is
+   `max(persisted + 1, current_microseconds)`. Neither source is trusted
+   alone — the file cannot hold the nonce back once the clock has moved past
+   it, and the clock cannot regress below what the file has seen.
+
+   The file is defense in depth, never a startup dependency: a missing file
+   (ordinary first run), unparseable contents and an unwritable directory all
+   fall back to plain clock-only behavior with a warning. Nonce values are not
+   secret, so unlike the key/secret/token they are logged and stored in the
+   clear. The file is per (API key, machine): **two processes sharing one API
+   key still need a shared mark** and are not made safe by this.
 4. **Never journal the token or any raw `subscribe` payload** — the token
    travels inside the WS message body (see `decisions/0004`'s journal-format
    section), not a header, so a naive "journal everything on this

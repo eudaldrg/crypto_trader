@@ -10,6 +10,9 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <set>
 #include <span>
 #include <string>
@@ -25,8 +28,19 @@ using feed_handler::kraken::base64_decode;
 using feed_handler::kraken::base64_encode;
 using feed_handler::kraken::encode_post_data;
 using feed_handler::kraken::nonce_generator;
+using feed_handler::kraken::persistent_nonce_source;
 using feed_handler::kraken::sign_private_request;
 using feed_handler::kraken::url_encode;
+
+void write_text_file(const std::filesystem::path& path, std::string_view text) {
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    output << text;
+}
+
+std::string read_text_file(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
 
 // A throwaway secret that has never been a real key: base64 of the ASCII
 // "kraken-test-secret-do-not-use-0123456789".
@@ -248,4 +262,137 @@ TEST(KrakenCredentials, RefusesToSignWithoutCredentials) {
     const auto result = client.fetch_websockets_token({});
     ASSERT_FALSE(result.has_value());
     EXPECT_NE(result.error().find("not set"), std::string::npos);
+}
+
+TEST(KrakenNonce, DefaultConstructedPersistentSourceBehavesLikeTheBareGenerator) {
+    // Backward compatibility: anything not opting into a state file must get
+    // exactly today's in-memory behavior, and must touch no files at all.
+    persistent_nonce_source source;
+    nonce_generator reference;
+    EXPECT_FALSE(source.persisting());
+    EXPECT_TRUE(source.state_file().empty());
+    EXPECT_EQ(source.seeded_from(), 0U);
+
+    for (const std::uint64_t now : {1'700'000'000'000'000ULL, 1'700'000'000'000'000ULL,
+                                    1'699'999'999'000'000ULL, 1'700'000'000'000'010ULL, 0ULL}) {
+        EXPECT_EQ(source.next_from(now), reference.next_from(now));
+    }
+    EXPECT_EQ(source.last(), reference.last());
+}
+
+/// Gives each test its own directory under the system temp dir, so a state
+/// file written by one test cannot seed another.
+class KrakenNonceState : public ::testing::Test {
+  protected:
+    void SetUp() override {
+        directory_ = std::filesystem::temp_directory_path() /
+                     ("kraken_nonce_" +
+                      std::string(::testing::UnitTest::GetInstance()->current_test_info()->name()));
+        std::filesystem::remove_all(directory_);
+        std::filesystem::create_directories(directory_);
+        path_ = directory_ / "kraken-nonce.state";
+    }
+
+    void TearDown() override {
+        std::filesystem::remove_all(directory_);
+    }
+
+    std::filesystem::path directory_;
+    std::filesystem::path path_;
+};
+
+TEST_F(KrakenNonceState, SurvivesARestartAtTheSameFile) {
+    constexpr std::uint64_t kNow = 1'700'000'000'000'000ULL;
+
+    std::uint64_t last_before_restart = 0;
+    {
+        persistent_nonce_source source(path_);
+        EXPECT_TRUE(source.persisting());
+        EXPECT_EQ(source.seeded_from(), 0U);
+        source.next_from(kNow);
+        source.next_from(kNow);
+        last_before_restart = source.next_from(kNow);
+    }
+    EXPECT_EQ(last_before_restart, kNow + 2);
+    EXPECT_TRUE(std::filesystem::exists(path_));
+    EXPECT_EQ(read_text_file(path_), std::to_string(last_before_restart) + "\n");
+
+    // The restart: a fresh process, same file, and a clock that has not moved.
+    persistent_nonce_source restarted(path_);
+    EXPECT_EQ(restarted.seeded_from(), last_before_restart);
+    EXPECT_EQ(restarted.next_from(kNow), last_before_restart + 1);
+    EXPECT_EQ(restarted.next_from(kNow), last_before_restart + 2);
+}
+
+TEST_F(KrakenNonceState, DoesNotRegressWhenThePersistedMarkIsInTheFuture) {
+    // The case the file exists for: the clock stepped backwards while the
+    // process was down, so "now" is well behind what Kraken has already seen.
+    constexpr std::uint64_t kPersisted = 1'700'000'000'000'000ULL;
+    constexpr std::uint64_t kRewoundNow = 1'699'999'000'000'000ULL;
+    write_text_file(path_, std::to_string(kPersisted) + "\n");
+
+    persistent_nonce_source source(path_);
+    EXPECT_EQ(source.seeded_from(), kPersisted);
+    EXPECT_EQ(source.next_from(kRewoundNow), kPersisted + 1);
+    EXPECT_EQ(source.next_from(kRewoundNow), kPersisted + 2);
+    // And the clock wins again as soon as it has genuinely caught up.
+    EXPECT_EQ(source.next_from(kPersisted + 500), kPersisted + 500);
+}
+
+TEST_F(KrakenNonceState, FallsBackToTheClockWhenTheFileIsMissing) {
+    constexpr std::uint64_t kNow = 1'700'000'000'000'000ULL;
+    ASSERT_FALSE(std::filesystem::exists(path_));
+
+    // First run: nothing to restore, so this is plain clock behavior, and the
+    // mark starts being recorded from here.
+    persistent_nonce_source source(path_);
+    EXPECT_EQ(source.seeded_from(), 0U);
+    EXPECT_EQ(source.next_from(kNow), kNow);
+    EXPECT_EQ(read_text_file(path_), std::to_string(kNow) + "\n");
+}
+
+TEST_F(KrakenNonceState, FallsBackToTheClockOnAGarbageFile) {
+    constexpr std::uint64_t kNow = 1'700'000'000'000'000ULL;
+    for (const std::string_view contents :
+         {"", "   \n", "not-a-nonce", "1700000000000000 1700000000000001", "-5", "1e6",
+          "1700000000000000garbage"}) {
+        write_text_file(path_, contents);
+
+        persistent_nonce_source source(path_);
+        EXPECT_EQ(source.seeded_from(), 0U) << "contents: " << contents;
+        EXPECT_EQ(source.next_from(kNow), kNow) << "contents: " << contents;
+        // The unusable contents are replaced rather than left to be re-read.
+        EXPECT_EQ(read_text_file(path_), std::to_string(kNow) + "\n");
+    }
+}
+
+TEST_F(KrakenNonceState, ToleratesAnUnwritableLocation) {
+    // The parent "directory" is a regular file, so neither create_directories
+    // nor the write can ever succeed -- which must still leave a perfectly
+    // usable clock-only nonce source rather than a failed startup.
+    constexpr std::uint64_t kNow = 1'700'000'000'000'000ULL;
+    const std::filesystem::path blocker = directory_ / "not-a-directory";
+    write_text_file(blocker, "occupied");
+    const std::filesystem::path unwritable = blocker / "kraken-nonce.state";
+
+    persistent_nonce_source source(unwritable);
+    EXPECT_TRUE(source.persisting());
+    EXPECT_EQ(source.seeded_from(), 0U);
+    EXPECT_EQ(source.next_from(kNow), kNow);
+    EXPECT_EQ(source.next_from(kNow), kNow + 1);
+    EXPECT_FALSE(std::filesystem::is_directory(blocker));
+}
+
+TEST_F(KrakenNonceState, RestClientOptsInWithoutChangingTheDefault) {
+    // The wiring the binary uses: a path on the rest_client seeds the same
+    // source, while the default constructor stays purely in-memory.
+    write_text_file(path_, "1700000000000000\n");
+    const feed_handler::kraken::rest_client persisted(
+        std::string(feed_handler::kraken::rest_client::kDefaultBaseUrl), path_);
+    EXPECT_TRUE(persisted.nonce_source().persisting());
+    EXPECT_EQ(persisted.nonce_source().seeded_from(), 1'700'000'000'000'000ULL);
+
+    const feed_handler::kraken::rest_client plain;
+    EXPECT_FALSE(plain.nonce_source().persisting());
+    EXPECT_EQ(plain.nonce_source().seeded_from(), 0U);
 }

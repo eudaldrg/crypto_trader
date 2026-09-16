@@ -300,6 +300,44 @@ binary. The choices worth recording:
   the incarnation is what the format cares about, the timestamp keeps
   separate process runs (which all start counting at 1) from colliding.
 
+### Kraken nonce persistence: as implemented (2026-09-16)
+
+`persistent_nonce_source` in `src/feed_handler/kraken/kraken_signing.*`, wired
+into `kraken_feed_handler` as `state/kraken-nonce.state` (gitignored, same
+reasoning as `journal/`). Kraken's strictly-increasing-nonce rule is
+per-API-key and *not* self-healing — one nonce below a value already used
+rejects every later call with that key until the clock catches back up — so a
+restart landing on a backwards clock step is worth covering even though the
+microsecond wall clock handles it in every ordinary case. The choices worth
+recording:
+
+- **Persistence wraps `nonce_generator`, it is not inside it.** The generator
+  stays a pure `max(now, last + 1)` rule with an injectable "now" and no I/O,
+  which is what makes the interesting cases (same-microsecond bursts,
+  backwards NTP steps) directly unit-testable; the wrapper adds a seed on
+  construction and a write per issuance and nothing else. Persistence is
+  opt-in by path — default-constructed, the wrapper is byte-for-byte the old
+  behavior, so nothing that does not ask for a file pays for one.
+- **Neither the file nor the clock is trusted alone.** Startup seeds the
+  high-water mark, not the next value, so the existing rule decides progress
+  and yields `max(persisted + 1, now_micros)`.
+- **Written on every issuance, not batched.** A signed call happens at most
+  once per (re)connect, so batching buys nothing measurable and a batched mark
+  is precisely the mark that is stale after a crash.
+- **Temp file + rename rather than fsync.** The failure that matters is a
+  *smaller* mark surviving, which a torn truncating write can produce and a
+  rename cannot. Full durability is deliberately not bought: the wall clock
+  still covers the case where the file is lost entirely.
+- **Every file error is a warning, never a startup failure** — missing (the
+  ordinary first run), corrupt, or unwritable all fall back to today's
+  clock-only path. The opposite of the journal rule, and for the opposite
+  reason: failing to journal loses the data the process exists to collect,
+  whereas failing to persist a nonce only removes a backstop for a case the
+  clock almost always already handles.
+- Still unsolved on purpose: **two processes sharing one API key.** That needs
+  a shared mark (or one key each), and a local file does not pretend to give
+  it.
+
 ### Deribit FIX session layer: as implemented (2026-09-16)
 
 `src/feed_handler/fix/fix_message.*` (generic FIX.4.4 tag=value mechanics) and
