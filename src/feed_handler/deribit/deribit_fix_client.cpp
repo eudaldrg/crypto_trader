@@ -300,6 +300,16 @@ void fix_client::run_one_connection() {
     std::string buffer(kReceiveBufferBytes, '\0');
 
     while (!stopping() && !fatal()) {
+        // Before the recv(), not inside its timeout branch: the Heartbeat is
+        // owed on outbound silence (exchanges/deribit.md), and on a busy feed
+        // recv() keeps returning data promptly, so a check that only ran when
+        // the receive timed out would never run at all on exactly the session
+        // that is carrying real market data. The check itself is a monotonic
+        // clock read and a comparison, so running it every iteration is free.
+        if (!send_heartbeat_if_due(socket_fd.get())) {
+            return;
+        }
+
         const ssize_t received = ::recv(socket_fd.get(), buffer.data(), buffer.size(), 0);
         if (received < 0) {
             if (errno == EINTR) {
@@ -313,14 +323,6 @@ void fix_client::run_one_connection() {
                     log_warn("forcing reconnect: no inbound message in " +
                              std::to_string(cfg_.staleness_timeout_ns / kNanosPerSecond) + "s");
                     return;
-                }
-                const std::uint64_t interval_ns =
-                    static_cast<std::uint64_t>(session_.config().heartbeat_interval_seconds) *
-                    kNanosPerSecond;
-                if (logged_on_ && monotonic_now_ns() - last_outbound_ns_ >= interval_ns) {
-                    if (!send_all(socket_fd.get(), session_.build_heartbeat())) {
-                        return;
-                    }
                 }
                 continue;
             }
@@ -448,6 +450,25 @@ bool fix_client::journal_message(std::string_view raw) {
     fatal_.store(true, std::memory_order_release);
     stop_cv_.notify_all();
     return false;
+}
+
+bool fix_client::send_heartbeat_if_due(int fd) {
+    // Nothing is owed before the Logon is accepted: the session that the
+    // interval belongs to does not exist yet.
+    if (!logged_on_ || session_.config().heartbeat_interval_seconds <= 0) {
+        // HeartBtInt(108)=0 is FIX for "no heartbeats", and sending on a zero
+        // interval would be one Heartbeat per loop tick rather than none.
+        return true;
+    }
+    const std::uint64_t interval_ns =
+        static_cast<std::uint64_t>(session_.config().heartbeat_interval_seconds) * kNanosPerSecond;
+    if (monotonic_now_ns() - last_outbound_ns_ < interval_ns) {
+        return true;
+    }
+    // send_all() restamps last_outbound_ns_, so answering a TestRequest or
+    // sending a subscribe postpones the scheduled Heartbeat exactly as the
+    // "outbound silence" rule says it should.
+    return send_all(fd, session_.build_heartbeat());
 }
 
 std::expected<int, std::string> fix_client::connect_socket() {

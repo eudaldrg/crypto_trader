@@ -115,6 +115,17 @@ constexpr int kStepTimeoutMs = 2'000;
 constexpr int kLoopbackRecvTimeoutMs = 20;
 constexpr std::uint64_t kLoopbackStalenessNs = 5ULL * 1'000'000'000ULL;
 
+/// The busy-connection Heartbeat test's clocks. One inbound message every
+/// kTrickleIntervalMs, against a receive timeout a hundred times longer, is what
+/// makes the recv() timeout branch unreachable for that test's duration: if a
+/// Heartbeat appears, the loop's own schedule is the only thing that can have
+/// sent it. kHeartbeatDeadlineMs is slack around the 1s interval, not a value
+/// anything waits for when the client behaves.
+constexpr int kLoopbackHeartbeatSeconds = 1;
+constexpr int kTrickleIntervalMs = 5;
+constexpr int kBusyRecvTimeoutMs = 500;
+constexpr int kHeartbeatDeadlineMs = 4'000;
+
 /// The sockaddr_in -> sockaddr cast every BSD-socket call needs, in one place.
 /// reinterpret_cast rather than the std::bit_cast used elsewhere in this
 /// project: bit_cast between pointer types is itself a lint finding
@@ -752,6 +763,57 @@ TEST_F(DeribitFixLoopback, ClosesTheJournalWhenTheStalenessWatchdogFires) {
     // Logon are what the file must contain by the time the watchdog fires.
     EXPECT_TRUE(expect_closed_journal(dir_, 1, 2));
     EXPECT_GE(client.forced_reconnects(), 1U);
+
+    client.stop();
+}
+
+TEST_F(DeribitFixLoopback, SendsItsScheduledHeartbeatWhileInboundDataKeepsFlowing) {
+    // The bug this covers: the HeartBtInt check used to sit inside the
+    // recv()-timed-out branch, so it only ran on a *quiet* connection. What the
+    // exchange is owed is a Heartbeat every HeartBtInt of outbound silence
+    // (exchanges/deribit.md), which has nothing to do with inbound traffic -- so
+    // on a busy feed, where recv() keeps returning data promptly, the client's
+    // own scheduled Heartbeat never fired at all. It escaped notice live only
+    // because a TestRequest is answered through a different path.
+    session_config session_cfg = test_config();
+    session_cfg.heartbeat_interval_seconds = kLoopbackHeartbeatSeconds;
+
+    fix_client_config cfg = loopback_config();
+    // Long next to the trickle below: the receive timeout must not be able to
+    // expire while this test runs, or the old code would pass it too.
+    cfg.recv_timeout_ms = kBusyRecvTimeoutMs;
+
+    capture_session capture({.directory = dir_, .exchange = "deribit"});
+    fix_client client(std::move(session_cfg), capture, cfg);
+    client.start();
+
+    peer exchange = server_.accept_one(kStepTimeoutMs);
+    ASSERT_TRUE(exchange.connected()) << "the client never connected";
+    // Returns with the MarketDataRequest taken off the wire, so the next thing
+    // the client sends is the thing under test -- and that request is also the
+    // last outbound byte, i.e. where the heartbeat interval starts counting.
+    ASSERT_TRUE(complete_handshake(exchange));
+
+    // Deribit's own heartbeats, in sequence, faster than the client's receive
+    // timeout: a continuously busy connection.
+    std::uint64_t inbound_seq_num = 2;
+    std::optional<std::string> sent;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(kHeartbeatDeadlineMs);
+    while (!sent && std::chrono::steady_clock::now() < deadline) {
+        ASSERT_TRUE(exchange.send(inbound(msg_type::heartbeat, inbound_seq_num++)))
+            << "the client dropped the connection mid-trickle";
+        sent = exchange.read_message(kTrickleIntervalMs);
+    }
+
+    ASSERT_TRUE(sent.has_value()) << "the client never sent its scheduled Heartbeat in "
+                                  << kHeartbeatDeadlineMs << "ms of continuous inbound traffic";
+    const auto parsed = parse_message(*sent);
+    ASSERT_TRUE(parsed.has_value()) << parsed.error();
+    EXPECT_EQ(parsed->msg_type(), msg_type::heartbeat);
+    // A scheduled Heartbeat, not an answer to something: no TestRequest was
+    // ever sent, so there is no TestReqID(112) to echo.
+    EXPECT_FALSE(parsed->get(tag::test_req_id).has_value());
 
     client.stop();
 }
