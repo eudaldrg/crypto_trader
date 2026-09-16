@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <expected>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -64,7 +65,12 @@ class rest_client {
     static constexpr std::string_view kWebSocketsTokenPath = "/0/private/GetWebSocketsToken";
     static constexpr std::string_view kAssetPairsPath = "/0/public/AssetPairs";
 
-    explicit rest_client(std::string base_url = std::string(kDefaultBaseUrl));
+    /// `nonce_state_file` is where the nonce high-water mark is kept across
+    /// restarts; empty (the default) keeps the pre-existing purely in-memory
+    /// behavior. Best effort either way -- an unusable file never stops the
+    /// client from working (kraken_signing.h).
+    explicit rest_client(std::string base_url = std::string(kDefaultBaseUrl),
+                         std::filesystem::path nonce_state_file = {});
 
     rest_client(const rest_client&) = delete;
     rest_client& operator=(const rest_client&) = delete;
@@ -93,6 +99,13 @@ class rest_client {
         return pairs_.size();
     }
 
+    /// The nonce source backing every signed call. Exposed read-only so a test
+    /// (or a startup log line) can see whether persistence is on and what mark
+    /// it restored.
+    const persistent_nonce_source& nonce_source() const {
+        return nonce_;
+    }
+
     /// Parses an AssetPairs response body. Exposed so the parsing can be
     /// tested against a captured response without a live network call.
     std::expected<std::size_t, std::string> parse_asset_pairs(std::string_view body);
@@ -102,7 +115,7 @@ class rest_client {
 
     std::string base_url_;
     std::unique_ptr<ix::HttpClient> http_;
-    nonce_generator nonce_;
+    persistent_nonce_source nonce_;
     std::unordered_map<std::string, asset_pair> pairs_;
     std::unordered_map<std::string, std::string> aliases_;
 };

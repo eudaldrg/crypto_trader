@@ -9,8 +9,15 @@
 #include <array>
 #include <bit>
 #include <cctype>
+#include <charconv>
+#include <fstream>
+#include <iterator>
 #include <memory>
+#include <optional>
+#include <system_error>
+#include <utility>
 
+#include "feed_handler/logging.h"
 #include "feed_handler/message_sink.h"
 
 namespace feed_handler::kraken {
@@ -90,6 +97,77 @@ std::expected<std::array<std::byte, kSha256Bytes>, std::string> sha256(
         return std::unexpected("kraken: SHA-256 failed");
     }
     return digest;
+}
+
+/// Reads the persisted nonce high-water mark. Returns nullopt for "no usable
+/// value"; `reason` is filled in only when the file existed but could not be
+/// used, because a missing file is the ordinary first run and not worth a
+/// warning.
+std::optional<std::uint64_t> read_high_water_mark(const std::filesystem::path& path,
+                                                  std::string& reason) {
+    std::error_code error;
+    if (!std::filesystem::exists(path, error) || error) {
+        return std::nullopt;
+    }
+
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        reason = "cannot open it for reading";
+        return std::nullopt;
+    }
+    std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    while (!text.empty() && std::isspace(static_cast<unsigned char>(text.back())) != 0) {
+        text.pop_back();
+    }
+
+    std::uint64_t value = 0;
+    const char* const first = std::to_address(text.cbegin());
+    const char* const last = std::to_address(text.cend());
+    const auto parsed = std::from_chars(first, last, value);
+    if (text.empty() || parsed.ec != std::errc{} || parsed.ptr != last) {
+        reason = "contents are not a single decimal nonce";
+        return std::nullopt;
+    }
+    return value;
+}
+
+/// Writes `value` via a sibling temp file plus rename. The rename is what
+/// makes it safe: a crash mid-write would otherwise be able to leave a
+/// *truncated*, i.e. smaller, mark behind, which is the one direction that
+/// matters here. Returns false on any failure -- the caller treats persistence
+/// as best effort.
+bool write_high_water_mark(const std::filesystem::path& path, std::uint64_t value) {
+    std::error_code error;
+    const std::filesystem::path directory = path.parent_path();
+    if (!directory.empty()) {
+        std::filesystem::create_directories(directory, error);
+        if (!std::filesystem::is_directory(directory)) {
+            return false;
+        }
+    }
+
+    std::filesystem::path temporary = path;
+    temporary += ".tmp";
+    {
+        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+        if (!output) {
+            return false;
+        }
+        output << value << '\n';
+        output.flush();
+        if (!output) {
+            output.close();
+            std::filesystem::remove(temporary, error);
+            return false;
+        }
+    }
+
+    std::filesystem::rename(temporary, path, error);
+    if (error) {
+        std::filesystem::remove(temporary, error);
+        return false;
+    }
+    return true;
 }
 
 }  // namespace
@@ -221,6 +299,65 @@ std::uint64_t nonce_generator::next() {
 std::uint64_t nonce_generator::next_from(std::uint64_t now_micros) {
     last_ = std::max(now_micros, last_ + 1);
     return last_;
+}
+
+void nonce_generator::seed_at_least(std::uint64_t value) {
+    last_ = std::max(last_, value);
+}
+
+persistent_nonce_source::persistent_nonce_source(std::filesystem::path state_file)
+    : state_file_(std::move(state_file)) {
+    if (state_file_.empty()) {
+        return;
+    }
+
+    std::string reason;
+    const std::optional<std::uint64_t> persisted = read_high_water_mark(state_file_, reason);
+    if (!persisted) {
+        if (!reason.empty()) {
+            log_warn("kraken: ignoring nonce state file " + state_file_.string() + " (" + reason +
+                     "); falling back to the wall clock");
+        }
+        return;
+    }
+
+    seeded_from_ = *persisted;
+    // Seeding the mark rather than the next value keeps the max(now, last + 1)
+    // rule as the single place progress is decided: the next nonce comes out
+    // as max(persisted + 1, now_micros).
+    generator_.seed_at_least(*persisted);
+    log_info("kraken: nonce high-water mark " + std::to_string(*persisted) + " restored from " +
+             state_file_.string());
+}
+
+std::uint64_t persistent_nonce_source::next() {
+    const std::uint64_t value = generator_.next();
+    persist(value);
+    return value;
+}
+
+std::uint64_t persistent_nonce_source::next_from(std::uint64_t now_micros) {
+    const std::uint64_t value = generator_.next_from(now_micros);
+    persist(value);
+    return value;
+}
+
+void persistent_nonce_source::persist(std::uint64_t value) {
+    if (state_file_.empty()) {
+        return;
+    }
+    // At most one write per signed REST call, i.e. one per (re)connect, so
+    // there is nothing to gain from batching it -- and a batched mark is
+    // exactly the mark that would be stale after a crash.
+    if (write_high_water_mark(state_file_, value)) {
+        write_failed_ = false;
+        return;
+    }
+    if (!write_failed_) {
+        write_failed_ = true;
+        log_warn("kraken: cannot persist the nonce high-water mark to " + state_file_.string() +
+                 "; continuing with the in-memory wall-clock nonce only");
+    }
 }
 
 }  // namespace feed_handler::kraken

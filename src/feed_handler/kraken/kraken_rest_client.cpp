@@ -81,8 +81,10 @@ std::string normalize_symbol(std::string_view name) {
     return normalized;
 }
 
-rest_client::rest_client(std::string base_url)
-    : base_url_(std::move(base_url)), http_(std::make_unique<ix::HttpClient>(false)) {
+rest_client::rest_client(std::string base_url, std::filesystem::path nonce_state_file)
+    : base_url_(std::move(base_url)),
+      http_(std::make_unique<ix::HttpClient>(false)),
+      nonce_(std::move(nonce_state_file)) {
     while (!base_url_.empty() && base_url_.back() == '/') {
         base_url_.pop_back();
     }

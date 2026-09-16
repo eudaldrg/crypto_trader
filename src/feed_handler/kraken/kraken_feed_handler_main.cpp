@@ -8,6 +8,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
+#include <filesystem>
 #include <string>
 #include <thread>
 
@@ -19,6 +20,10 @@
 namespace {
 
 constexpr const char* kJournalDirectory = "journal";
+// Local runtime state, alongside ./journal and gitignored for the same reason:
+// it belongs to this machine's process, not to the repository.
+constexpr const char* kStateDirectory = "state";
+constexpr const char* kNonceStateFile = "kraken-nonce.state";
 constexpr const char* kSymbol = "BTC/USD";
 constexpr std::chrono::milliseconds kShutdownPollInterval{100};
 
@@ -80,8 +85,12 @@ int main() {
 
     // One rest_client for the whole process: it owns the nonce high-water mark
     // that keeps signed calls strictly increasing across reconnects
-    // (exchanges/kraken.md), so it must never be rebuilt per connection.
-    feed_handler::kraken::rest_client rest;
+    // (exchanges/kraken.md), so it must never be rebuilt per connection. The
+    // state file extends that guarantee across restarts -- best effort, and
+    // never a reason not to start (kraken_signing.h).
+    feed_handler::kraken::rest_client rest(
+        std::string(feed_handler::kraken::rest_client::kDefaultBaseUrl),
+        std::filesystem::path(kStateDirectory) / kNonceStateFile);
     log_instrument_reference(rest);
 
     feed_handler::capture_session session({
