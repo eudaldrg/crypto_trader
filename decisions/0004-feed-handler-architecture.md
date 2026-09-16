@@ -409,12 +409,17 @@ binary: the raw socket under the session layer above, wired to the same
   scope as Kraken's v1 (one thread per connection), just hand-rolled instead
   of library-provided — and because this client owns its fd outright, it can
   join an epoll group the day one exists, with no library in the way.
-- **`SO_RCVTIMEO` is what makes one thread enough.** The session needs two
-  timers (the outbound Heartbeat every `HeartBtInt`, and the staleness
-  watchdog) and a shutdown check, and a receive timeout gives all three a tick
-  without a second thread or a readiness API. A timed-out `recv` is not an
-  event, it is the loop's clock. Kraken needed a separate watchdog thread only
-  because IXWebSocket owns its own loop and offers no such hook.
+- **`SO_RCVTIMEO` is what makes one thread enough.** The session needs a
+  staleness-watchdog check and a shutdown check on top of whatever `recv()`
+  itself is doing, and a receive timeout gives both a tick without a second
+  thread or a readiness API. A timed-out `recv` is not an event, it is the
+  loop's clock. Kraken needed a separate watchdog thread only because
+  IXWebSocket owns its own loop and offers no such hook. The outbound
+  Heartbeat timer is checked on every loop iteration regardless — it does not
+  wait for a receive timeout, since a busy connection where `recv()` always
+  returns promptly would otherwise never reach it (a real bug this project
+  had and fixed: see `src/feed_handler/deribit/deribit_fix_client.cpp`'s
+  `send_heartbeat_if_due`).
 - **`connect()` is non-blocking + `poll()`, then back to blocking.** Not for
   concurrency — purely so an unreachable host cannot park the thread for the
   kernel's own multi-minute SYN timeout and make shutdown look hung.
