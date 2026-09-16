@@ -275,8 +275,21 @@ void ws_client::handle_message(const std::string& payload) {
     // inbound), and classification must never be able to cost a record.
     if (!session_.on_wire_message(bytes_of(payload), kWireSource)) {
         const std::string_view reason = session_.error();
-        log_error(reason.empty() ? std::string("dropped a message: no journal file open")
-                                 : "journal write failed: " + std::string(reason));
+        if (reason.empty()) {
+            // No open incarnation yet -- a message that arrived between the
+            // socket opening and handle_open() finishing. Loud, but the next
+            // incarnation fixes it, so it is not a reason to end the process.
+            log_error("dropped a message: no journal file open");
+        } else {
+            // A sticky writer error (a full disk, say) never heals: every later
+            // message would be dropped just as silently. Same rule as a journal
+            // file that cannot be opened at all, and as Deribit's
+            // journal_message -- capturing nothing while looking healthy is the
+            // one outcome this process must not have.
+            log_error("journal write failed: " + std::string(reason));
+            fatal_.store(true, std::memory_order_release);
+            stop_cv_.notify_all();
+        }
     }
 
     const message_classification classified = classify_message(payload);
@@ -304,7 +317,10 @@ void ws_client::handle_message(const std::string& payload) {
 }
 
 void ws_client::run_watchdog() {
-    while (!stopping_.load(std::memory_order_acquire)) {
+    // Ends on a capture failure as well as on shutdown: once capture is dead
+    // the process is on its way out, and forcing further reconnects would only
+    // spend Kraken's REST rate limit on connections nothing can journal.
+    while (!stopping_.load(std::memory_order_acquire) && !fatal()) {
         if (wait_for_stop(cfg_.watchdog_poll_ms)) {
             return;
         }
@@ -358,8 +374,13 @@ void ws_client::back_off_after_setup_failure() {
 
 bool ws_client::wait_for_stop(std::uint64_t millis) {
     std::unique_lock<std::mutex> lock(stop_mutex_);
-    return stop_cv_.wait_for(lock, std::chrono::milliseconds(millis),
-                             [this] { return stopping_.load(std::memory_order_acquire); });
+    // fatal() is part of the predicate, not just of the callers' loops: the
+    // fatal paths notify this condition variable, and a predicate that only
+    // looked at stopping_ would leave those notifications waking a waiter that
+    // immediately went back to sleep for the rest of its timeout.
+    return stop_cv_.wait_for(lock, std::chrono::milliseconds(millis), [this] {
+        return stopping_.load(std::memory_order_acquire) || fatal();
+    });
 }
 
 }  // namespace feed_handler::kraken
