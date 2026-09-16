@@ -169,6 +169,17 @@ class ws_client {
     /// this client goes through here, which is what makes the notify_all() on
     /// the fatal path actually end them.
     bool wait_for_stop(std::uint64_t millis);
+    /// Latches the capture failure and wakes every waiter.
+    ///
+    /// The mutation is made under `stop_mutex_`, not just the notify: a waiter
+    /// evaluates the predicate under that mutex, and a flag flipped outside it
+    /// can land in the window between that evaluation and the wait registering
+    /// -- the notification is then delivered to nobody and the waiter sleeps out
+    /// its whole timeout (up to max_reconnect_wait_ms). The notify itself is
+    /// deliberately left outside the lock: by then the new state is already
+    /// published, so notifying after unlocking only saves the woken thread from
+    /// waking straight onto a mutex this thread still holds.
+    void latch_fatal();
 
     rest_client& rest_;
     credentials creds_;

@@ -217,8 +217,16 @@ void fix_client::start() {
 }
 
 void fix_client::stop() {
-    if (stopping_.exchange(true, std::memory_order_acq_rel)) {
-        return;
+    {
+        // Under the mutex for the same reason latch_fatal() is: the connection
+        // thread checks this flag under it, and a store made outside it can be
+        // lost in the gap between that check and the wait, which would leave
+        // shutdown waiting out a whole reconnect backoff. The join stays outside
+        // the lock -- the thread it waits for needs this mutex to notice.
+        const std::lock_guard<std::mutex> lock(stop_mutex_);
+        if (stopping_.exchange(true, std::memory_order_acq_rel)) {
+            return;
+        }
     }
     stop_cv_.notify_all();
     if (thread_.joinable()) {
@@ -279,8 +287,7 @@ void fix_client::run_one_connection() {
         // Same rule as Kraken: staying connected while unable to capture would
         // silently throw away the data this process exists to collect.
         log_error("cannot start capture: " + path.error());
-        fatal_.store(true, std::memory_order_release);
-        stop_cv_.notify_all();
+        latch_fatal();
         return;
     }
     log_info("incarnation " + std::to_string(capture_.incarnation()) + " started, journaling to " +
@@ -447,8 +454,7 @@ bool fix_client::journal_message(std::string_view raw) {
         return false;
     }
     log_error("journal write failed: " + std::string(reason));
-    fatal_.store(true, std::memory_order_release);
-    stop_cv_.notify_all();
+    latch_fatal();
     return false;
 }
 
@@ -582,6 +588,16 @@ bool fix_client::wait_for_stop(std::uint64_t millis) {
     std::unique_lock<std::mutex> lock(stop_mutex_);
     return stop_cv_.wait_for(lock, std::chrono::milliseconds(millis),
                              [this] { return stopping() || fatal(); });
+}
+
+void fix_client::latch_fatal() {
+    {
+        const std::lock_guard<std::mutex> lock(stop_mutex_);
+        fatal_.store(true, std::memory_order_release);
+    }
+    // Both callers run on the connection thread, which never holds stop_mutex_
+    // outside wait_for_stop(), so taking it here cannot self-deadlock.
+    stop_cv_.notify_all();
 }
 
 }  // namespace feed_handler::deribit
