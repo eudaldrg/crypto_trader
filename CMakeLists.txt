@@ -212,7 +212,7 @@ endif()
 # linkage so future targets can't forget to link one -- see decisions/0002.
 function(add_project_executable name)
   add_executable(${name} ${ARGN})
-  target_link_libraries(${name} PRIVATE project_options project_warnings)
+  target_link_libraries(${name} PRIVATE project_options project_warnings project_sanitizers)
   if(ENABLE_GPERFTOOLS)
     target_link_libraries(${name} PRIVATE gperftools_profiler)
   endif()
@@ -222,7 +222,8 @@ endfunction()
 # decisions/0002.
 function(add_project_test name)
   add_executable(${name} ${ARGN})
-  target_link_libraries(${name} PRIVATE project_options project_warnings GTest::gtest_main)
+  target_link_libraries(${name} PRIVATE project_options project_warnings project_sanitizers
+                                        GTest::gtest_main)
   gtest_discover_tests(${name})
 endfunction()
 
@@ -254,7 +255,7 @@ add_library(feed_handler STATIC
 )
 target_include_directories(feed_handler PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(feed_handler
-  PUBLIC project_options project_warnings
+  PUBLIC project_options project_warnings project_sanitizers
   PRIVATE ixwebsocket::ixwebsocket simdjson::simdjson OpenSSL::Crypto ZLIB::ZLIB
 )
 
