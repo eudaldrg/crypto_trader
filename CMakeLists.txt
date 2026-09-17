@@ -20,6 +20,12 @@ option(USE_CLOCK_MANAGER "Enable clock manager" OFF)
 option(ENABLE_COVERAGE "Enable code coverage instrumentation" OFF)
 option(ENABLE_TCMALLOC "Use tcmalloc" OFF)
 option(ENABLE_GPERFTOOLS "Link gperftools CPU profiler" OFF)
+# libFuzzer-instrumented fuzz targets (decisions/0007). Kept off of
+# project_sanitizers on purpose: -fsanitize=fuzzer requires the binary to
+# supply LLVMFuzzerTestOneInput and no competing main, so blanket-applying it
+# via project_sanitizers would break every ordinary executable/test binary in
+# a build directory that also has it turned on.
+option(ENABLE_FUZZER "Build libFuzzer-instrumented fuzz targets" OFF)
 
 # Get the branch name (returns "HEAD" if in detached HEAD state)
 execute_process(
@@ -85,6 +91,21 @@ if(ENABLE_TSAN)
     )
     target_link_options(project_sanitizers INTERFACE
         -fsanitize=thread
+    )
+endif()
+
+# Deliberately a separate INTERFACE library from project_sanitizers, not an
+# extra branch in it (decisions/0007): -fsanitize=fuzzer links in libFuzzer's
+# own main, so it must only ever land on the dedicated fuzz target(s), never
+# on every target that happens to link project_sanitizers in a build
+# directory where ENABLE_FUZZER is on.
+add_library(project_fuzzer_sanitizer INTERFACE)
+if(ENABLE_FUZZER)
+    target_compile_options(project_fuzzer_sanitizer INTERFACE
+        -fsanitize=fuzzer,address
+    )
+    target_link_options(project_fuzzer_sanitizer INTERFACE
+        -fsanitize=fuzzer,address
     )
 endif()
 
@@ -381,3 +402,20 @@ add_project_executable(kraken_journal_dump
   src/order_book/tools/kraken_journal_dump.cpp
 )
 target_link_libraries(kraken_journal_dump PRIVATE order_book_kraken_wire feed_handler)
+
+# libFuzzer pilot target (decisions/0007). Deliberately not linked against
+# the feed_handler library target: that target is PUBLIC project_sanitizers,
+# which would transitively drag in whatever ENABLE_ASAN/ENABLE_TSAN happen to
+# be cached in this build directory and collide with -fsanitize=fuzzer,address
+# above. Compiling fix_message.cpp directly into the fuzz executable instead
+# keeps this pilot self-contained.
+if(ENABLE_FUZZER)
+  add_executable(fix_framer_fuzzer
+    src/feed_handler/fix/fuzz/fix_framer_fuzzer.cpp
+    src/feed_handler/fix/fix_message.cpp
+  )
+  target_include_directories(fix_framer_fuzzer PRIVATE ${CMAKE_SOURCE_DIR}/src)
+  target_link_libraries(fix_framer_fuzzer PRIVATE
+    project_options project_warnings project_fuzzer_sanitizer
+  )
+endif()
