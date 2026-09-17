@@ -126,6 +126,13 @@ target_compile_options(project_warnings INTERFACE
       -Wshadow
       -Wuninitialized
       -Winit-self
+      # Catches silent narrowing/sign-change conversions (dropped bits on a
+      # size_t->int truncation, a subtraction wrapping through an unsigned
+      # comparison) -- exactly the class of bug that looks fine to a quick
+      # read. FetchContent'd dependencies are marked SYSTEM below so this
+      # only ever fires on our own code, not third-party headers.
+      -Wconversion
+      -Wsign-conversion
       -Wno-unknown-pragmas
       -Wno-comment
       -Wno-misleading-indentation
@@ -197,6 +204,7 @@ FetchContent_Declare(
   ixwebsocket
   GIT_REPOSITORY https://github.com/machinezone/IXWebSocket.git
   GIT_TAG v12.0.1
+  SYSTEM
 )
 
 # simdjson: Kraken message parsing.
@@ -204,6 +212,7 @@ FetchContent_Declare(
   simdjson
   GIT_REPOSITORY https://github.com/simdjson/simdjson.git
   GIT_TAG v4.6.11
+  SYSTEM
 )
 
 # JSON parsing: order_book_tests' capture-replay fixtures and the
