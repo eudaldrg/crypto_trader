@@ -367,3 +367,11 @@ if(BUILD_TESTING)
     TEST_DATA_DIR="${ORDER_BOOK_TEST_DATA_DIR}"
   )
 endif()
+
+# Dumps a captured Kraken level3 journal to one JSON frame per message, for
+# tools/kraken_journal_viewer.py's step-through visualizer. Reuses the real
+# order_book/feed_handler code -- not a second implementation of book logic.
+add_project_executable(kraken_journal_dump
+  src/order_book/tools/kraken_journal_dump.cpp
+)
+target_link_libraries(kraken_journal_dump PRIVATE order_book_kraken_wire feed_handler)
