@@ -20,6 +20,7 @@ option(USE_CLOCK_MANAGER "Enable clock manager" OFF)
 option(ENABLE_COVERAGE "Enable code coverage instrumentation" OFF)
 option(ENABLE_TCMALLOC "Use tcmalloc" OFF)
 option(ENABLE_GPERFTOOLS "Link gperftools CPU profiler" OFF)
+option(ENABLE_FUZZER "Build libFuzzer fuzz targets (decisions/0007)" OFF)
 
 # Get the branch name (returns "HEAD" if in detached HEAD state)
 execute_process(
@@ -126,6 +127,10 @@ target_compile_options(project_warnings INTERFACE
       -Wshadow
       -Wuninitialized
       -Winit-self
+      # Silent narrowing/sign-change conversions. Fetched dependencies are
+      # SYSTEM, so this only fires on our own code.
+      -Wconversion
+      -Wsign-conversion
       -Wno-unknown-pragmas
       -Wno-comment
       -Wno-misleading-indentation
@@ -197,6 +202,7 @@ FetchContent_Declare(
   ixwebsocket
   GIT_REPOSITORY https://github.com/machinezone/IXWebSocket.git
   GIT_TAG v12.0.1
+  SYSTEM
 )
 
 # simdjson: Kraken message parsing.
@@ -204,6 +210,7 @@ FetchContent_Declare(
   simdjson
   GIT_REPOSITORY https://github.com/simdjson/simdjson.git
   GIT_TAG v4.6.11
+  SYSTEM
 )
 
 # JSON parsing: order_book_tests' capture-replay fixtures and the
@@ -375,3 +382,19 @@ add_project_executable(kraken_journal_dump
   src/order_book/tools/kraken_journal_dump.cpp
 )
 target_link_libraries(kraken_journal_dump PRIVATE order_book_kraken_wire feed_handler)
+
+# libFuzzer pilot (decisions/0007). A raw add_executable, not
+# add_project_executable: -fsanitize=fuzzer supplies its own main, so its
+# flags stay on this one target. fix_message.cpp is compiled in directly
+# instead of linking feed_handler, whose copy has no coverage instrumentation
+# and whose PUBLIC project_sanitizers would carry in a cached ENABLE_TSAN.
+if(ENABLE_FUZZER)
+  add_executable(fix_framer_fuzzer
+    src/feed_handler/fix/fuzz/fix_framer_fuzzer.cpp
+    src/feed_handler/fix/fix_message.cpp
+  )
+  target_include_directories(fix_framer_fuzzer PRIVATE ${CMAKE_SOURCE_DIR}/src)
+  target_compile_options(fix_framer_fuzzer PRIVATE -fsanitize=fuzzer,address)
+  target_link_options(fix_framer_fuzzer PRIVATE -fsanitize=fuzzer,address)
+  target_link_libraries(fix_framer_fuzzer PRIVATE project_options project_warnings)
+endif()

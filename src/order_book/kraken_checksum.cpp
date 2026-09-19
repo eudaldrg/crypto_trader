@@ -14,8 +14,8 @@ namespace {
 // table-based -- this is the golden book, correctness over speed.
 std::uint32_t Crc32(const std::string& data) {
     std::uint32_t crc = 0xFFFFFFFFU;
-    for (const unsigned char byte : data) {
-        crc ^= byte;
+    for (const char byte : data) {
+        crc ^= static_cast<unsigned char>(byte);
         for (int bit = 0; bit < 8; ++bit) {
             crc = (crc & 1U) ? ((crc >> 1) ^ 0xEDB88320U) : (crc >> 1);
         }
