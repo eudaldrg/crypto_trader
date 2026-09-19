@@ -42,6 +42,10 @@ secrets.*
 journal/
 *.journal
 
+# Claude Code agent worktrees: each is a full checkout of its own branch,
+# per-machine, created by the tool under .claude/worktrees/
+.claude/worktrees/
+
 # Local runtime state (the Kraken nonce high-water mark, written into ./state
 # by default) — per-machine, per-API-key, never committed
 state/
