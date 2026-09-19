@@ -34,7 +34,11 @@ repos:
         # --language=c++ is required: cppcheck guesses C vs C++ from the file
         # extension alone, and misidentifies every .h header in this
         # all-C++ project as C, erroring on anything using std:: types.
-        entry: cppcheck --language=c++ --enable=warning,performance,portability --error-exitcode=1 --suppress=missingInclude
+        # --library=googletest teaches it TEST/TEST_F's macro expansion, so
+        # it doesn't matter what order they appear in a file -- supersedes
+        # the "keep TEST macros in a specific order" workaround CLAUDE.md
+        # used to document for this.
+        entry: cppcheck --language=c++ --library=googletest --enable=warning,performance,portability --error-exitcode=1 --suppress=missingInclude
         language: system
         types_or: [c++, c]
         pass_filenames: true
