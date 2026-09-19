@@ -86,6 +86,27 @@ TEST_F(CaptureSessionDir, CreatesTheDirectoryAndOpensAFilePerIncarnation) {
     EXPECT_TRUE(std::filesystem::exists(*first));
 }
 
+TEST_F(CaptureSessionDir, FilePrefixNamesTheFileButNotTheHeaderExchange) {
+    // Two connections to one exchange, same directory, both on incarnation 1:
+    // only distinct prefixes keep their files apart.
+    CaptureSession first({.directory = dir_, .exchange = "kraken"}, "kraken-btc");
+    CaptureSession second({.directory = dir_, .exchange = "kraken"}, "kraken-eth");
+
+    const auto first_path = first.BeginIncarnation("connected", kSource);
+    const auto second_path = second.BeginIncarnation("connected", kSource);
+    ASSERT_TRUE(first_path.has_value()) << first_path.error();
+    ASSERT_TRUE(second_path.has_value()) << second_path.error();
+    EXPECT_NE(*first_path, *second_path);
+    EXPECT_TRUE(first_path->filename().string().starts_with("kraken-btc-000001-"));
+    EXPECT_TRUE(second_path->filename().string().starts_with("kraken-eth-000001-"));
+    first.Close();
+    second.Close();
+
+    auto reader = JournalReader::Open(*first_path);
+    ASSERT_TRUE(reader.has_value()) << reader.error();
+    EXPECT_EQ(reader->Header().exchange, "kraken");
+}
+
 TEST_F(CaptureSessionDir, WritesTheIncarnationMarkerAsTheFirstRecordOfEveryFile) {
     CaptureSession session({.directory = dir_, .exchange = "kraken"});
 
