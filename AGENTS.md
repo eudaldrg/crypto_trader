@@ -220,3 +220,8 @@ in any order inside an anonymous namespace without tripping a spurious
   `experiments/.env` (gitignored) via a minimal hand-rolled dotenv loader —
   **never open or read `experiments/.env`** (only `.env.example` is safe to
   view). A private venv lives at `experiments/.venv`.
+- **Captured market data stays out of git.** Journals and JSON dumps from a
+  capture are gitignored (`journal/`, `*.journal`). A test fixture is the one
+  exception: it is committed compressed (`.tar.xz`) and small, then unpacked at
+  configure time (see `docs/modules/order-book.md`). A large capture, such as an
+  hour recorded for profiling, lives outside the repo in `~/Temp`, not `/tmp`.
