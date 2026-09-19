@@ -88,3 +88,39 @@ confirmed real traffic end-to-end:
   `BTC-PERPETUAL`, with real `MDUpdateAction` values (0=New, 1=Change,
   2=Delete) per entry — confirms the L2-not-L3 granularity above with real
   traffic, not just docs.
+
+## Empirical validation (2026-09-17): Deribit WS `book.*.raw`
+
+A ~2-minute capture of Deribit's WS `book.BTC-PERPETUAL.raw` channel
+(testnet; `experiments/deribit_ws_book_probe.py`, 2072 journal entries,
+checked in compressed under `src/order_book/tests/data/` and replayed by
+`src/order_book/tests/deribit_capture_replay_test.cpp` — see decisions/0006's
+plan) corrected two things this ADR's "public, no auth" framing got wrong
+for the specific channel this project actually cares about:
+
+- **The `raw` channel requires authentication.** Subscribing
+  unauthenticated to `book.BTC-PERPETUAL.raw` returns
+  `raw_subscriptions_not_available_for_unauthorized`. The "public, no
+  auth" claim above is only true of the grouped/interval channels
+  (e.g. `book.BTC-PERPETUAL.100ms`), not the raw, ungrouped one that
+  actually carries `change_id`/`prev_change_id`. Fixed by authenticating
+  via `public/auth` with the same testnet client credentials
+  `deribit_fix_probe.py` already uses — no new credential needed, but the
+  auth requirement itself was the surprise.
+- **`change_id`/`prev_change_id` sequencing held with zero gaps** across
+  all 2069 consecutive `change` messages in the capture — confirms this
+  ADR's original framing of it as "a genuine gap-detection problem" is
+  the right shape to defend against, but the happy path is exactly as
+  gapless as expected. This was previously an open assumption (only
+  Deribit's FIX probe had been run, which has no `change_id` at all) —
+  now empirically settled.
+- **Each book entry is an explicit `[operation, price, quantity]` tuple**
+  with `operation` one of `"new"`/`"change"`/`"delete"` — this ADR
+  already said as much (see the `[operation, price, quantity]` note
+  above), but the order-book implementation's first draft (plan T5)
+  missed it and inferred delete from a zero quantity instead. In this
+  capture that inference happened to be correct (`quantity` was 0 on
+  every `delete` entry and never 0 otherwise), but it was relying on an
+  unstated invariant rather than the field the protocol actually sends.
+  Fixed to use the explicit `operation` field once this capture caught
+  the discrepancy.

@@ -158,3 +158,58 @@ the fresh snapshot *is* the recovery mechanism.
 `experiments/kraken_l3_probe.py` — real snapshot + incremental traffic for
 `BTC/USD` observed end-to-end, `order_id`-level `add`/`delete` events and
 the `checksum` field confirmed present on every update message.
+
+## Level3 checksum algorithm and client-side depth truncation (2026-09-17)
+
+The checksum *field's existence* was confirmed above; the algorithm that
+computes it was not documented anywhere in this repo until now, and two
+things about it are easy to get wrong even with Kraken's own docs open.
+Sourced from
+[docs.kraken.com/api/docs/guides/spot-ws-l3-v2](https://docs.kraken.com/api/docs/guides/spot-ws-l3-v2/)
+and
+[docs.kraken.com/api/docs/websocket-v2/level3](https://docs.kraken.com/api/docs/websocket-v2/level3/),
+and verified against a real ~2-minute `BTC/USD` capture via the real
+`kraken_feed_handler` binary (not a Python probe), replayed by
+`src/order_book/tests/kraken_capture_replay_test.cpp` — 6496 wire records
+captured, of which 6362 carry a `level3` checksum (1 snapshot + 6361
+updates; the rest is non-`level3` control traffic), zero checksum
+mismatches across all of them (see decisions/0006's plan, task T7).
+
+**Algorithm**: for each side, take the top 10 price levels (asks
+ascending, bids descending), and within each level iterate its resting
+orders. For each order, concatenate its price then its quantity with the
+decimal point removed and leading zeros stripped, in that order.
+Concatenate every order's token, asks first then bids, and take the
+standard CRC-32 (the zlib/ISO-HDLC/PKZIP variant — reflected, polynomial
+`0xEDB88320`, init/final XOR `0xFFFFFFFF`) of the resulting ASCII string.
+Verified byte-for-byte against Kraken's own worked example before
+trusting it (`src/order_book/tests/kraken_checksum_test.cpp`).
+
+**Client-side depth truncation is mandatory, and Kraken does not do it
+for you.** Kraken's own docs: *"After each update, the book should be
+truncated to your subscribed depth, there will be no `delete` event for
+price levels that fall out of scope."* No `depth` parameter is sent on
+subscribe (`kraken_ws_client.cpp`), so the default (10) applies — the
+same window the checksum itself uses. Two consequences that only showed
+up against real captured data, not in a hand-written unit test:
+
+1. **An order that drops out of the tracked window and later re-enters
+   gets a fresh `add` event carrying the *same* `order_id`.** Kraken's
+   docs confirm the mechanism: *"If a price level is removed from the
+   subscribed levels ... then all orders in the next available level will
+   generate an add event."* A book that doesn't truncate itself keeps a
+   stale copy of that order around, so the "fresh" add duplicates it
+   instead of representing a genuine re-entry — this corrupts the
+   checksum in a way that's invisible until the stale order's level
+   happens to become checksum-relevant again, which can be hundreds of
+   messages later (first observed at message 116 of the capture, several
+   minutes of "everything looks fine" before it surfaced).
+2. **Multiple orders entering the tracked window in the same message are
+   not guaranteed to be listed in true arrival order.** When a level
+   drops out and the next one becomes visible, Kraken announces every
+   resting order at that level via `add` — but their position in the
+   JSON array does not reliably match their own `timestamp` field's
+   order. Applying them in array order silently gets queue priority (and
+   the checksum) wrong; sorting by each entry's own `timestamp` before
+   applying fixes it. Confirmed by direct comparison against the real
+   capture (first divergence at message 775 once (1) was already fixed).

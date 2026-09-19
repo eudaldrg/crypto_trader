@@ -69,13 +69,20 @@ different git hook — install with
 
 **MemorySanitizer was considered and deliberately deferred, not rejected.**
 It catches a class neither ASan, UBSan, nor TSan does (reads of uninitialized
-memory), which is a real gap. It needs an MSan-instrumented C++ standard
-library to be usable at all — running it against the system's ordinary
-libstdc++ produces a flood of false positives from the standard library's own
-uninstrumented internals, not a small toolchain flag flip. Same shape of
-deferral as `decisions/0003`'s native-Linux-for-`perf-c2c` — real value,
-real infrastructure cost, not worth blocking on right now. Revisit if a bug
-class shows up that only MSan would have caught.
+memory), which is a real gap. It needs every linked TU, including the C++
+standard library, compiled with `-fsanitize=memory` to avoid a flood of false
+positives/negatives from uninstrumented code (MSan's shadow-memory tracking
+only propagates through instrumented code) — this project currently links
+Clang against GCC's libstdc++ (no `-stdlib=libc++` set anywhere), which has
+no blessed MSan-instrumented build path. The realistic route is switching to
+LLVM's libc++ (which *does* have documented MSan-instrumented build recipes)
+and maintaining a second, MSan-instrumented copy of it alongside the normal
+one. Not impossible — a one-time build-script/CMake-preset cost, same shape
+as `decisions/0003`'s native-Linux-for-`perf-c2c` deferral — just real
+infrastructure work that loses out to higher-priority items right now.
+Genuinely want this eventually, not just "if a bug shows up that only MSan
+would have caught": revisit once the higher-priority backlog clears, not only
+reactively.
 
 **This tier is advisory, not a hard gate, and that's a known limitation.**
 A local git hook only runs on a machine that has it installed, and is always
