@@ -206,9 +206,19 @@ FetchContent_Declare(
   GIT_TAG v4.6.11
 )
 
-FetchContent_MakeAvailable(ixwebsocket simdjson)
+# JSON parsing: order_book_tests' capture-replay fixtures and the
+# kraken_journal_dump tool both need it to parse captured wire messages --
+# not a production dependency, decisions/0002 defers a real wire/journal
+# serialization format.
+FetchContent_Declare(
+  nlohmann_json
+  GIT_REPOSITORY https://github.com/nlohmann/json.git
+  GIT_TAG v3.11.3
+  SYSTEM
+)
+FetchContent_MakeAvailable(ixwebsocket simdjson nlohmann_json)
 
-# GoogleTest: TDD for feed-parsing/journal logic, per decisions/0002.
+# GoogleTest: TDD for feed-parsing/journal/order-book logic, per decisions/0002.
 option(BUILD_TESTING "Build test targets" ON)
 if(BUILD_TESTING)
   set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
@@ -219,6 +229,7 @@ if(BUILD_TESTING)
     GIT_TAG v1.18.0
   )
   FetchContent_MakeAvailable(googletest)
+
   enable_testing()
   include(GoogleTest)
 endif()
@@ -309,3 +320,58 @@ if(BUILD_TESTING)
   )
   target_link_libraries(feed_handler_tests PRIVATE feed_handler)
 endif()
+
+#### Order book (decisions/0006) ####
+# Mostly header-only (templates/concepts), but the Kraken checksum is
+# genuinely non-template logic, so this needs a compiled source, same
+# reasoning as feed_handler above.
+add_library(order_book STATIC
+  src/order_book/kraken_checksum.cpp
+)
+target_include_directories(order_book PUBLIC ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(order_book PUBLIC project_options project_warnings project_sanitizers)
+
+# kraken_l3_wire.h (header-only Kraken level3 message parsing) needs a JSON
+# library. Kept as its own target so nlohmann_json is not a dependency of the
+# core order_book library, only of what actually parses wire messages.
+add_library(order_book_kraken_wire INTERFACE)
+target_link_libraries(order_book_kraken_wire INTERFACE order_book nlohmann_json::nlohmann_json)
+
+if(BUILD_TESTING)
+  # The replay fixtures are real captured sessions (a Kraken level3 journal and
+  # a Deribit book.raw log). They are committed compressed -- ~290 KB against
+  # ~3.9 MB raw -- and unpacked into the build tree at configure time, so the
+  # tests still read plain files. CMAKE_CONFIGURE_DEPENDS re-runs the extraction
+  # whenever the archive changes.
+  set(ORDER_BOOK_FIXTURE_ARCHIVE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/order_book/tests/data/capture_fixtures.tar.xz)
+  set(ORDER_BOOK_TEST_DATA_DIR ${CMAKE_CURRENT_BINARY_DIR}/order_book_test_data)
+  file(ARCHIVE_EXTRACT INPUT ${ORDER_BOOK_FIXTURE_ARCHIVE}
+       DESTINATION ${ORDER_BOOK_TEST_DATA_DIR})
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${ORDER_BOOK_FIXTURE_ARCHIVE})
+
+  add_project_test(order_book_tests
+    src/order_book/tests/concepts_test.cpp
+    src/order_book/tests/l1_book_test.cpp
+    src/order_book/tests/l2_book_test.cpp
+    src/order_book/tests/l3_book_test.cpp
+    src/order_book/tests/instrument_scale_test.cpp
+    src/order_book/tests/kraken_checksum_test.cpp
+    src/order_book/tests/kraken_l3_policy_test.cpp
+    src/order_book/tests/kraken_l3_wire_test.cpp
+    src/order_book/tests/deribit_capture_replay_test.cpp
+    src/order_book/tests/kraken_capture_replay_test.cpp
+  )
+  target_link_libraries(order_book_tests PRIVATE order_book_kraken_wire feed_handler)
+  target_compile_definitions(order_book_tests PRIVATE
+    TEST_DATA_DIR="${ORDER_BOOK_TEST_DATA_DIR}"
+  )
+endif()
+
+# Dumps a captured Kraken level3 journal to one JSON frame per message, for
+# tools/kraken_journal_viewer.py's step-through visualizer. Reuses the real
+# order_book/feed_handler code -- not a second implementation of book logic.
+add_project_executable(kraken_journal_dump
+  src/order_book/tools/kraken_journal_dump.cpp
+)
+target_link_libraries(kraken_journal_dump PRIVATE order_book_kraken_wire feed_handler)
