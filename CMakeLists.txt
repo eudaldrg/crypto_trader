@@ -208,7 +208,7 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(ixwebsocket simdjson)
 
-# GoogleTest: TDD for feed-parsing/journal logic, per decisions/0002.
+# GoogleTest: TDD for feed-parsing/journal/order-book logic, per decisions/0002.
 option(BUILD_TESTING "Build test targets" ON)
 if(BUILD_TESTING)
   set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
@@ -219,6 +219,7 @@ if(BUILD_TESTING)
     GIT_TAG v1.18.0
   )
   FetchContent_MakeAvailable(googletest)
+
   enable_testing()
   include(GoogleTest)
 endif()
@@ -308,4 +309,20 @@ if(BUILD_TESTING)
     src/feed_handler/tests/staleness_watchdog_test.cpp
   )
   target_link_libraries(feed_handler_tests PRIVATE feed_handler)
+endif()
+
+#### Order book (decisions/0006) ####
+# Header-only so far (templates/concepts): an INTERFACE library carrying the
+# include path and the shared compile options.
+add_library(order_book INTERFACE)
+target_include_directories(order_book INTERFACE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(order_book INTERFACE project_options project_warnings project_sanitizers)
+
+if(BUILD_TESTING)
+  add_project_test(order_book_tests
+    src/order_book/tests/concepts_test.cpp
+    src/order_book/tests/l1_book_test.cpp
+    src/order_book/tests/l2_book_test.cpp
+  )
+  target_link_libraries(order_book_tests PRIVATE order_book)
 endif()
