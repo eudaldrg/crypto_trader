@@ -24,7 +24,12 @@ mechanics plus a raw-POSIX-socket client on its own thread) and the
 `deribit_feed_handler` binary, which logs on to Deribit's FIX testnet
 (`DERIBIT_TESTNET_CLIENT_ID`/`DERIBIT_TESTNET_CLIENT_SECRET` from the
 environment), subscribes to `BTC-PERPETUAL` and journals into the same
-`./journal/` until SIGINT. No order book or strategy code has landed yet. `decisions/` holds the locked-in ADRs; the rest of the design is
+`./journal/` until SIGINT. A golden (deliberately simple, `std::map`-based)
+order book also exists in `src/order_book/` — L1/L2/L3 granularity, no
+matching yet (see `decisions/0006`) — but it is not yet wired to the feed
+handler's journal/`MessageSink` output; that integration, the fast
+exchange-specific books, the matching engine, and strategy code all remain
+unwritten. `decisions/` holds the locked-in ADRs; the rest of the design is
 intentionally unspecified and will be worked out in future sessions — don't
 assume unwritten components exist.
 
@@ -171,6 +176,10 @@ ctest:
 ctest --test-dir build/debug
 ./build/debug/bin/feed_handler_tests   # or run a binary directly
 ```
+
+The order-book replay tests read real captured sessions that are committed
+compressed and unpacked into the build tree at configure time; see
+`docs/modules/order-book.md`.
 
 Add new test binaries with `add_project_test(name sources...)` (the test
 equivalent of `add_project_executable`). TDD is the intended workflow for
