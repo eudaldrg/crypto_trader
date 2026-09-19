@@ -163,11 +163,10 @@ Add new test binaries with `add_project_test(name sources...)` (the test
 equivalent of `add_project_executable`). TDD is the intended workflow for
 feed-parsing/order-book logic.
 
-One cppcheck quirk worth knowing before it costs you an hour: the pre-commit
-cppcheck hook reports `syntaxError` on a `TEST`/`TEST_F` macro that follows
-another definition inside an anonymous namespace. Keep helpers and constants
-in the anonymous namespace, close it, then define fixtures and tests at
-namespace scope — see `src/feed_handler/tests/journal_test.cpp`.
+The pre-commit cppcheck hook runs with `--library=googletest`, which teaches
+it `TEST`/`TEST_F`'s macro expansion — helpers, constants, and tests can live
+in any order inside an anonymous namespace without tripping a spurious
+`syntaxError`.
 
 ## Architecture notes
 
