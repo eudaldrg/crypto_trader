@@ -83,6 +83,19 @@ format. See `exchanges/README.md` for the index.
   questions around a release process (branching strategy, coverage
   thresholds, perf/simulation checks) — don't assume any of those were
   decided, read the ADR's open-questions section first.
+- `decisions/0006-order-book-design.md` — the L1/L2/L3 granularity axis and
+  the matching/non-matching axis (matching left as a concept-constrained
+  seam, not implemented); why polymorphism across both is resolved with
+  concepts and policy-based templates rather than CRTP or virtual dispatch;
+  the shared `OrderBook<GranularityPolicy, ListenerT, MatchingPolicy>`
+  engine/policy contract, readiness state machine, and error taxonomy; and
+  the golden-reference-first strategy (`src/order_book/`, `std::map`-based,
+  not Abseil/ankerl yet) that the eventual fast, exchange-specific books
+  get validated against. Two real captured exchange sessions back this: a
+  Deribit `book.raw` replay (`src/order_book/tests/`) that caught and fixed
+  a wire-shape assumption this ADR's first draft got wrong, and a Kraken
+  `level3` checksum verified against Kraken's own documented worked
+  example, not guessed from the field's existence alone.
 
 ## Commands
 
