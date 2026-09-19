@@ -312,11 +312,14 @@ if(BUILD_TESTING)
 endif()
 
 #### Order book (decisions/0006) ####
-# Header-only so far (templates/concepts): an INTERFACE library carrying the
-# include path and the shared compile options.
-add_library(order_book INTERFACE)
-target_include_directories(order_book INTERFACE ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(order_book INTERFACE project_options project_warnings project_sanitizers)
+# Mostly header-only (templates/concepts), but the Kraken checksum is
+# genuinely non-template logic, so this needs a compiled source, same
+# reasoning as feed_handler above.
+add_library(order_book STATIC
+  src/order_book/kraken_checksum.cpp
+)
+target_include_directories(order_book PUBLIC ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(order_book PUBLIC project_options project_warnings project_sanitizers)
 
 if(BUILD_TESTING)
   add_project_test(order_book_tests
@@ -324,6 +327,7 @@ if(BUILD_TESTING)
     src/order_book/tests/l1_book_test.cpp
     src/order_book/tests/l2_book_test.cpp
     src/order_book/tests/l3_book_test.cpp
+    src/order_book/tests/kraken_checksum_test.cpp
   )
   target_link_libraries(order_book_tests PRIVATE order_book)
 endif()
