@@ -206,7 +206,17 @@ FetchContent_Declare(
   GIT_TAG v4.6.11
 )
 
-FetchContent_MakeAvailable(ixwebsocket simdjson)
+# JSON parsing: order_book_tests' capture-replay fixtures and the
+# kraken_journal_dump tool both need it to parse captured wire messages --
+# not a production dependency, decisions/0002 defers a real wire/journal
+# serialization format.
+FetchContent_Declare(
+  nlohmann_json
+  GIT_REPOSITORY https://github.com/nlohmann/json.git
+  GIT_TAG v3.11.3
+  SYSTEM
+)
+FetchContent_MakeAvailable(ixwebsocket simdjson nlohmann_json)
 
 # GoogleTest: TDD for feed-parsing/journal/order-book logic, per decisions/0002.
 option(BUILD_TESTING "Build test targets" ON)
@@ -321,13 +331,22 @@ add_library(order_book STATIC
 target_include_directories(order_book PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(order_book PUBLIC project_options project_warnings project_sanitizers)
 
+# kraken_l3_wire.h (header-only Kraken level3 message parsing) needs a JSON
+# library. Kept as its own target so nlohmann_json is not a dependency of the
+# core order_book library, only of what actually parses wire messages.
+add_library(order_book_kraken_wire INTERFACE)
+target_link_libraries(order_book_kraken_wire INTERFACE order_book nlohmann_json::nlohmann_json)
+
 if(BUILD_TESTING)
   add_project_test(order_book_tests
     src/order_book/tests/concepts_test.cpp
     src/order_book/tests/l1_book_test.cpp
     src/order_book/tests/l2_book_test.cpp
     src/order_book/tests/l3_book_test.cpp
+    src/order_book/tests/instrument_scale_test.cpp
     src/order_book/tests/kraken_checksum_test.cpp
+    src/order_book/tests/kraken_l3_policy_test.cpp
+    src/order_book/tests/kraken_l3_wire_test.cpp
   )
-  target_link_libraries(order_book_tests PRIVATE order_book)
+  target_link_libraries(order_book_tests PRIVATE order_book_kraken_wire)
 endif()
