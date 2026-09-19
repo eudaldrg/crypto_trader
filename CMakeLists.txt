@@ -323,6 +323,7 @@ if(BUILD_TESTING)
     src/order_book/tests/concepts_test.cpp
     src/order_book/tests/l1_book_test.cpp
     src/order_book/tests/l2_book_test.cpp
+    src/order_book/tests/l3_book_test.cpp
   )
   target_link_libraries(order_book_tests PRIVATE order_book)
 endif()
