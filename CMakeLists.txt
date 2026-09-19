@@ -338,6 +338,18 @@ add_library(order_book_kraken_wire INTERFACE)
 target_link_libraries(order_book_kraken_wire INTERFACE order_book nlohmann_json::nlohmann_json)
 
 if(BUILD_TESTING)
+  # The replay fixtures are real captured sessions (a Kraken level3 journal and
+  # a Deribit book.raw log). They are committed compressed -- ~290 KB against
+  # ~3.9 MB raw -- and unpacked into the build tree at configure time, so the
+  # tests still read plain files. CMAKE_CONFIGURE_DEPENDS re-runs the extraction
+  # whenever the archive changes.
+  set(ORDER_BOOK_FIXTURE_ARCHIVE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/order_book/tests/data/capture_fixtures.tar.xz)
+  set(ORDER_BOOK_TEST_DATA_DIR ${CMAKE_CURRENT_BINARY_DIR}/order_book_test_data)
+  file(ARCHIVE_EXTRACT INPUT ${ORDER_BOOK_FIXTURE_ARCHIVE}
+       DESTINATION ${ORDER_BOOK_TEST_DATA_DIR})
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${ORDER_BOOK_FIXTURE_ARCHIVE})
+
   add_project_test(order_book_tests
     src/order_book/tests/concepts_test.cpp
     src/order_book/tests/l1_book_test.cpp
@@ -347,6 +359,11 @@ if(BUILD_TESTING)
     src/order_book/tests/kraken_checksum_test.cpp
     src/order_book/tests/kraken_l3_policy_test.cpp
     src/order_book/tests/kraken_l3_wire_test.cpp
+    src/order_book/tests/deribit_capture_replay_test.cpp
+    src/order_book/tests/kraken_capture_replay_test.cpp
   )
-  target_link_libraries(order_book_tests PRIVATE order_book_kraken_wire)
+  target_link_libraries(order_book_tests PRIVATE order_book_kraken_wire feed_handler)
+  target_compile_definitions(order_book_tests PRIVATE
+    TEST_DATA_DIR="${ORDER_BOOK_TEST_DATA_DIR}"
+  )
 endif()
