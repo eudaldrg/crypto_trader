@@ -17,6 +17,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -261,6 +262,34 @@ TEST(KrakenCredentials, RefusesToSignWithoutCredentials) {
     const auto result = client.FetchWebsocketsToken({});
     ASSERT_FALSE(result.has_value());
     EXPECT_NE(result.error().find("not set"), std::string::npos);
+}
+
+TEST(KrakenCredentials, ConcurrentTokenFetchesDoNotRace) {
+    // Several Kraken connections share one RestClient and fetch tokens from
+    // their own threads. Port 1 on loopback refuses instantly, so every call
+    // signs (consuming a nonce) and then fails at the network; the point is
+    // the shared nonce and HTTP client state. Only the TSan run in the
+    // pre-push gate can fail this if the guard goes missing; a plain build
+    // just proves the calls neither crash nor succeed.
+    feed_handler::kraken::RestClient client("http://127.0.0.1:1");
+    const feed_handler::kraken::Credentials creds{
+        .api_key = "fake-key-not-a-credential",
+        .api_secret_b64 = "ZmFrZS1zZWNyZXQ=",  // base64 of "fake-secret"
+    };
+
+    constexpr int kThreads = 4;
+    constexpr int kCallsPerThread = 10;
+    std::vector<std::thread> threads;
+    for (int thread = 0; thread < kThreads; ++thread) {
+        threads.emplace_back([&client, &creds] {
+            for (int call = 0; call < kCallsPerThread; ++call) {
+                EXPECT_FALSE(client.FetchWebsocketsToken(creds).has_value());
+            }
+        });
+    }
+    for (std::thread& thread : threads) {
+        thread.join();
+    }
 }
 
 TEST(KrakenNonce, DefaultConstructedPersistentSourceBehavesLikeTheBareGenerator) {
