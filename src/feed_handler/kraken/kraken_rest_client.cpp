@@ -98,6 +98,7 @@ std::expected<WebsocketsToken, std::string> RestClient::FetchWebsocketsToken(
         return std::unexpected("kraken: API key/secret not set");
     }
 
+    const std::lock_guard<std::mutex> lock(request_mutex_);
     const std::string nonce = std::to_string(nonce_.Next());
     const std::array<std::pair<std::string, std::string>, 1> params = {
         std::pair<std::string, std::string>{"nonce", nonce},
@@ -163,6 +164,7 @@ std::expected<std::size_t, std::string> RestClient::LoadAssetPairs(std::string_v
         url += "?pair=" + UrlEncode(pair);
     }
 
+    const std::lock_guard<std::mutex> lock(request_mutex_);
     auto args = http_->createRequest(url, ix::HttpClient::kGet);
     args->connectTimeout = kConnectTimeoutSeconds;
     args->transferTimeout = kTransferTimeoutSeconds;
