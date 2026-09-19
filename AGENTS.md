@@ -219,7 +219,10 @@ in any order inside an anonymous namespace without tripping a spurious
   validation" section of `0001`). They read exchange credentials from
   `experiments/.env` (gitignored) via a minimal hand-rolled dotenv loader —
   **never open or read `experiments/.env`** (only `.env.example` is safe to
-  view). A private venv lives at `experiments/.venv`.
+  view). Captures from authenticated sessions can contain the auth handshake
+  too (the probes no longer write it): never print a capture's contents to
+  check it; look at its keys or count matches instead. A private venv lives at
+  `experiments/.venv`.
 - **Captured market data stays out of git.** Journals and JSON dumps from a
   capture are gitignored (`journal/`, `*.journal`). A test fixture is the one
   exception: it is committed compressed (`.tar.xz`) and small, then unpacked at
