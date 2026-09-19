@@ -197,9 +197,11 @@ in any order inside an anonymous namespace without tripping a spurious
   links `project_options`/`project_warnings` (and `gperftools_profiler` when
   `ENABLE_GPERFTOOLS` is on) so no target can accidentally skip warnings or
   the shared compiler/link flags. Add new targets this way.
-- `project_warnings` (`-Wall -Wextra -Werror -Wshadow` + a short suppress
-  list) applies uniformly; don't special-case a file's warnings unless
-  there's a genuinely unfixable third-party-header cause.
+- `project_warnings` (`-Wall -Wextra -Werror -Wshadow -Wconversion
+  -Wsign-conversion` + a short suppress list) applies uniformly; don't
+  special-case a file's warnings unless there's a genuinely unfixable
+  third-party-header cause. `FetchContent_Declare` deps are marked `SYSTEM`
+  so their headers never trip it.
 - `project_options` carries the "how does this binary get built" concerns
   (LTO in `production` only, ICF in `release`/`profile`/`production`, the
   `-ftime-trace` per-TU trace for ClangBuildAnalyzer) — extend it, not

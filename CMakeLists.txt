@@ -126,11 +126,8 @@ target_compile_options(project_warnings INTERFACE
       -Wshadow
       -Wuninitialized
       -Winit-self
-      # Catches silent narrowing/sign-change conversions (dropped bits on a
-      # size_t->int truncation, a subtraction wrapping through an unsigned
-      # comparison) -- exactly the class of bug that looks fine to a quick
-      # read. FetchContent'd dependencies are marked SYSTEM below so this
-      # only ever fires on our own code, not third-party headers.
+      # Silent narrowing/sign-change conversions. Fetched dependencies are
+      # SYSTEM, so this only fires on our own code.
       -Wconversion
       -Wsign-conversion
       -Wno-unknown-pragmas
