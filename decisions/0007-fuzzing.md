@@ -54,31 +54,21 @@ independently in Python per that file's own header comment). Fuzzing exists
 to find crashes/UB on inputs nobody enumerated, not to re-verify known-good
 behavior.
 
-### CMake wiring: a separate option and a separate sanitizer library
+### CMake wiring: an opt-in option, flags on the one target
 
-`-fsanitize=fuzzer` requires the binary to supply `LLVMFuzzerTestOneInput` and
-must not compete with another `main`. Folding it into the existing
-`project_sanitizers` INTERFACE library (gated by `ENABLE_ASAN`/`ENABLE_UBSAN`/
-`ENABLE_TSAN`) would attach it to every target linking that library — every
-GoogleTest binary and both live-capture executables — and break the link the
-moment `ENABLE_FUZZER` was on in the same build directory. So:
+`-fsanitize=fuzzer` supplies libFuzzer's own `main`, so it cannot go into the
+blanket `project_sanitizers` library that every executable and test links. The
+`ENABLE_FUZZER` option (default `OFF`) gates a single `fix_framer_fuzzer`
+target that carries `-fsanitize=fuzzer,address` itself, and is why it is a raw
+`add_executable` rather than `add_project_executable`.
 
-- A new option, `ENABLE_FUZZER` (default `OFF`), independent of the sanitizer
-  options.
-- A new INTERFACE library, `project_fuzzer_sanitizer`, structurally separate
-  from `project_sanitizers`, that only adds `-fsanitize=fuzzer,address` (as
-  both compile and link options) when `ENABLE_FUZZER` is on.
-- The fuzz target itself, `fix_framer_fuzzer`, gated behind
-  `if(ENABLE_FUZZER)` the same way test targets are gated behind
-  `BUILD_TESTING`. It links `project_options project_warnings
-  project_fuzzer_sanitizer` — not `project_sanitizers`, and not the
-  `feed_handler` library target. `feed_handler` is `PUBLIC project_sanitizers`,
-  which would transitively pull in whatever `ENABLE_ASAN`/`ENABLE_TSAN` happen
-  to be cached in that same build directory and collide with the fuzzer's own
-  `-fsanitize=address`. Instead, `fix_message.cpp` is compiled directly into
-  the fuzz executable with its own
-  `target_include_directories(... PRIVATE ${CMAKE_SOURCE_DIR}/src)` — the
-  pilot stays self-contained and the rest of the build is untouched.
+It compiles `fix_message.cpp` directly instead of linking `feed_handler`: that
+library's copy has no coverage instrumentation, so the fuzzer would get no
+feedback from the code under test, and its `PUBLIC project_sanitizers` would
+carry in a cached `ENABLE_TSAN`, which cannot coexist with libFuzzer's ASan.
+The second fuzz target is the point to factor this into a shared helper,
+likely with `-fsanitize=fuzzer-no-link` on the libraries so targets can link
+`feed_handler` normally; one target does not justify the abstraction yet.
 
 ### Corpus and regression model
 
@@ -117,21 +107,13 @@ cmake --build build/fuzz --target fix_framer_fuzzer
 ./build/fuzz/bin/fix_framer_fuzzer -max_total_time=60 src/feed_handler/fix/fuzz/corpus/
 ```
 
-(Executable output path matches every other target in this project —
-`CMAKE_RUNTIME_OUTPUT_DIRECTORY` is `<build dir>/bin`, the same place
-`kraken_feed_handler` and `feed_handler_tests` land.) Point `-max_total_time`
-at whatever budget the moment calls for; there is no fixed number that is
-"correct" the way there is for the pre-push sanitizer suite.
+Pick `-max_total_time` for the moment; there is no "correct" budget the way
+there is for the pre-push sanitizer suite. Do not point libFuzzer at the
+tracked `corpus/` for exploratory runs: it writes every newly interesting
+input back into the directory it is given, so use a scratch copy.
 
 ## Consequences
 
-- Default builds (`ENABLE_FUZZER` unset/`OFF`) are unaffected: no new option
-  changes behavior, no new target is even defined, and `feed_handler_tests`
-  and the rest of the existing targets build exactly as before.
-- A separate build directory (`build/fuzz` above) is required to actually run
-  this, the same way `run_sanitizers.sh` already needs separate ASan+UBSan and
-  TSan directories — `-fsanitize=fuzzer,address` cannot share a build
-  directory with an ordinary or TSan'd one.
 - Kraken `level3` and the journal reader remain unfuzzed. Revisit once this
   pilot has actually found (or failed to find, over a real time-boxed run —
   not just the smoke-test run in this change) something, to decide whether
