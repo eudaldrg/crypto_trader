@@ -16,6 +16,10 @@ compile_commands.json
 *.so
 *.exe
 
+# Python bytecode cache (experiments/, src/order_book/tools/)
+__pycache__/
+*.pyc
+
 # Editor/IDE
 .vscode/*
 !.vscode/settings.json
