@@ -223,7 +223,15 @@ FetchContent_Declare(
   GIT_TAG v3.11.3
   SYSTEM
 )
-FetchContent_MakeAvailable(ixwebsocket simdjson nlohmann_json)
+# toml++: the feed-handler configuration file (src/feed_handler/config).
+# Header-only; TOML's array-of-tables is what maps onto "a list of connections".
+FetchContent_Declare(
+  tomlplusplus
+  GIT_REPOSITORY https://github.com/marzer/tomlplusplus.git
+  GIT_TAG v3.4.0
+  SYSTEM
+)
+FetchContent_MakeAvailable(ixwebsocket simdjson nlohmann_json tomlplusplus)
 
 # GoogleTest: TDD for feed-parsing/journal/order-book logic, per decisions/0002.
 option(BUILD_TESTING "Build test targets" ON)
@@ -274,6 +282,7 @@ find_package(ZLIB REQUIRED)
 
 add_library(feed_handler STATIC
   src/feed_handler/capture_session.cpp
+  src/feed_handler/config/feed_handler_config.cpp
   src/feed_handler/journal_format.cpp
   src/feed_handler/journal_reader.cpp
   src/feed_handler/journal_writer.cpp
@@ -289,7 +298,8 @@ add_library(feed_handler STATIC
 target_include_directories(feed_handler PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(feed_handler
   PUBLIC project_options project_warnings project_sanitizers
-  PRIVATE ixwebsocket::ixwebsocket simdjson::simdjson OpenSSL::Crypto ZLIB::ZLIB
+  PRIVATE ixwebsocket::ixwebsocket simdjson::simdjson tomlplusplus::tomlplusplus
+          OpenSSL::Crypto ZLIB::ZLIB
 )
 
 # The live Kraken level3 capture binary (decisions/0004's first vertical
@@ -319,6 +329,7 @@ if(BUILD_TESTING)
     src/feed_handler/tests/capture_session_test.cpp
     src/feed_handler/tests/deribit_fix_client_test.cpp
     src/feed_handler/tests/deribit_fix_session_test.cpp
+    src/feed_handler/tests/feed_handler_config_test.cpp
     src/feed_handler/tests/fix_message_test.cpp
     src/feed_handler/tests/journal_test.cpp
     src/feed_handler/tests/kraken_rest_client_test.cpp
@@ -326,6 +337,10 @@ if(BUILD_TESTING)
     src/feed_handler/tests/staleness_watchdog_test.cpp
   )
   target_link_libraries(feed_handler_tests PRIVATE feed_handler)
+  # The committed default config is parsed by a test so it cannot rot.
+  target_compile_definitions(feed_handler_tests PRIVATE
+    FEED_HANDLER_CONFIG_DIR="${CMAKE_SOURCE_DIR}/config"
+  )
 endif()
 
 #### Order book (decisions/0006) ####
