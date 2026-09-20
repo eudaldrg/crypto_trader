@@ -241,7 +241,7 @@ void FixClient::Stop() {
 
 void FixClient::Run() {
     std::uint64_t consecutive_failures = 0;
-    while (!stop_signal_.StopRequested() && !Fatal()) {
+    while (!stop_signal_.Stopping()) {
         const std::uint64_t delay_ms = ReconnectDelayMs(
             consecutive_failures, cfg_.min_reconnect_wait_ms, cfg_.max_reconnect_wait_ms);
         if (delay_ms != 0) {
@@ -312,7 +312,7 @@ void FixClient::RunOneConnection() {
     watchdog_.NoteActivity(MonotonicNowNs());
     std::string buffer(kReceiveBufferBytes, '\0');
 
-    while (!stop_signal_.StopRequested() && !Fatal()) {
+    while (!stop_signal_.Stopping()) {
         // Before the recv(), not inside its timeout branch: the Heartbeat is
         // owed on outbound silence (exchanges/deribit.md), and on a busy feed
         // recv() keeps returning data promptly, so a check that only ran when

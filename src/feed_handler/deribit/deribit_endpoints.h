@@ -2,6 +2,7 @@
 // one dependency-free header so neither can drift from the other.
 #pragma once
 
+#include <cstddef>
 #include <limits>
 #include <string_view>
 

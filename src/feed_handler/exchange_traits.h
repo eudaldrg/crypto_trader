@@ -3,7 +3,8 @@
 // One ExchangeTraits per exchange, defined next to that exchange's other facts
 // (kraken/kraken_endpoints.h, deribit/deribit_endpoints.h). The config validator
 // reads them instead of branching on the exchange, so adding an exchange is one
-// new row here and one enumerator, not an edit in every rule.
+// new row there plus its enumerator in config (kAllExchanges and TraitsOf), not
+// an edit in every rule.
 #pragma once
 
 #include <cstddef>

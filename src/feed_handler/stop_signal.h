@@ -40,10 +40,16 @@ class StopSignal {
         return stop_requested_.load(std::memory_order_acquire);
     }
 
+    /// True once a stop was requested or a fatal error latched: what a client's
+    /// loop checks before doing more work. StopRequested() alone is for the
+    /// rare place that must tell a requested stop from a failure.
+    bool Stopping() const {
+        return StopRequested() || Fatal();
+    }
+
     /// Latches a capture failure (a journal that cannot be opened or written)
     /// and wakes every waiter, for the same reasons and in the same way as
-    /// RequestStop(). Callers must not hold the mutex, which they cannot: it is
-    /// private and only ever held inside this class.
+    /// RequestStop().
     void LatchFatal() {
         {
             const std::lock_guard<std::mutex> lock(mutex_);
@@ -62,7 +68,7 @@ class StopSignal {
     /// is what makes the notify on the fatal path actually end them.
     bool WaitFor(std::chrono::milliseconds timeout) {
         std::unique_lock<std::mutex> lock(mutex_);
-        return cv_.wait_for(lock, timeout, [this] { return StopRequested() || Fatal(); });
+        return cv_.wait_for(lock, timeout, [this] { return Stopping(); });
     }
 
   private:

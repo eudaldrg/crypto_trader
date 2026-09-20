@@ -372,7 +372,7 @@ void WsClient::RunWatchdog() {
     // Ends on a capture failure as well as on shutdown: once capture is dead
     // the process is on its way out, and forcing further reconnects would only
     // spend Kraken's REST rate limit on connections nothing can journal.
-    while (!stop_signal_.StopRequested() && !Fatal()) {
+    while (!stop_signal_.Stopping()) {
         if (stop_signal_.WaitFor(std::chrono::milliseconds(cfg_.watchdog_poll_ms))) {
             return;
         }

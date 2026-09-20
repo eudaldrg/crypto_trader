@@ -233,8 +233,7 @@ TEST(FeedHandlerConfig, EveryExchangesTraitsAreConsistentWithItsRules) {
             if (traits.endpoint_kind == feed_handler::EndpointKind::kHostPort) {
                 EXPECT_TRUE(ParseHostPort(endpoint).has_value()) << endpoint;
             } else {
-                EXPECT_TRUE(endpoint.starts_with("wss://") || endpoint.starts_with("ws://"))
-                    << endpoint;
+                EXPECT_TRUE(feed_handler::config::IsValidWebSocketUrl(endpoint)) << endpoint;
             }
         }
         // An exchange with no testnet must not advertise a testnet default.

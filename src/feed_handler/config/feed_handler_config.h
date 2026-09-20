@@ -49,8 +49,9 @@ std::string_view ToString(Environment env);
 const ExchangeTraits& TraitsOf(Exchange exchange);
 
 /// Every exchange, the one list the config parser, the command line and their
-/// usage text are built from. A new Exchange enumerator goes here and in
-/// ToString (whose switch the compiler checks).
+/// usage text are built from. A new Exchange enumerator goes here, in TraitsOf
+/// (whose switch the compiler checks) and gets a kTraits row next to its other
+/// facts; a test checks each row against the validator's own rules.
 inline constexpr std::array<Exchange, 2> kAllExchanges = {Exchange::kKraken, Exchange::kDeribit};
 
 /// The exchange whose ToString() is `name`, or nullopt.
@@ -100,6 +101,10 @@ std::expected<FeedHandlerConfig, std::string> ParseConfig(std::string_view toml_
 
 /// Reads and parses a file; the error names the path.
 std::expected<FeedHandlerConfig, std::string> LoadConfigFile(const std::filesystem::path& path);
+
+/// Whether `url` is a usable `ws://` or `wss://` endpoint: the scheme, something
+/// after it, and no whitespace, quote or backslash.
+bool IsValidWebSocketUrl(std::string_view url);
 
 /// Splits and validates a Deribit-style `host:port` endpoint: a hostname of
 /// letters, digits, `-` and `.`, and a port in 1..65535.
