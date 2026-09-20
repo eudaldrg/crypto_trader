@@ -8,6 +8,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <string_view>
 
 namespace feed_handler {
@@ -30,5 +31,36 @@ inline void LogWarn(std::string_view message) {
 inline void LogError(std::string_view message) {
     LogMessage(LogLevel::kError, message);
 }
+
+/// The same three levels with every line prefixed `[tag] `, so several
+/// connections in one process can be told apart. A connection holds one for its
+/// whole life; the prefix is built once.
+class TaggedLog {
+  public:
+    explicit TaggedLog(std::string_view tag) : prefix_("[" + std::string(tag) + "] ") {}
+
+    void Info(std::string_view message) const {
+        Write(LogLevel::kInfo, message);
+    }
+
+    void Warn(std::string_view message) const {
+        Write(LogLevel::kWarn, message);
+    }
+
+    void Error(std::string_view message) const {
+        Write(LogLevel::kError, message);
+    }
+
+  private:
+    void Write(LogLevel level, std::string_view message) const {
+        std::string line;
+        line.reserve(prefix_.size() + message.size());
+        line += prefix_;
+        line += message;
+        LogMessage(level, line);
+    }
+
+    std::string prefix_;
+};
 
 }  // namespace feed_handler

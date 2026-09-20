@@ -27,6 +27,7 @@
 
 #include "feed_handler/capture_session.h"
 #include "feed_handler/kraken/kraken_rest_client.h"
+#include "feed_handler/logging.h"
 #include "feed_handler/staleness_watchdog.h"
 
 namespace ix {
@@ -168,10 +169,6 @@ class WsClient {
   private:
     void HandleOpen();
     void RunWatchdog();
-    /// Log lines tagged with this connection's id.
-    void Info(std::string_view message) const;
-    void Warn(std::string_view message) const;
-    void Error(std::string_view message) const;
     /// Closes the current connection so IXWebSocket's automatic reconnection
     /// re-establishes it. Deliberately close(), not stop(): stop() joins the
     /// library's thread and ends reconnection for good.
@@ -205,6 +202,8 @@ class WsClient {
     Credentials creds_;
     CaptureSession& session_;
     WsClientConfig cfg_;
+    /// Every line tagged with `cfg_.id`.
+    TaggedLog log_;
     std::unique_ptr<ix::WebSocket> ws_;
     StalenessWatchdog watchdog_;
 
