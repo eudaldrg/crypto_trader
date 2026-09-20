@@ -10,6 +10,7 @@
 #include <expected>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -81,10 +82,18 @@ class RestClient {
     /// Signed POST to GetWebSocketsToken. A fresh token is fetched per
     /// (re)connect rather than cached: Kraken's token is short-lived if unused
     /// (exchanges/kraken.md).
+    ///
+    /// Thread safe. One client is shared by every Kraken connection in the
+    /// process, each calling this from its own IXWebSocket thread, and the
+    /// nonce high-water mark and the HTTP client underneath it are both
+    /// single-threaded state. Calls are serialized, which costs nothing: there
+    /// is one per (re)connect.
     std::expected<WebsocketsToken, std::string> FetchWebsocketsToken(const Credentials& creds);
 
     /// Unauthenticated GET of the full AssetPairs table, cached in memory.
-    /// `pair` optionally narrows the request to one Kraken pair name.
+    /// `pair` optionally narrows the request to one Kraken pair name. Meant to
+    /// run once at startup, before any connection thread exists:
+    /// FindAssetPair() reads the cache without synchronization.
     std::expected<std::size_t, std::string> LoadAssetPairs(std::string_view pair = {});
 
     /// Looks a cached pair up by REST name ("XXBTZUSD"), altname ("XBTUSD") or
@@ -114,6 +123,8 @@ class RestClient {
     void IndexPair(const std::string& rest_name, std::string alias);
 
     std::string base_url_;
+    /// Guards `http_` and `nonce_` across concurrent token fetches.
+    std::mutex request_mutex_;
     std::unique_ptr<ix::HttpClient> http_;
     PersistentNonceSource nonce_;
     std::unordered_map<std::string, AssetPair> pairs_;

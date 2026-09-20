@@ -18,7 +18,7 @@ std::span<const std::byte> BytesOf(std::string_view text) {
 
 }  // namespace
 
-std::string JournalFileName(std::string_view exchange, std::uint64_t incarnation,
+std::string JournalFileName(std::string_view prefix, std::uint64_t incarnation,
                             std::uint64_t realtime_ns) {
     const auto seconds = static_cast<std::time_t>(realtime_ns / kNanosPerSecond);
     std::tm utc{};
@@ -30,7 +30,7 @@ std::string JournalFileName(std::string_view exchange, std::uint64_t incarnation
     std::snprintf(ordinal.data(), ordinal.size(), "%06llu",
                   static_cast<unsigned long long>(incarnation));
 
-    return std::string(exchange) + "-" + ordinal.data() + "-" + std::string(stamp.data(), length) +
+    return std::string(prefix) + "-" + ordinal.data() + "-" + std::string(stamp.data(), length) +
            ".journal";
 }
 
@@ -50,7 +50,9 @@ std::expected<std::filesystem::path, std::string> CaptureSession::BeginIncarnati
     }
 
     const std::filesystem::path path =
-        cfg_.directory / JournalFileName(cfg_.exchange, incarnation_, RealtimeNowNs());
+        cfg_.directory /
+        JournalFileName(cfg_.file_prefix.empty() ? cfg_.exchange : cfg_.file_prefix, incarnation_,
+                        RealtimeNowNs());
     try {
         writer_ = std::make_unique<JournalWriter>(path, JournalWriter::Config{
                                                             .exchange = cfg_.exchange,

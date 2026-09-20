@@ -15,17 +15,20 @@
 #pragma once
 
 #include <atomic>
-#include <condition_variable>
 #include <cstdint>
 #include <memory>
-#include <mutex>
+#include <span>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 #include "feed_handler/capture_session.h"
+#include "feed_handler/kraken/kraken_endpoints.h"
 #include "feed_handler/kraken/kraken_rest_client.h"
+#include "feed_handler/logging.h"
 #include "feed_handler/staleness_watchdog.h"
+#include "feed_handler/stop_signal.h"
 
 namespace ix {
 class WebSocket;
@@ -65,23 +68,38 @@ struct MessageClassification {
     /// Exchange-supplied error/status text, for the log line. Inbound only, so
     /// it can never contain our token.
     std::string detail;
+    /// For a `kSubscribeAck`, the symbol it acknowledges. Kraken answers a
+    /// multi-symbol subscribe with one ack per symbol, so this is what tells a
+    /// fully subscribed connection from a partly subscribed one. Empty
+    /// otherwise, and when the ack does not carry one. Has a default
+    /// initializer so the designated-init sites that never set it stay valid
+    /// under -Wmissing-designated-field-initializers.
+    std::string symbol = {};
 };
 
 /// Minimal top-level classification of one inbound Kraken v2 message.
 /// Single pass over the top-level object; nothing inside `data` is touched.
 MessageClassification ClassifyMessage(std::string_view json);
 
-/// Builds the level3 subscribe payload (exchanges/kraken.md).
+/// Builds the level3 subscribe payload for `symbols` (exchanges/kraken.md).
+///
+/// The symbols are spliced in without JSON escaping, so they must already have
+/// passed the config layer's symbol check (feed_handler/config): no quote,
+/// backslash or control character can appear in one.
 ///
 /// The result carries a live credential in-body: it must never be journaled
 /// or logged. JournalWriter has no outbound path at all, which is what keeps
 /// that structural rather than a rule to remember.
-std::string BuildSubscribeMessage(std::string_view symbol, std::string_view token);
+std::string BuildSubscribeMessage(std::span<const std::string> symbols, std::string_view token);
 
 struct WsClientConfig {
-    std::string url = "wss://ws-l3.kraken.com/v2";
-    /// WS v2 spells bitcoin "BTC", not REST's "XBT" (exchanges/kraken.md).
-    std::string symbol = "BTC/USD";
+    std::string url = std::string(kDefaultWsUrl);
+    /// The connection's identity in log lines, so several connections in one
+    /// process can be told apart. The config's `id`.
+    std::string id = "kraken";
+    /// WS v2 spells bitcoin "BTC", not REST's "XBT" (exchanges/kraken.md). All
+    /// of them ride one subscribe on one socket, up to Kraken's cap of 200.
+    std::vector<std::string> symbols = {"BTC/USD"};
     /// WebSocket-level ping. IXWebSocket defaults this to -1 (off), so it is
     /// set deliberately; it is the transport half of liveness detection, with
     /// the staleness watchdog below as the independent application half.
@@ -120,8 +138,18 @@ class WsClient {
     /// immediately; everything after this happens on those threads.
     void Start();
 
-    /// Permanent shutdown: stops the watchdog, closes the socket and joins
-    /// IXWebSocket's thread. Idempotent.
+    /// Asks the client to stop, and returns without waiting for anything.
+    /// Wakes the watchdog and asks IXWebSocket to close with automatic
+    /// reconnection off, so its thread winds down on its own. Idempotent. A
+    /// process with several connections requests every stop first and only then
+    /// joins, so shutdown costs one wind-down, not one per connection.
+    void RequestStop();
+
+    /// Waits for the client to finish stopping: requests the stop first if
+    /// nobody has, joins the watchdog thread and IXWebSocket's thread. Idempotent.
+    void Join();
+
+    /// Permanent shutdown: RequestStop() then Join(). Idempotent.
     void Stop();
 
     /// Handles one inbound Kraken wire message: journal it, then classify it.
@@ -137,7 +165,7 @@ class WsClient {
     /// or a write into an open one failed. The owning process should shut down
     /// rather than stay connected while dropping data on the floor.
     bool Fatal() const {
-        return fatal_.load(std::memory_order_acquire);
+        return stop_signal_.Fatal();
     }
 
     std::uint64_t MessagesReceived() const {
@@ -163,41 +191,31 @@ class WsClient {
     /// capture failed) while waiting, in which case the caller must abandon the
     /// setup.
     bool ThrottleConnectionSetup();
-    /// Returns true if shutdown was requested, or capture failed, while
-    /// waiting -- both mean "stop what you were about to do". Every wait in
-    /// this client goes through here, which is what makes the notify_all() on
-    /// the fatal path actually end them.
-    bool WaitForStop(std::uint64_t millis);
-    /// Latches the capture failure and wakes every waiter.
-    ///
-    /// The mutation is made under `stop_mutex_`, not just the notify: a waiter
-    /// evaluates the predicate under that mutex, and a flag flipped outside it
-    /// can land in the window between that evaluation and the wait registering
-    /// -- the notification is then delivered to nobody and the waiter sleeps out
-    /// its whole timeout (up to max_reconnect_wait_ms). The notify itself is
-    /// deliberately left outside the lock: by then the new state is already
-    /// published, so notifying after unlocking only saves the woken thread from
-    /// waking straight onto a mutex this thread still holds.
-    void LatchFatal();
 
     RestClient& rest_;
     Credentials creds_;
     CaptureSession& session_;
     WsClientConfig cfg_;
+    /// Every line tagged with `cfg_.id`.
+    TaggedLog log_;
     std::unique_ptr<ix::WebSocket> ws_;
     StalenessWatchdog watchdog_;
 
     std::thread watchdog_thread_;
-    std::mutex stop_mutex_;
-    std::condition_variable stop_cv_;
-    std::atomic<bool> stopping_{false};
-    std::atomic<bool> fatal_{false};
+    /// The stop request and the fatal latch, with the wakeup every timed wait in
+    /// this client goes through (stop_signal.h).
+    StopSignal stop_signal_;
     std::atomic<bool> started_{false};
+    /// Set by the first Join(), so a second one (or the destructor) is a no-op.
+    std::atomic<bool> joined_{false};
     std::atomic<std::uint64_t> messages_received_{0};
     std::atomic<std::uint64_t> forced_reconnects_{0};
-    /// Both touched only on the WebSocket thread.
+    /// All touched only on the WebSocket thread.
     unsigned consecutive_setup_failures_ = 0;
     std::uint64_t last_setup_ns_ = 0;
+    /// Subscribe acks seen on the current connection, against
+    /// `cfg_.symbols.size()` expected. Reset on every (re)connect.
+    std::size_t subscribe_acks_ = 0;
 };
 
 }  // namespace feed_handler::kraken

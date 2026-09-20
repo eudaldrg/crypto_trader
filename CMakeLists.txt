@@ -223,7 +223,15 @@ FetchContent_Declare(
   GIT_TAG v3.11.3
   SYSTEM
 )
-FetchContent_MakeAvailable(ixwebsocket simdjson nlohmann_json)
+# toml++: the feed-handler configuration file (src/feed_handler/config).
+# Header-only; TOML's array-of-tables is what maps onto "a list of connections".
+FetchContent_Declare(
+  tomlplusplus
+  GIT_REPOSITORY https://github.com/marzer/tomlplusplus.git
+  GIT_TAG v3.4.0
+  SYSTEM
+)
+FetchContent_MakeAvailable(ixwebsocket simdjson nlohmann_json tomlplusplus)
 
 # GoogleTest: TDD for feed-parsing/journal/order-book logic, per decisions/0002.
 option(BUILD_TESTING "Build test targets" ON)
@@ -274,14 +282,21 @@ find_package(ZLIB REQUIRED)
 
 add_library(feed_handler STATIC
   src/feed_handler/capture_session.cpp
+  src/feed_handler/capture_set.cpp
+  src/feed_handler/config/feed_handler_config.cpp
+  src/feed_handler/credentials.cpp
   src/feed_handler/journal_format.cpp
   src/feed_handler/journal_reader.cpp
   src/feed_handler/journal_writer.cpp
   src/feed_handler/logging.cpp
   src/feed_handler/message_sink.cpp
+  src/feed_handler/runner.cpp
+  src/feed_handler/selection.cpp
+  src/feed_handler/deribit/deribit_capture.cpp
   src/feed_handler/deribit/deribit_fix_client.cpp
   src/feed_handler/deribit/deribit_fix_session.cpp
   src/feed_handler/fix/fix_message.cpp
+  src/feed_handler/kraken/kraken_capture.cpp
   src/feed_handler/kraken/kraken_rest_client.cpp
   src/feed_handler/kraken/kraken_signing.cpp
   src/feed_handler/kraken/kraken_ws_client.cpp
@@ -289,23 +304,18 @@ add_library(feed_handler STATIC
 target_include_directories(feed_handler PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(feed_handler
   PUBLIC project_options project_warnings project_sanitizers
-  PRIVATE ixwebsocket::ixwebsocket simdjson::simdjson OpenSSL::Crypto ZLIB::ZLIB
+  PRIVATE ixwebsocket::ixwebsocket simdjson::simdjson tomlplusplus::tomlplusplus
+          OpenSSL::Crypto ZLIB::ZLIB
 )
 
-# The live Kraken level3 capture binary (decisions/0004's first vertical
-# slice). Credentials come from the environment; see the file's header comment.
-add_project_executable(kraken_feed_handler
-  src/feed_handler/kraken/kraken_feed_handler_main.cpp
+# The capture binary (decisions/0004): every configured connection, across
+# exchanges, from one process. Which ones is the --config file; credentials come
+# from the environment. See feed_handler_main.cpp and docs/modules/feed-handler.md.
+add_project_executable(feed_handler_capture
+  src/feed_handler/feed_handler_main.cpp
 )
-target_link_libraries(kraken_feed_handler PRIVATE feed_handler)
-
-# The live Deribit FIX capture binary: decisions/0004's second exchange
-# backend, hand-rolled over a raw POSIX socket. Credentials come from the
-# environment; see the file's header comment.
-add_project_executable(deribit_feed_handler
-  src/feed_handler/deribit/deribit_feed_handler_main.cpp
-)
-target_link_libraries(deribit_feed_handler PRIVATE feed_handler)
+target_link_libraries(feed_handler_capture PRIVATE feed_handler)
+set_target_properties(feed_handler_capture PROPERTIES OUTPUT_NAME feed_handler)
 
 if(BUILD_TESTING)
   # Proves the FetchContent wiring for IXWebSocket/simdjson/GoogleTest
@@ -316,16 +326,27 @@ if(BUILD_TESTING)
   target_link_libraries(dependency_smoke_test PRIVATE ixwebsocket::ixwebsocket simdjson::simdjson)
 
   add_project_test(feed_handler_tests
+    src/feed_handler/tests/capture_connection_test.cpp
     src/feed_handler/tests/capture_session_test.cpp
+    src/feed_handler/tests/capture_set_test.cpp
+    src/feed_handler/tests/credentials_test.cpp
     src/feed_handler/tests/deribit_fix_client_test.cpp
     src/feed_handler/tests/deribit_fix_session_test.cpp
+    src/feed_handler/tests/feed_handler_config_test.cpp
     src/feed_handler/tests/fix_message_test.cpp
     src/feed_handler/tests/journal_test.cpp
     src/feed_handler/tests/kraken_rest_client_test.cpp
     src/feed_handler/tests/kraken_ws_client_test.cpp
+    src/feed_handler/tests/runner_test.cpp
+    src/feed_handler/tests/selection_test.cpp
     src/feed_handler/tests/staleness_watchdog_test.cpp
+    src/feed_handler/tests/stop_signal_test.cpp
   )
   target_link_libraries(feed_handler_tests PRIVATE feed_handler)
+  # The committed default config is parsed by a test so it cannot rot.
+  target_compile_definitions(feed_handler_tests PRIVATE
+    FEED_HANDLER_CONFIG_DIR="${CMAKE_SOURCE_DIR}/config"
+  )
 endif()
 
 #### Order book (decisions/0006) ####

@@ -15,19 +15,21 @@ profiling discipline — against real exchange data rather than a simulation.
 first vertical slice of the feed handler in `src/feed_handler/` — the
 `MessageSink` seam, the v1 capture journal (writer + reader), the Kraken REST
 auth / `AssetPairs` client, the Kraken `level3` WebSocket client, and the
-`kraken_feed_handler` binary that captures live market data to a journal
-(`KRAKEN_API_KEY`/`KRAKEN_API_SECRET` from the environment, journals into
-`./journal/`, runs until SIGINT). The second exchange backend is
+`feed_handler` binary that captures live market data to a journal. It takes
+`--config <path>`, a TOML file listing `[[connections]]`, one per socket and
+journal, each with its own symbols (`config/feed_handler.toml`,
+`docs/modules/feed-handler.md`), and runs every entry across both exchanges,
+optionally narrowed with `--exchange` and `--only`; credentials come from the
+environment and it runs until SIGINT. The second exchange backend is
 complete to the same depth: `src/feed_handler/fix/` (generic hand-rolled
-FIX.4.4 builder/parser/framer), `src/feed_handler/deribit/` (session
-mechanics plus a raw-POSIX-socket client on its own thread) and the
-`deribit_feed_handler` binary, which logs on to Deribit's FIX testnet
-(`DERIBIT_TESTNET_CLIENT_ID`/`DERIBIT_TESTNET_CLIENT_SECRET` from the
-environment), subscribes to `BTC-PERPETUAL` and journals into the same
-`./journal/` until SIGINT. A golden (deliberately simple, `std::map`-based)
-order book also exists in `src/order_book/` — L1/L2/L3 granularity, no
-matching yet (see `decisions/0006`) — but it is not yet wired to the feed
-handler's journal/`MessageSink` output; that integration, the fast
+FIX.4.4 builder/parser/framer) and `src/feed_handler/deribit/` (session
+mechanics plus a raw-POSIX-socket client on its own thread), which logs on to
+Deribit's FIX testnet, subscribes to the configured instruments and journals
+into the configured `journal_dir`. A golden
+(deliberately simple, `std::map`-based) order book also exists in
+`src/order_book/` — L1/L2/L3 granularity, no matching yet (see
+`decisions/0006`) — but it is not yet wired to the feed
+handler's journal/`MessageSink` output (issue #14); that integration, the fast
 exchange-specific books, the matching engine, and strategy code all remain
 unwritten. `decisions/` holds the locked-in ADRs; the rest of the design is
 intentionally unspecified and will be worked out in future sessions — don't
@@ -80,7 +82,8 @@ format. See `exchanges/README.md` for the index.
   IXWebSocket owning its own fd/thread keeps Kraken a standalone exception
   until it's replaced) and where the future SPSC fan-in seam goes; and the
   per-exchange snapshot/recovery/gap-handling recap (detailed wire facts
-  live in `exchanges/`, not here).
+  live in `exchanges/`, not here); and the TOML config format plus the initial
+  capture scope (5-10 symbols per exchange, with measured byte rates).
 - `decisions/0005-quality-gates-and-release-process.md` — the commit-time
   (must compile) and push-time (full suite under ASan+UBSan and TSan)
   enforcement tiers, why MemorySanitizer is deferred rather than added, why a

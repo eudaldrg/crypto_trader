@@ -95,6 +95,8 @@ std::array<std::byte, kLogonNonceBytes> FixedNonce() {
     return nonce;
 }
 
+const std::vector<std::string> kOneSymbol = {"BTC-PERPETUAL"};
+
 SessionConfig TestConfig() {
     return SessionConfig{
         .client_id = std::string(kTestClientId),
@@ -224,16 +226,36 @@ TEST(DeribitNonce, IsThirtyTwoUnpredictableBytes) {
     EXPECT_EQ(seen.size(), 32U);
 }
 
+TEST(DeribitMarketDataRequest, ListsEverySymbolInTheRepeatingGroupInOrder) {
+    // One request covers every instrument through NoRelatedSym(146); Deribit
+    // answers with one snapshot per symbol.
+    FixSession session(TestConfig());
+    const std::vector<std::string> symbols = {"BTC-PERPETUAL", "ETH-PERPETUAL",
+                                              "SOL_USDC-PERPETUAL"};
+    const std::string request = session.BuildMarketDataRequest("md-1", symbols);
+    const auto parsed = ParseMessage(request);
+    ASSERT_TRUE(parsed.has_value()) << parsed.error();
+
+    EXPECT_EQ(parsed->Get(tag::kNoRelatedSym), "3");
+    const auto group = feed_handler::fix::ReadGroup(*parsed, tag::kNoRelatedSym, {tag::kSymbol});
+    ASSERT_TRUE(group.has_value()) << group.error();
+    ASSERT_EQ(group->size(), 3U);
+    EXPECT_EQ(group->entries[0].Get(tag::kSymbol), "BTC-PERPETUAL");
+    EXPECT_EQ(group->entries[1].Get(tag::kSymbol), "ETH-PERPETUAL");
+    EXPECT_EQ(group->entries[2].Get(tag::kSymbol), "SOL_USDC-PERPETUAL");
+    // Still one bid and one offer entry type, however many symbols.
+    EXPECT_EQ(parsed->Count(tag::kMdEntryType), 2U);
+}
+
 TEST(DeribitMarketDataRequest, ProducesTheExpectedWireMessage) {
     FixSession session(TestConfig());
     ASSERT_FALSE(session.BuildLogonWithNonce(kTestTimestampMs, FixedNonce()).empty());
-    EXPECT_EQ(session.BuildMarketDataRequest("md-1", "BTC-PERPETUAL"),
-              Wire(kExpectedMarketDataRequest));
+    EXPECT_EQ(session.BuildMarketDataRequest("md-1", kOneSymbol), Wire(kExpectedMarketDataRequest));
 }
 
 TEST(DeribitMarketDataRequest, AsksForBothSidesOfTheBook) {
     FixSession session(TestConfig());
-    const auto parsed = session.BuildMarketDataRequest("md-1", "BTC-PERPETUAL");
+    const auto parsed = session.BuildMarketDataRequest("md-1", kOneSymbol);
     const auto message = ParseMessage(parsed);
     ASSERT_TRUE(message.has_value()) << message.error();
 
@@ -264,7 +286,7 @@ TEST(DeribitSession, ConsumesOneOutboundSequenceNumberPerMessageInBuildOrder) {
 
     ASSERT_FALSE(session.BuildLogonWithNonce(kTestTimestampMs, FixedNonce()).empty());
     EXPECT_EQ(session.NextOutboundSeqNum(), 2U);
-    ASSERT_FALSE(session.BuildMarketDataRequest("md-1", "BTC-PERPETUAL").empty());
+    ASSERT_FALSE(session.BuildMarketDataRequest("md-1", kOneSymbol).empty());
     EXPECT_EQ(session.NextOutboundSeqNum(), 3U);
     ASSERT_FALSE(session.BuildHeartbeat().empty());
     EXPECT_EQ(session.NextOutboundSeqNum(), 4U);

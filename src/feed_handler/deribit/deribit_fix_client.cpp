@@ -20,6 +20,7 @@
 
 #include "feed_handler/logging.h"
 #include "feed_handler/message_sink.h"
+#include "feed_handler/symbols.h"
 
 namespace feed_handler::deribit {
 namespace {
@@ -203,6 +204,7 @@ std::uint64_t ReconnectDelayMs(std::uint64_t consecutive_failures, std::uint64_t
 
 FixClient::FixClient(SessionConfig session_cfg, CaptureSession& capture, FixClientConfig cfg)
     : cfg_(std::move(cfg)),
+      log_(cfg_.id),
       capture_(capture),
       session_(std::move(session_cfg)),
       watchdog_(cfg_.staleness_timeout_ns) {}
@@ -216,32 +218,35 @@ void FixClient::Start() {
     thread_ = std::thread([this] { Run(); });
 }
 
-void FixClient::Stop() {
-    {
-        // Under the mutex for the same reason latch_fatal() is: the connection
-        // thread checks this flag under it, and a store made outside it can be
-        // lost in the gap between that check and the wait, which would leave
-        // shutdown waiting out a whole reconnect backoff. The join stays outside
-        // the lock -- the thread it waits for needs this mutex to notice.
-        const std::lock_guard<std::mutex> lock(stop_mutex_);
-        if (stopping_.exchange(true, std::memory_order_acq_rel)) {
-            return;
-        }
+void FixClient::RequestStop() {
+    // Joining stays in Join(): the thread it waits for needs the signal's mutex
+    // to notice the request.
+    stop_signal_.RequestStop();
+}
+
+void FixClient::Join() {
+    RequestStop();
+    if (joined_.exchange(true, std::memory_order_acq_rel)) {
+        return;
     }
-    stop_cv_.notify_all();
     if (thread_.joinable()) {
         thread_.join();
     }
 }
 
+void FixClient::Stop() {
+    RequestStop();
+    Join();
+}
+
 void FixClient::Run() {
     std::uint64_t consecutive_failures = 0;
-    while (!Stopping() && !Fatal()) {
+    while (!stop_signal_.Stopping()) {
         const std::uint64_t delay_ms = ReconnectDelayMs(
             consecutive_failures, cfg_.min_reconnect_wait_ms, cfg_.max_reconnect_wait_ms);
         if (delay_ms != 0) {
-            LogInfo("waiting " + std::to_string(delay_ms) + "ms before reconnecting");
-            if (WaitForStop(delay_ms)) {
+            log_.Info("waiting " + std::to_string(delay_ms) + "ms before reconnecting");
+            if (stop_signal_.WaitFor(std::chrono::milliseconds(delay_ms))) {
                 return;
             }
         }
@@ -260,7 +265,7 @@ void FixClient::RunOneConnection() {
     connection_attempts_.fetch_add(1, std::memory_order_relaxed);
     const auto connected = ConnectSocket();
     if (!connected) {
-        LogError(connected.error());
+        log_.Error(connected.error());
         return;
     }
     const ScopedFd socket_fd(*connected);
@@ -268,7 +273,7 @@ void FixClient::RunOneConnection() {
     // Closing a session with nothing open is a no-op, so it is also harmless if
     // begin_incarnation() itself fails.
     const ScopedCapture capture_guard(capture_);
-    LogInfo("connected to " + cfg_.host + ":" + std::to_string(cfg_.port));
+    log_.Info("connected to " + cfg_.host + ":" + std::to_string(cfg_.port));
 
     // Everything that defines a connection incarnation resets together: fresh
     // FIX sequence numbers (Deribit accepts a session restarting at 1 without
@@ -280,33 +285,34 @@ void FixClient::RunOneConnection() {
     subscribed_ = false;
     last_outbound_ns_ = MonotonicNowNs();
 
-    const auto path = capture_.BeginIncarnation("deribit fix " + cfg_.symbol + " connected to " +
-                                                    cfg_.host + ":" + std::to_string(cfg_.port),
-                                                kWireSource);
+    const auto path =
+        capture_.BeginIncarnation("deribit fix " + JoinSymbols(cfg_.symbols) + " connected to " +
+                                      cfg_.host + ":" + std::to_string(cfg_.port),
+                                  kWireSource);
     if (!path) {
         // Same rule as Kraken: staying connected while unable to capture would
         // silently throw away the data this process exists to collect.
-        LogError("cannot start capture: " + path.error());
-        LatchFatal();
+        log_.Error("cannot start capture: " + path.error());
+        stop_signal_.LatchFatal();
         return;
     }
-    LogInfo("incarnation " + std::to_string(capture_.Incarnation()) + " started, journaling to " +
-            path->string());
+    log_.Info("incarnation " + std::to_string(capture_.Incarnation()) + " started, journaling to " +
+              path->string());
 
     const auto logon = session_.BuildLogon();
     if (!logon) {
-        LogError(logon.error());
+        log_.Error(logon.error());
         return;
     }
     if (!SendAll(socket_fd.Get(), *logon)) {
         return;
     }
-    LogInfo("sent Logon");
+    log_.Info("sent Logon");
 
     watchdog_.NoteActivity(MonotonicNowNs());
     std::string buffer(kReceiveBufferBytes, '\0');
 
-    while (!Stopping() && !Fatal()) {
+    while (!stop_signal_.Stopping()) {
         // Before the recv(), not inside its timeout branch: the Heartbeat is
         // owed on outbound silence (exchanges/deribit.md), and on a busy feed
         // recv() keeps returning data promptly, so a check that only ran when
@@ -327,17 +333,17 @@ void FixClient::RunOneConnection() {
                 if (watchdog_.IsStale(MonotonicNowNs())) {
                     forced_reconnects_.fetch_add(1, std::memory_order_relaxed);
                     watchdog_.Disarm();
-                    LogWarn("forcing reconnect: no inbound message in " +
-                            std::to_string(cfg_.staleness_timeout_ns / kNanosPerSecond) + "s");
+                    log_.Warn("forcing reconnect: no inbound message in " +
+                              std::to_string(cfg_.staleness_timeout_ns / kNanosPerSecond) + "s");
                     return;
                 }
                 continue;
             }
-            LogWarn("recv failed: " + ErrnoText(errno));
+            log_.Warn("recv failed: " + ErrnoText(errno));
             return;
         }
         if (received == 0) {
-            LogWarn("deribit closed the connection");
+            log_.Warn("deribit closed the connection");
             return;
         }
 
@@ -348,11 +354,11 @@ void FixClient::RunOneConnection() {
         }
     }
 
-    if (logged_on_ && Stopping()) {
+    if (logged_on_ && stop_signal_.StopRequested()) {
         // Sent from this thread, not from stop(): the socket stays
         // single-threaded, which is the whole point of owning it here.
         SendAll(socket_fd.Get(), session_.BuildLogout("shutting down"));
-        LogInfo("sent Logout");
+        log_.Info("sent Logout");
     }
 }
 
@@ -364,7 +370,7 @@ bool FixClient::DrainFramedMessages(int fd) {
                 // Framing is sticky on purpose (fix_message.h): once alignment
                 // is lost every following byte is unaligned, and there is no
                 // resynchronisation to attempt.
-                LogError("framing lost, dropping the connection: " + framer_.Error());
+                log_.Error("framing lost, dropping the connection: " + framer_.Error());
                 return false;
             }
             return true;
@@ -384,7 +390,7 @@ bool FixClient::DrainFramedMessages(int fd) {
             // A structurally delimited message that fails BodyLength/CheckSum
             // validation means the stream is not what it claims to be; the
             // answer is the same reconnect a gap gets.
-            LogError("invalid message, dropping the connection: " + parsed.error());
+            log_.Error("invalid message, dropping the connection: " + parsed.error());
             return false;
         }
 
@@ -392,13 +398,15 @@ bool FixClient::DrainFramedMessages(int fd) {
         switch (decision.kind) {
             case InboundKind::kLogonAck:
                 logged_on_ = true;
-                LogInfo("Logon accepted");
+                log_.Info("Logon accepted");
                 break;
             case InboundKind::kMarketDataSnapshot:
-                if (snapshots_received_.fetch_add(1, std::memory_order_relaxed) == 0) {
-                    LogInfo("received the first " + std::string(ToString(decision.kind)) + " for " +
-                            cfg_.symbol);
-                }
+                // One 35=W per requested symbol per (re)connect, so logging each
+                // is a per-symbol subscription check the way Kraken's per-symbol
+                // acks are.
+                snapshots_received_.fetch_add(1, std::memory_order_relaxed);
+                log_.Info("received a " + std::string(ToString(decision.kind)) + " for " +
+                          std::string(parsed->Get(fix::tag::kSymbol).value_or("<no symbol>")));
                 break;
             case InboundKind::kMarketDataIncremental:
                 incrementals_received_.fetch_add(1, std::memory_order_relaxed);
@@ -406,10 +414,10 @@ bool FixClient::DrainFramedMessages(int fd) {
             case InboundKind::kMarketDataRequestReject:
                 // Loud, for the same reason Kraken's rejected subscribe is: the
                 // session stays up and simply never delivers data.
-                LogError("deribit rejected the MarketDataRequest: " + decision.detail);
+                log_.Error("deribit rejected the MarketDataRequest: " + decision.detail);
                 break;
             case InboundKind::kSessionReject:
-                LogError("deribit rejected a session message: " + decision.detail);
+                log_.Error("deribit rejected a session message: " + decision.detail);
                 break;
             case InboundKind::kHeartbeat:
             case InboundKind::kTestRequest:
@@ -422,11 +430,12 @@ bool FixClient::DrainFramedMessages(int fd) {
             case InboundAction::kSendMarketDataRequest:
                 if (!subscribed_) {
                     if (!SendAll(fd,
-                                 session_.BuildMarketDataRequest(cfg_.md_req_id, cfg_.symbol))) {
+                                 session_.BuildMarketDataRequest(cfg_.md_req_id, cfg_.symbols))) {
                         return false;
                     }
                     subscribed_ = true;
-                    LogInfo("sent MarketDataRequest for " + cfg_.symbol);
+                    log_.Info("sent MarketDataRequest for " + std::to_string(cfg_.symbols.size()) +
+                              " symbol(s): " + JoinSymbols(cfg_.symbols));
                 }
                 break;
             case InboundAction::kAnswerTestRequest:
@@ -435,8 +444,8 @@ bool FixClient::DrainFramedMessages(int fd) {
                 }
                 break;
             case InboundAction::kReconnect:
-                LogWarn("dropping the session (" + std::string(ToString(decision.kind)) +
-                        "): " + decision.detail);
+                log_.Warn("dropping the session (" + std::string(ToString(decision.kind)) +
+                          "): " + decision.detail);
                 return false;
             case InboundAction::kNone:
                 break;
@@ -450,11 +459,11 @@ bool FixClient::JournalMessage(std::string_view raw) {
     }
     const std::string_view reason = capture_.Error();
     if (reason.empty()) {
-        LogError("dropped a message: no journal file open");
+        log_.Error("dropped a message: no journal file open");
         return false;
     }
-    LogError("journal write failed: " + std::string(reason));
-    LatchFatal();
+    log_.Error("journal write failed: " + std::string(reason));
+    stop_signal_.LatchFatal();
     return false;
 }
 
@@ -551,7 +560,7 @@ std::expected<int, std::string> FixClient::ConnectSocket() {
         // Not fatal if the kernel refuses it -- it is a latency tweak, not a
         // correctness requirement.
         if (::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one)) != 0) {
-            LogWarn("cannot set TCP_NODELAY: " + ErrnoText(errno));
+            log_.Warn("cannot set TCP_NODELAY: " + ErrnoText(errno));
         }
 
         ::freeaddrinfo(resolved);
@@ -575,29 +584,13 @@ bool FixClient::SendAll(int fd, std::string_view bytes) {
             if (errno == EINTR) {
                 continue;
             }
-            LogWarn("send failed: " + ErrnoText(errno));
+            log_.Warn("send failed: " + ErrnoText(errno));
             return false;
         }
         sent += static_cast<std::size_t>(written);
     }
     last_outbound_ns_ = MonotonicNowNs();
     return true;
-}
-
-bool FixClient::WaitForStop(std::uint64_t millis) {
-    std::unique_lock<std::mutex> lock(stop_mutex_);
-    return stop_cv_.wait_for(lock, std::chrono::milliseconds(millis),
-                             [this] { return Stopping() || Fatal(); });
-}
-
-void FixClient::LatchFatal() {
-    {
-        const std::lock_guard<std::mutex> lock(stop_mutex_);
-        fatal_.store(true, std::memory_order_release);
-    }
-    // Both callers run on the connection thread, which never holds stop_mutex_
-    // outside wait_for_stop(), so taking it here cannot self-deadlock.
-    stop_cv_.notify_all();
 }
 
 }  // namespace feed_handler::deribit

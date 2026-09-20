@@ -603,6 +603,105 @@ Testing notes worth keeping:
   by latching the writer's sticky error with an oversized record, which is the
   same sticky state a full disk leaves behind.
 
+### Configuration and capture scope (2026-09-20)
+
+**Configuration is a TOML file, one `[[connections]]` entry per socket.** The
+binaries used to hardcode one symbol each; they now take `--config <path>`
+(required, not guessed from the working directory) and open every entry for
+their own exchange. TOML over YAML/JSON/XML because its array-of-tables is
+exactly "a list of connection entries", its scalars are unambiguous, and it
+allows comments; `toml++` is header-only and comes in through `FetchContent`
+like GoogleTest. One entry is one socket and one journal, which keeps this ADR's
+"one file per (exchange, connection-incarnation), not per symbol" rule intact
+and makes a second Deribit instrument or a shard past Kraken's 200 symbols a
+config edit. Credentials are named by environment variable, never stored (the
+schema and its validation are in `docs/modules/feed-handler.md`).
+
+**Multi-symbol is one subscribe per connection.** Kraken's `symbol` param is an
+array; Deribit's `NoRelatedSym(146)` is a repeating group. Both verified live
+(`exchanges/kraken.md`, `exchanges/deribit.md`). Neither has a wildcard, so
+symbols are always enumerated.
+
+**Initial capture scope: 5 to 10 symbols per exchange, one connection each, raw
+and uncompressed.** Measured from real captures in this repo:
+
+| | rate | per day |
+|---|---|---|
+| Kraken `BTC/USD` `level3` alone | ~50 msg/s, ~17.8 KiB/s | ~1.5 GiB |
+| Deribit `BTC-PERPETUAL` alone | ~9.6 msg/s, ~2.4 KiB/s | ~0.2 GiB |
+| Kraken `BTC/USD` + `ETH/USD` (30 s sample, 2026-09-20) | ~28 KiB/s of journal | ~2.3 GiB |
+
+Scaled against Kraken's 24h trade counts (`BTC/USD` is about 6.2% of all-pair
+trades, the top five about 21%) and Deribit's ~5,540 active instruments (~5,100
+of them BTC/ETH options), the options are: (a) BTC only on both exchanges,
+~2 GiB/day; (b) the top five per exchange, ~6 GiB/day; (c) everything, ~40 to
+90 GiB/day (1 to 3 TB a month). (c) buys no extra portfolio story over (b), for
+all of the cost, so (b) is the target. The ETH sample ran at several times
+`BTC/USD`'s update rate, so per-symbol volume varies widely and (b) is an
+estimate to re-measure once it is running, not a budget.
+
+Deliberately not done: the journal stays raw text per this ADR's format, so a
+schema or compression pass is later work; this capture exists to collect a couple
+of days of real data to design that against. Subscribe pacing (needed past about
+40 Kraken symbols at depth 10) and connection sharding (past 200) wait until the
+symbol count gets near either.
+
+### Single capture binary (2026-09-20)
+
+**One `feed_handler` binary replaces `kraken_feed_handler` and
+`deribit_feed_handler`.** The two mains were about 60% identical (config
+prelude, credential resolution, signal handling, poll loop, teardown), and
+merging them removes that duplication once instead of twice. One process is also
+where this ADR's threading model is heading: the epoll-per-thread-group end goal
+and the cross-feed consumers (a merged replay source, a strategy reading several
+books) both want the connections in one address space. The dated "as implemented"
+sections above that name the old binaries are left as the records they are.
+
+**Selection is by connection id.** `--only <id>[,...]` and `--exchange` narrow
+the config's entries, and an unknown id or an empty selection is an error. The
+config's unit is the connection, so "restart one shard" needs `--only`;
+`--exchange` is shorthand for a whole exchange.
+
+**`--exchange` is not a credential control, and an entry is never skipped for
+missing credentials.** Least privilege comes from the environment the process is
+started in (the capture launcher exports only one exchange's variables). The
+flag only stops the process asking for variables it will not have. Skipping an
+entry whose variables are unset was rejected: it looks healthy while capturing
+nothing. A missing variable is an error naming every one by name, never a value.
+
+**Any connection's fatal error stops all of them, with no option.** A journal
+that cannot be opened or written is usually a shared disk, and a flag nobody
+sets to false would be speculative. The accepted regression against two
+processes is that one connection's bad journal directory or id now stops the
+others; the log names the connection that latched. Exit codes are 0 clean, 1 a
+connection went fatal, 2 a startup error, so a supervisor can tell a bad
+invocation from a capture that died. A second signal during shutdown exits at
+once (130).
+
+**Stopping is split into `RequestStop()` and `Join()`.** The clients' blocking
+`Stop()` made N connections cost N wind-downs. Every stop is now requested first
+and only then joined. Kraken turns IXWebSocket's automatic reconnection off
+before closing, or its thread would treat the close as a forced reconnect;
+Deribit's request is only a flag and a wakeup, and its own thread still sends the
+Logout on the way out. The stop flag, the fatal latch and the timed wait that
+ends on either (the lost-wakeup rule described in the sections above) now live
+in `StopSignal` (`stop_signal.h`), shared by both clients and tested on its own.
+
+**Startup order: non-Kraken connections, then the Kraken instrument lookup, then
+the Kraken connections.** The `AssetPairs` lookup is a blocking REST GET (10 s connect
+and 20 s transfer timeouts, up to about 30 s) that must not delay Deribit's
+capture; it cannot simply run after the
+Kraken connections start because it takes the same request mutex as their token
+fetches and reads the pair table unsynchronised. `CaptureSet` owns the shared
+`RestClient` ahead of the connections so it outlives every Kraken client by
+member order rather than by a comment in `main()`.
+
+The seam between the process and a connection is a small virtual
+`CaptureConnection` (start, request stop, join, fatal, id, summary). It is
+control plane, a handful of calls per process, so it does not conflict with
+ADR 0006's compile-time-polymorphism preference, which is about the per-message
+path.
+
 ## Consequences
 
 - Kraken-first, Deribit-second implementation order is intentional: it

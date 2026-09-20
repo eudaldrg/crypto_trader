@@ -147,6 +147,23 @@ Captured by `kraken_feed_handler` over a 45s `BTC/USD` `level3` session
    (2158 update messages in 45s: 1692 `add`, 1053 `delete`, 36 `modify`
    events across them), around 800 KiB of journal for 45 seconds.
 
+## Multi-symbol subscribe (confirmed live 2026-09-20)
+
+`params.symbol` is an array, and one `subscribe` message carries all of them.
+Confirmed with `["BTC/USD", "ETH/USD"]` on the production feed (30 s, via the
+feed handler's `--config` mode):
+
+- **One method response per symbol**, each carrying that symbol in
+  `result.symbol` (`{"method":"subscribe","result":{"channel":"level3",
+  "snapshot":true,"symbol":"ETH/USD"},"success":true,...}`), not one response
+  for the whole request. A client counting acknowledgements has to expect N,
+  and can read the symbol from each to name the missing one.
+- **One snapshot per symbol**, then updates for both interleaved on the same
+  connection, each `data[]` entry carrying its own `symbol` and `checksum`.
+- Documented limits, not exercised: at most 200 symbols per connection, and a
+  depth-weighted subscribe budget (5 per symbol at depth 10, against 200/s on a
+  standard account).
+
 ## Recovery
 
 On disconnect: reconnect, fetch a fresh WS token, resubscribe with

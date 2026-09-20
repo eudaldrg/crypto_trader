@@ -1,0 +1,35 @@
+# Capture configuration for feed_handler:
+#
+#   ./build/release/bin/feed_handler --config config/feed_handler.toml
+#   ./build/release/bin/feed_handler --config config/feed_handler.toml --exchange kraken
+#   ./build/release/bin/feed_handler --config config/feed_handler.toml --only kraken-btc-usd
+#
+# With no filter every [[connections]] entry below runs, so every entry's
+# credential variables must be set. --exchange and --only narrow the set; they
+# only stop the process asking for variables it will not have, they are not a
+# credential control. One entry is one socket and one journal file, named after
+# its id.
+#
+# Credentials are never written here: api_key_env / api_secret_env are the NAMES
+# of environment variables. See docs/modules/feed-handler.md for the full schema.
+
+# Both resolve against the working directory when relative.
+journal_dir = "./journal"
+state_dir = "./state"
+
+[[connections]]
+id = "kraken-btc-usd"
+exchange = "kraken"
+env = "prod"
+feed = "level3"
+symbols = ["BTC/USD"]
+api_key_env = "KRAKEN_API_KEY"
+api_secret_env = "KRAKEN_API_SECRET"
+
+[[connections]]
+id = "deribit-btc-perp"
+exchange = "deribit"
+env = "testnet"
+symbols = ["BTC-PERPETUAL"]
+api_key_env = "DERIBIT_TESTNET_CLIENT_ID"
+api_secret_env = "DERIBIT_TESTNET_CLIENT_SECRET"
