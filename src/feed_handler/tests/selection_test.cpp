@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include "feed_handler/tests/test_support.h"
+
 namespace {
 
 using feed_handler::CommandLine;
@@ -13,7 +15,9 @@ using feed_handler::ParseCommandLine;
 using feed_handler::SelectConnections;
 using feed_handler::config::Exchange;
 using feed_handler::config::FeedHandlerConfig;
-using feed_handler::config::ParseConfig;
+using feed_handler::test_support::DeribitEntry;
+using feed_handler::test_support::KrakenEntry;
+using feed_handler::test_support::MustParse;
 
 std::expected<CommandLine, std::string> Parse(std::initializer_list<const char*> args) {
     const std::vector<const char*> argv(args);
@@ -22,33 +26,8 @@ std::expected<CommandLine, std::string> Parse(std::initializer_list<const char*>
 
 /// Two Kraken entries and one Deribit entry, in that file order.
 FeedHandlerConfig ThreeConnections() {
-    const auto config = ParseConfig(R"(
-[[connections]]
-id = "kraken-a"
-exchange = "kraken"
-env = "prod"
-symbols = ["BTC/USD"]
-api_key_env = "K_KEY"
-api_secret_env = "K_SECRET"
-
-[[connections]]
-id = "deribit-a"
-exchange = "deribit"
-env = "testnet"
-symbols = ["BTC-PERPETUAL"]
-api_key_env = "D_KEY"
-api_secret_env = "D_SECRET"
-
-[[connections]]
-id = "kraken-b"
-exchange = "kraken"
-env = "prod"
-symbols = ["ETH/USD"]
-api_key_env = "K_KEY"
-api_secret_env = "K_SECRET"
-)");
-    EXPECT_TRUE(config.has_value()) << (config ? "" : config.error());
-    return *config;
+    return MustParse(KrakenEntry("kraken-a") + DeribitEntry("deribit-a") +
+                     KrakenEntry("kraken-b", "ETH/USD"));
 }
 
 std::vector<std::string> Ids(const std::vector<feed_handler::config::Connection>& connections) {

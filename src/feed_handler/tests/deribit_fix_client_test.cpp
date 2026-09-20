@@ -46,6 +46,7 @@
 #include "feed_handler/journal_reader.h"
 #include "feed_handler/message_sink.h"
 #include "feed_handler/tests/recording_sink.h"
+#include "feed_handler/tests/test_support.h"
 
 namespace {
 
@@ -843,15 +844,11 @@ TEST_F(DeribitFixLoopback, RequestStopReturnsWithoutJoiningAndJoinThenCompletes)
 
     const auto before = std::chrono::steady_clock::now();
     client.RequestStop();
-    const auto request_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                std::chrono::steady_clock::now() - before)
-                                .count();
+    const auto request_ms = feed_handler::test_support::ElapsedSince(before).count();
     EXPECT_LT(request_ms, kPromptStopMs) << "RequestStop() should not wait for the thread";
 
     client.Join();
-    const auto joined_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                               std::chrono::steady_clock::now() - before)
-                               .count();
+    const auto joined_ms = feed_handler::test_support::ElapsedSince(before).count();
     EXPECT_LT(joined_ms, kPromptStopMs)
         << "Join() waited out the " << kStuckBackoffMs << "ms backoff instead of being woken";
 

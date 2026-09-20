@@ -4,7 +4,6 @@
 #include "feed_handler/capture_set.h"
 
 #include <gtest/gtest.h>
-#include <unistd.h>
 
 #include <chrono>
 #include <filesystem>
@@ -14,6 +13,7 @@
 #include "feed_handler/config/feed_handler_config.h"
 #include "feed_handler/credentials.h"
 #include "feed_handler/runner.h"
+#include "feed_handler/tests/test_support.h"
 
 namespace {
 
@@ -21,51 +21,22 @@ using feed_handler::CaptureSet;
 using feed_handler::Credential;
 using feed_handler::config::Connection;
 using feed_handler::config::FeedHandlerConfig;
-
-const Credential kFakeCredential{.key = "fake-key-not-a-credential", .secret = "ZmFrZS1zZWNyZXQ="};
+using feed_handler::test_support::DeribitEntry;
+using feed_handler::test_support::kFakeCredential;
+using feed_handler::test_support::KrakenEntry;
+using feed_handler::test_support::MustParse;
+using feed_handler::test_support::UniqueTestDir;
 
 class CaptureSetTest : public ::testing::Test {
   protected:
     void SetUp() override {
-        dir_ = std::filesystem::temp_directory_path() /
-               ("capture_set_" +
-                std::string(::testing::UnitTest::GetInstance()->current_test_info()->name()) + "_" +
-                std::to_string(::getpid()));
-        std::filesystem::remove_all(dir_);
-
-        const auto parsed = feed_handler::config::ParseConfig(
-            "journal_dir = \"" + (dir_ / "journal").string() + "\"\nstate_dir = \"" +
-            (dir_ / "state").string() + R"("
-
-[[connections]]
-id = "kraken-a"
-exchange = "kraken"
-env = "prod"
-symbols = ["BTC/USD"]
-endpoint = "ws://127.0.0.1:1"
-api_key_env = "K_KEY"
-api_secret_env = "K_SECRET"
-
-[[connections]]
-id = "deribit-a"
-exchange = "deribit"
-env = "testnet"
-symbols = ["BTC-PERPETUAL"]
-endpoint = "127.0.0.1:1"
-api_key_env = "D_KEY"
-api_secret_env = "D_SECRET"
-
-[[connections]]
-id = "deribit-b"
-exchange = "deribit"
-env = "testnet"
-symbols = ["ETH-PERPETUAL"]
-endpoint = "127.0.0.1:1"
-api_key_env = "D_KEY"
-api_secret_env = "D_SECRET"
-)");
-        ASSERT_TRUE(parsed.has_value()) << parsed.error();
-        config_ = *parsed;
+        dir_ = UniqueTestDir("capture_set");
+        config_ =
+            MustParse("journal_dir = \"" + (dir_ / "journal").string() + "\"\nstate_dir = \"" +
+                      (dir_ / "state").string() + "\"\n" +
+                      KrakenEntry("kraken-a", "BTC/USD", "endpoint = \"ws://127.0.0.1:1\"\n") +
+                      DeribitEntry("deribit-a", "BTC-PERPETUAL", "endpoint = \"127.0.0.1:1\"\n") +
+                      DeribitEntry("deribit-b", "ETH-PERPETUAL", "endpoint = \"127.0.0.1:1\"\n"));
     }
 
     void TearDown() override {
