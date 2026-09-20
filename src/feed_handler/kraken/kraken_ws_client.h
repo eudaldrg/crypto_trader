@@ -168,6 +168,10 @@ class WsClient {
   private:
     void HandleOpen();
     void RunWatchdog();
+    /// Log lines tagged with this connection's id.
+    void Info(std::string_view message) const;
+    void Warn(std::string_view message) const;
+    void Error(std::string_view message) const;
     /// Closes the current connection so IXWebSocket's automatic reconnection
     /// re-establishes it. Deliberately close(), not stop(): stop() joins the
     /// library's thread and ends reconnection for good.
