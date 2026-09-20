@@ -87,6 +87,15 @@ std::expected<FeedHandlerConfig, std::string> LoadConfigFile(const std::filesyst
 std::expected<std::filesystem::path, std::string> ConfigPathFromArgs(int argc,
                                                                      const char* const* argv);
 
+struct HostPort {
+    std::string host;
+    std::uint16_t port = 0;
+};
+
+/// Splits and validates a Deribit-style `host:port` endpoint: a hostname of
+/// letters, digits, `-` and `.`, and a port in 1..65535.
+std::expected<HostPort, std::string> ParseHostPort(std::string_view endpoint);
+
 /// Value of the environment variable `name`, or empty when unset. The one
 /// place credentials are read, so it is also the one place that must never log
 /// what it returns.

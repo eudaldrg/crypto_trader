@@ -13,6 +13,7 @@ using feed_handler::config::Environment;
 using feed_handler::config::Exchange;
 using feed_handler::config::LoadConfigFile;
 using feed_handler::config::ParseConfig;
+using feed_handler::config::ParseHostPort;
 
 const std::string kKraken = R"(
 [[connections]]
@@ -205,6 +206,19 @@ TEST(FeedHandlerConfig, ValidatesEndpointShape) {
     ExpectRejected(kDeribit + "endpoint = \"fix-test.deribit.com:0\"\n", "invalid endpoint");
     ExpectRejected(kDeribit + "endpoint = \"fix-test.deribit.com:99999\"\n", "invalid endpoint");
     ExpectRejected(kDeribit + "endpoint = \"host:port\"\n", "invalid endpoint");
+}
+
+TEST(FeedHandlerConfig, ParseHostPortSplitsAndBoundsThePort) {
+    const auto ok = ParseHostPort("fix-test.deribit.com:9881");
+    ASSERT_TRUE(ok.has_value()) << ok.error();
+    EXPECT_EQ(ok->host, "fix-test.deribit.com");
+    EXPECT_EQ(ok->port, 9881);
+
+    EXPECT_EQ(ParseHostPort("h:1")->port, 1);
+    EXPECT_EQ(ParseHostPort("h:65535")->port, 65535);
+    for (const char* bad : {"h:0", "h:65536", "h:", ":1", "h", "h:1x", "h:-1", "h:123456", "a b:1"}) {
+        EXPECT_FALSE(ParseHostPort(bad).has_value()) << bad;
+    }
 }
 
 TEST(FeedHandlerConfig, CredentialFieldsMustBeEnvironmentVariableNames) {

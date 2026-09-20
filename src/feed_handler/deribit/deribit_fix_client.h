@@ -41,6 +41,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 #include "feed_handler/capture_session.h"
 #include "feed_handler/deribit/deribit_fix_session.h"
@@ -119,10 +120,14 @@ std::uint64_t ReconnectDelayMs(std::uint64_t consecutive_failures, std::uint64_t
                                std::uint64_t max_ms);
 
 struct FixClientConfig {
+    /// The connection's identity in log lines, so several connections in one
+    /// process can be told apart. The config's `id`.
+    std::string id = "deribit";
     /// Testnet. Plain TCP, no TLS (experiments/deribit_fix_probe.py).
     std::string host = "fix-test.deribit.com";
     std::uint16_t port = 9881;
-    std::string symbol = "BTC-PERPETUAL";
+    /// All requested in one MarketDataRequest on this one session.
+    std::vector<std::string> symbols = {"BTC-PERPETUAL"};
     std::string md_req_id = "ct-md-1";
     /// connect() is done non-blocking + poll() purely so a dead host cannot
     /// hold the thread for the kernel's own multi-minute SYN timeout.
@@ -230,8 +235,14 @@ class FixClient {
     bool Stopping() const {
         return stopping_.load(std::memory_order_acquire);
     }
+    /// Log lines tagged with this connection's id.
+    void Info(std::string_view message) const;
+    void Warn(std::string_view message) const;
+    void Error(std::string_view message) const;
 
     FixClientConfig cfg_;
+    /// `cfg_.symbols` comma-joined, for the journal's incarnation marker.
+    std::string symbols_text_;
     CaptureSession& capture_;
     FixSession session_;
     StalenessWatchdog watchdog_;
