@@ -1,5 +1,10 @@
 {
   "cpp": {
     "enabled": true
+  },
+  "git": {
+    "protectedBranches+": ["dev"],
+    "askBeforePush": false,
+    "askBeforePR": false
   }
 }
