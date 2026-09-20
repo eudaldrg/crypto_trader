@@ -282,6 +282,7 @@ find_package(ZLIB REQUIRED)
 
 add_library(feed_handler STATIC
   src/feed_handler/capture_session.cpp
+  src/feed_handler/capture_set.cpp
   src/feed_handler/config/feed_handler_config.cpp
   src/feed_handler/credentials.cpp
   src/feed_handler/journal_format.cpp
@@ -307,20 +308,14 @@ target_link_libraries(feed_handler
           OpenSSL::Crypto ZLIB::ZLIB
 )
 
-# The live Kraken level3 capture binary (decisions/0004's first vertical
-# slice). Credentials come from the environment; see the file's header comment.
-add_project_executable(kraken_feed_handler
-  src/feed_handler/kraken/kraken_feed_handler_main.cpp
+# The capture binary (decisions/0004): every configured connection, across
+# exchanges, from one process. Which ones is the --config file; credentials come
+# from the environment. See feed_handler_main.cpp and docs/modules/feed-handler.md.
+add_project_executable(feed_handler_capture
+  src/feed_handler/feed_handler_main.cpp
 )
-target_link_libraries(kraken_feed_handler PRIVATE feed_handler)
-
-# The live Deribit FIX capture binary: decisions/0004's second exchange
-# backend, hand-rolled over a raw POSIX socket. Credentials come from the
-# environment; see the file's header comment.
-add_project_executable(deribit_feed_handler
-  src/feed_handler/deribit/deribit_feed_handler_main.cpp
-)
-target_link_libraries(deribit_feed_handler PRIVATE feed_handler)
+target_link_libraries(feed_handler_capture PRIVATE feed_handler)
+set_target_properties(feed_handler_capture PROPERTIES OUTPUT_NAME feed_handler)
 
 if(BUILD_TESTING)
   # Proves the FetchContent wiring for IXWebSocket/simdjson/GoogleTest
@@ -333,6 +328,7 @@ if(BUILD_TESTING)
   add_project_test(feed_handler_tests
     src/feed_handler/tests/capture_connection_test.cpp
     src/feed_handler/tests/capture_session_test.cpp
+    src/feed_handler/tests/capture_set_test.cpp
     src/feed_handler/tests/credentials_test.cpp
     src/feed_handler/tests/deribit_fix_client_test.cpp
     src/feed_handler/tests/deribit_fix_session_test.cpp

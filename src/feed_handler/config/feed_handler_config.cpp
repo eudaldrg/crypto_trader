@@ -2,13 +2,11 @@
 
 #include <algorithm>
 #include <charconv>
-#include <cstdlib>
 #include <fstream>
 #include <initializer_list>
 #include <iterator>
 #include <optional>
 #include <set>
-#include <span>
 #include <sstream>
 #include <toml++/toml.hpp>
 #include <utility>
@@ -459,35 +457,6 @@ std::expected<FeedHandlerConfig, std::string> LoadConfigFile(const std::filesyst
         return Error("cannot read config file " + path.string());
     }
     return ParseConfig(text.str(), path.string());
-}
-
-std::expected<std::filesystem::path, std::string> ConfigPathFromArgs(int argc,
-                                                                     const char* const* argv) {
-    const std::span<const char* const> args(argv, static_cast<std::size_t>(argc));
-    const std::string usage =
-        "usage: " + std::string(args.empty() ? "feed_handler" : args[0]) + " --config <path>";
-
-    constexpr std::string_view kFlag = "--config";
-    std::optional<std::filesystem::path> path;
-    for (std::size_t index = 1; index < args.size(); ++index) {
-        const std::string_view arg = args[index];
-        if (arg == kFlag && index + 1 < args.size() && !path) {
-            path = args[++index];
-        } else if (arg.starts_with("--config=") && arg.size() > kFlag.size() + 1 && !path) {
-            path = std::string(arg.substr(kFlag.size() + 1));
-        } else {
-            return Error(usage);
-        }
-    }
-    if (!path) {
-        return Error(usage);
-    }
-    return *path;
-}
-
-std::string EnvOrEmpty(const std::string& name) {
-    const char* value = std::getenv(name.c_str());
-    return value == nullptr ? std::string{} : std::string(value);
 }
 
 }  // namespace feed_handler::config
