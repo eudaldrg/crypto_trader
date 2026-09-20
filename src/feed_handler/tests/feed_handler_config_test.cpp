@@ -3,7 +3,9 @@
 #include <gtest/gtest.h>
 
 #include <filesystem>
+#include <set>
 #include <string>
+#include <string_view>
 
 namespace {
 
@@ -158,7 +160,7 @@ TEST(FeedHandlerConfig, EnforcesKrakensPerConnectionSymbolCap) {
         return KrakenWith("symbols", list + "]");
     };
     EXPECT_TRUE(ParseConfig(with_symbols(200)).has_value());
-    ExpectRejected(with_symbols(201), "exceeds Kraken's limit of 200");
+    ExpectRejected(with_symbols(201), "exceeds kraken's limit of 200");
 }
 
 TEST(FeedHandlerConfig, ChecksTheFeedAgainstWhatTheExchangeSupports) {
@@ -212,6 +214,34 @@ TEST(FeedHandlerConfig, ValidatesEndpointShape) {
     ExpectRejected(kDeribit + "endpoint = \"fix-test.deribit.com:0\"\n", "invalid endpoint");
     ExpectRejected(kDeribit + "endpoint = \"fix-test.deribit.com:99999\"\n", "invalid endpoint");
     ExpectRejected(kDeribit + "endpoint = \"host:port\"\n", "invalid endpoint");
+}
+
+TEST(FeedHandlerConfig, EveryExchangesTraitsAreConsistentWithItsRules) {
+    // A new exchange's row is checked here, not discovered by a bad config later.
+    std::set<std::string_view> names;
+    for (const Exchange exchange : feed_handler::config::kAllExchanges) {
+        const auto& traits = feed_handler::config::TraitsOf(exchange);
+        EXPECT_TRUE(names.insert(traits.name).second) << "duplicate name " << traits.name;
+        EXPECT_FALSE(traits.feed.empty()) << traits.name;
+        EXPECT_GT(traits.max_symbols_per_connection, 0U) << traits.name;
+        // Every default endpoint that exists is valid for the kind of endpoint.
+        for (const std::string_view endpoint :
+             {traits.default_prod_endpoint, traits.default_testnet_endpoint}) {
+            if (endpoint.empty()) {
+                continue;
+            }
+            if (traits.endpoint_kind == feed_handler::EndpointKind::kHostPort) {
+                EXPECT_TRUE(ParseHostPort(endpoint).has_value()) << endpoint;
+            } else {
+                EXPECT_TRUE(endpoint.starts_with("wss://") || endpoint.starts_with("ws://"))
+                    << endpoint;
+            }
+        }
+        // An exchange with no testnet must not advertise a testnet default.
+        if (!traits.has_testnet) {
+            EXPECT_TRUE(traits.default_testnet_endpoint.empty()) << traits.name;
+        }
+    }
 }
 
 TEST(FeedHandlerConfig, EveryExchangeRoundTripsThroughItsName) {

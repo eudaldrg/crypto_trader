@@ -154,10 +154,11 @@ std::expected<std::vector<std::string>, std::string> ParseSymbols(const toml::ta
     if (array->empty()) {
         return Error(where + ": 'symbols' must not be empty");
     }
-    if (exchange == Exchange::kKraken && array->size() > kraken::kMaxSymbolsPerConnection) {
-        return Error(where + ": " + std::to_string(array->size()) +
-                     " symbols exceeds Kraken's limit of " +
-                     std::to_string(kraken::kMaxSymbolsPerConnection) +
+    const ExchangeTraits& traits = TraitsOf(exchange);
+    if (array->size() > traits.max_symbols_per_connection) {
+        return Error(where + ": " + std::to_string(array->size()) + " symbols exceeds " +
+                     std::string(traits.name) + "'s limit of " +
+                     std::to_string(traits.max_symbols_per_connection) +
                      " per connection; split them across several [[connections]]");
     }
 
@@ -181,40 +182,46 @@ std::expected<std::vector<std::string>, std::string> ParseSymbols(const toml::ta
     return symbols;
 }
 
-/// Fills `connection.endpoint` (and, for Deribit, `host_port`) from the entry's
-/// `endpoint` key or, where this project has actually connected, a default.
-/// Anywhere else the config must say where to connect rather than inherit a
-/// guessed hostname (exchanges/kraken.md, exchanges/deribit.md).
+/// Fills `connection.endpoint` (and, for a host:port exchange, `host_port`) from
+/// the entry's `endpoint` key or, where this project has actually connected, the
+/// exchange's default. Anywhere else the config must say where to connect rather
+/// than inherit a guessed hostname (exchanges/kraken.md, exchanges/deribit.md).
 std::expected<void, std::string> ResolveEndpoint(const toml::table& table, Connection& connection,
                                                  const std::string& where) {
+    const ExchangeTraits& traits = TraitsOf(connection.exchange);
     auto given = ReadString(table, "endpoint", where);
     if (!given) {
         return Error(given.error());
     }
-
-    if (connection.exchange == Exchange::kKraken) {
-        connection.endpoint = given->value_or(std::string(kraken::kDefaultWsUrl));
-        if (!IsValidWebSocketUrl(connection.endpoint)) {
-            return Error(where + ": invalid endpoint '" + connection.endpoint +
-                         "' (expected a ws:// or wss:// URL)");
-        }
-        return {};
-    }
-
     if (!*given) {
-        if (connection.env != Environment::kTestnet) {
-            return Error(where + ": no default endpoint for deribit " +
+        const std::string_view fallback = connection.env == Environment::kTestnet
+                                              ? traits.default_testnet_endpoint
+                                              : traits.default_prod_endpoint;
+        if (fallback.empty()) {
+            return Error(where + ": no default endpoint for " + std::string(traits.name) + " " +
                          std::string(ToString(connection.env)) + "; set 'endpoint'");
         }
-        // The default goes through the same validation as an explicit endpoint.
-        given = std::string(deribit::kTestnetHost) + ":" + std::to_string(deribit::kFixPort);
+        // A default goes through the same validation as an explicit endpoint.
+        given = std::string(fallback);
     }
-    auto host_port = ParseHostPort(**given);
-    if (!host_port) {
-        return Error(where + ": invalid endpoint '" + **given + "' (expected host:port)");
+
+    switch (traits.endpoint_kind) {
+        case EndpointKind::kWebSocketUrl:
+            if (!IsValidWebSocketUrl(**given)) {
+                return Error(where + ": invalid endpoint '" + **given +
+                             "' (expected a ws:// or wss:// URL)");
+            }
+            break;
+        case EndpointKind::kHostPort: {
+            auto host_port = ParseHostPort(**given);
+            if (!host_port) {
+                return Error(where + ": invalid endpoint '" + **given + "' (expected host:port)");
+            }
+            connection.host_port = std::move(*host_port);
+            break;
+        }
     }
     connection.endpoint = std::move(**given);
-    connection.host_port = std::move(*host_port);
     return {};
 }
 
@@ -268,25 +275,24 @@ std::expected<Connection, std::string> ParseConnection(const toml::table& table,
         return Error(env.error());
     }
     connection.env = *env;
-    if (connection.exchange == Exchange::kKraken && connection.env != Environment::kProd) {
-        // GetWebSocketsToken is a production REST call and there is no Kraken
-        // testnet REST endpoint to pair a different websocket with, so a
-        // non-prod Kraken entry could never connect.
-        return Error(where + ": kraken supports env = \"prod\" only (it has no testnet)");
+    const ExchangeTraits& traits = TraitsOf(connection.exchange);
+    if (connection.env == Environment::kTestnet && !traits.has_testnet) {
+        // e.g. Kraken: GetWebSocketsToken is a production REST call and there is
+        // no testnet REST endpoint to pair a different websocket with, so a
+        // testnet entry could never connect.
+        return Error(where + ": " + std::string(traits.name) +
+                     " supports env = \"prod\" only (it has no testnet)");
     }
 
-    const std::string_view supported_feed =
-        connection.exchange == Exchange::kKraken ? kraken::kLevel3Feed : deribit::kBookFeed;
     auto feed = ReadString(table, "feed", where);
     if (!feed) {
         return Error(feed.error());
     }
-    if (feed->has_value() && **feed != supported_feed) {
-        return Error(where + ": unsupported feed '" + **feed + "' for " +
-                     std::string(ToString(connection.exchange)) + " (only \"" +
-                     std::string(supported_feed) + "\")");
+    if (feed->has_value() && **feed != traits.feed) {
+        return Error(where + ": unsupported feed '" + **feed + "' for " + std::string(traits.name) +
+                     " (only \"" + std::string(traits.feed) + "\")");
     }
-    connection.feed = std::string(supported_feed);
+    connection.feed = std::string(traits.feed);
 
     auto symbols = ParseSymbols(table, connection.exchange, where);
     if (!symbols) {
@@ -332,14 +338,18 @@ std::expected<std::filesystem::path, std::string> ReadPath(const toml::table& ta
 
 }  // namespace
 
-std::string_view ToString(Exchange exchange) {
+const ExchangeTraits& TraitsOf(Exchange exchange) {
     switch (exchange) {
         case Exchange::kKraken:
-            return "kraken";
+            return kraken::kTraits;
         case Exchange::kDeribit:
-            return "deribit";
+            return deribit::kTraits;
     }
-    return "unknown";
+    std::unreachable();
+}
+
+std::string_view ToString(Exchange exchange) {
+    return TraitsOf(exchange).name;
 }
 
 std::string_view ToString(Environment env) {
