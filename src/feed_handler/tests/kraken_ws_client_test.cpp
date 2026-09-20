@@ -261,6 +261,36 @@ TEST_F(KrakenCapture, DoesNotEndTheProcessOverAMessageThatArrivedBeforeTheFirstI
     EXPECT_EQ(session.TotalRecordsWritten(), 0U);
 }
 
+TEST_F(KrakenCapture, RequestStopReturnsWithoutJoiningAndJoinThenCompletes) {
+    feed_handler::kraken::WsClientConfig cfg;
+    cfg.url = std::string(kUnreachableUrl);
+    cfg.watchdog_poll_ms = kLongWatchdogPollMs;
+    cfg.min_reconnect_wait_ms = 10;
+    cfg.max_reconnect_wait_ms = 50;
+
+    CaptureSession session({.directory = dir_, .exchange = "kraken"});
+    WsClient client(rest_, TestCredentials(), session, cfg);
+    client.Start();
+
+    const auto before = std::chrono::steady_clock::now();
+    client.RequestStop();
+    const auto request_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - before)
+                                .count();
+    EXPECT_LT(request_ms, kPromptStopMs) << "RequestStop() should not wait for the threads";
+
+    client.Join();
+    const auto joined_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                               std::chrono::steady_clock::now() - before)
+                               .count();
+    EXPECT_LT(joined_ms, kPromptStopMs) << "the watchdog waited out its poll interval";
+
+    // Every later call is harmless, and so is the destructor after them.
+    client.RequestStop();
+    client.Join();
+    client.Stop();
+}
+
 TEST_F(KrakenCapture, StopsPromptlyWhileTheWatchdogIsWaitingOutItsPollInterval) {
     // A notify_all() issued without holding stop_mutex_ can land in the window
     // between the watchdog evaluating the predicate and its wait actually

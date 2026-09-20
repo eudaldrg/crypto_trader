@@ -218,22 +218,35 @@ void FixClient::Start() {
     thread_ = std::thread([this] { Run(); });
 }
 
-void FixClient::Stop() {
+void FixClient::RequestStop() {
     {
         // Under the mutex for the same reason latch_fatal() is: the connection
         // thread checks this flag under it, and a store made outside it can be
         // lost in the gap between that check and the wait, which would leave
-        // shutdown waiting out a whole reconnect backoff. The join stays outside
-        // the lock -- the thread it waits for needs this mutex to notice.
+        // shutdown waiting out a whole reconnect backoff. Joining stays in
+        // Join(), outside the lock -- the thread it waits for needs this mutex
+        // to notice.
         const std::lock_guard<std::mutex> lock(stop_mutex_);
         if (stopping_.exchange(true, std::memory_order_acq_rel)) {
             return;
         }
     }
     stop_cv_.notify_all();
+}
+
+void FixClient::Join() {
+    RequestStop();
+    if (joined_.exchange(true, std::memory_order_acq_rel)) {
+        return;
+    }
     if (thread_.joinable()) {
         thread_.join();
     }
+}
+
+void FixClient::Stop() {
+    RequestStop();
+    Join();
 }
 
 void FixClient::Run() {
@@ -282,9 +295,10 @@ void FixClient::RunOneConnection() {
     subscribed_ = false;
     last_outbound_ns_ = MonotonicNowNs();
 
-    const auto path = capture_.BeginIncarnation("deribit fix " + JoinSymbols(cfg_.symbols) + " connected to " +
-                                                    cfg_.host + ":" + std::to_string(cfg_.port),
-                                                kWireSource);
+    const auto path =
+        capture_.BeginIncarnation("deribit fix " + JoinSymbols(cfg_.symbols) + " connected to " +
+                                      cfg_.host + ":" + std::to_string(cfg_.port),
+                                  kWireSource);
     if (!path) {
         // Same rule as Kraken: staying connected while unable to capture would
         // silently throw away the data this process exists to collect.
@@ -293,7 +307,7 @@ void FixClient::RunOneConnection() {
         return;
     }
     log_.Info("incarnation " + std::to_string(capture_.Incarnation()) + " started, journaling to " +
-            path->string());
+              path->string());
 
     const auto logon = session_.BuildLogon();
     if (!logon) {
@@ -330,7 +344,7 @@ void FixClient::RunOneConnection() {
                     forced_reconnects_.fetch_add(1, std::memory_order_relaxed);
                     watchdog_.Disarm();
                     log_.Warn("forcing reconnect: no inbound message in " +
-                            std::to_string(cfg_.staleness_timeout_ns / kNanosPerSecond) + "s");
+                              std::to_string(cfg_.staleness_timeout_ns / kNanosPerSecond) + "s");
                     return;
                 }
                 continue;
@@ -402,7 +416,7 @@ bool FixClient::DrainFramedMessages(int fd) {
                 // acks are.
                 snapshots_received_.fetch_add(1, std::memory_order_relaxed);
                 log_.Info("received a " + std::string(ToString(decision.kind)) + " for " +
-                     std::string(parsed->Get(fix::tag::kSymbol).value_or("<no symbol>")));
+                          std::string(parsed->Get(fix::tag::kSymbol).value_or("<no symbol>")));
                 break;
             case InboundKind::kMarketDataIncremental:
                 incrementals_received_.fetch_add(1, std::memory_order_relaxed);
@@ -431,7 +445,7 @@ bool FixClient::DrainFramedMessages(int fd) {
                     }
                     subscribed_ = true;
                     log_.Info("sent MarketDataRequest for " + std::to_string(cfg_.symbols.size()) +
-                         " symbol(s): " + JoinSymbols(cfg_.symbols));
+                              " symbol(s): " + JoinSymbols(cfg_.symbols));
                 }
                 break;
             case InboundAction::kAnswerTestRequest:
@@ -441,7 +455,7 @@ bool FixClient::DrainFramedMessages(int fd) {
                 break;
             case InboundAction::kReconnect:
                 log_.Warn("dropping the session (" + std::string(ToString(decision.kind)) +
-                        "): " + decision.detail);
+                          "): " + decision.detail);
                 return false;
             case InboundAction::kNone:
                 break;

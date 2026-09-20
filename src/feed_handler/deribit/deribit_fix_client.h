@@ -161,10 +161,18 @@ class FixClient {
     /// Starts the connection thread and returns immediately.
     void Start();
 
-    /// Requests shutdown and joins the thread. The thread sends a Logout on its
-    /// way out if it is still logged on -- sending it from the owning thread
-    /// rather than from here is what keeps the socket single-threaded.
-    /// Idempotent.
+    /// Asks the connection thread to stop, and returns without waiting. Only a
+    /// flag and a wakeup: the thread sends the Logout on its own way out, so the
+    /// socket stays single-threaded. Idempotent. A process with several
+    /// connections requests every stop first and only then joins, so shutdown
+    /// costs one receive timeout, not one per connection.
+    void RequestStop();
+
+    /// Waits for the connection thread to end, requesting the stop first if
+    /// nobody has. Idempotent.
+    void Join();
+
+    /// Permanent shutdown: RequestStop() then Join(). Idempotent.
     void Stop();
 
     /// True when capture cannot continue: a journal file could not be opened,
@@ -256,6 +264,8 @@ class FixClient {
     std::condition_variable stop_cv_;
     std::atomic<bool> stopping_{false};
     std::atomic<bool> started_{false};
+    /// Set by the first Join(), so a second one (or the destructor) is a no-op.
+    std::atomic<bool> joined_{false};
     std::atomic<bool> fatal_{false};
     std::atomic<std::uint64_t> messages_received_{0};
     std::atomic<std::uint64_t> snapshots_received_{0};
