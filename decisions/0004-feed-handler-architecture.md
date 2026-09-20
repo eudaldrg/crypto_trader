@@ -686,8 +686,9 @@ Deribit's request is only a flag and a wakeup, and its own thread still sends th
 Logout on the way out.
 
 **Startup order: non-Kraken connections, then the Kraken instrument lookup, then
-the Kraken connections.** The `AssetPairs` lookup is a blocking REST GET with no
-timeout and must not delay Deribit's capture; it cannot simply run after the
+the Kraken connections.** The `AssetPairs` lookup is a blocking REST GET (10 s connect
+and 20 s transfer timeouts, up to about 30 s) that must not delay Deribit's
+capture; it cannot simply run after the
 Kraken connections start because it takes the same request mutex as their token
 fetches and reads the pair table unsynchronised. `CaptureSet` owns the shared
 `RestClient` ahead of the connections so it outlives every Kraken client by

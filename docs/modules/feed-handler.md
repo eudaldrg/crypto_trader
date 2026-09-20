@@ -60,9 +60,10 @@ separate processes would not have done.
 
 Startup: every non-Kraken connection starts first, then the Kraken instrument
 lookup (`AssetPairs`), then the Kraken connections. The lookup is a blocking
-REST GET with no timeout, so run first it would delay Deribit's capture behind a
-slow Kraken endpoint, and it cannot simply run after the Kraken connections
-start because it takes the same request mutex as their token fetches.
+REST GET (10 s connect and 20 s transfer timeouts, so up to about 30 s), and run
+first it would delay Deribit's capture behind a slow Kraken endpoint. It cannot
+simply run after the Kraken connections start because it takes the same request
+mutex as their token fetches.
 
 Shutdown: a stop is requested on every connection first and only then are they
 joined, so N connections wind down together instead of one after another.
