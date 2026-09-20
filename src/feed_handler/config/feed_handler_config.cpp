@@ -18,7 +18,8 @@ namespace {
 
 constexpr std::size_t kMaxIdLength = 48;
 constexpr std::size_t kMaxSymbolLength = 64;
-constexpr unsigned kMaxPort = 65'535;
+constexpr unsigned long kMaxPort = 65'535;
+constexpr std::size_t kMaxPortDigits = 5;
 
 // The only places a default endpoint exists are the two this project has
 // actually connected to (exchanges/kraken.md, exchanges/deribit.md). Anything
@@ -68,25 +69,6 @@ bool IsValidEnvName(std::string_view name) {
         return false;
     }
     return std::ranges::all_of(name, [](char c) { return IsAsciiAlnum(c) || c == '_'; });
-}
-
-bool IsValidHostPort(std::string_view endpoint) {
-    const std::size_t colon = endpoint.rfind(':');
-    if (colon == std::string_view::npos || colon == 0 || colon + 1 == endpoint.size()) {
-        return false;
-    }
-    const std::string_view host = endpoint.substr(0, colon);
-    const std::string_view port = endpoint.substr(colon + 1);
-    if (!std::ranges::all_of(host,
-                             [](char c) { return IsAsciiAlnum(c) || c == '-' || c == '.'; })) {
-        return false;
-    }
-    if (!std::ranges::all_of(port, [](char c) { return c >= '0' && c <= '9'; }) ||
-        port.size() > 5) {
-        return false;
-    }
-    const unsigned value = static_cast<unsigned>(std::stoul(std::string(port)));
-    return value >= 1 && value <= kMaxPort;
 }
 
 bool IsValidWebSocketUrl(std::string_view url) {
@@ -221,8 +203,8 @@ std::expected<std::string, std::string> ResolveEndpoint(const toml::table& table
         return Error(where + ": no default endpoint for " + std::string(ToString(exchange)) + " " +
                      std::string(ToString(env)) + "; set 'endpoint'");
     }
-    const bool valid =
-        exchange == Exchange::kKraken ? IsValidWebSocketUrl(**given) : IsValidHostPort(**given);
+    const bool valid = exchange == Exchange::kKraken ? IsValidWebSocketUrl(**given)
+                                                     : ParseHostPort(**given).has_value();
     if (!valid) {
         return Error(where + ": invalid endpoint '" + **given + "' (" +
                      (exchange == Exchange::kKraken ? "expected a ws:// or wss:// URL"
@@ -368,6 +350,28 @@ std::string_view ToString(Environment env) {
             return "testnet";
     }
     return "unknown";
+}
+
+std::expected<HostPort, std::string> ParseHostPort(std::string_view endpoint) {
+    const std::size_t colon = endpoint.rfind(':');
+    if (colon == std::string_view::npos || colon == 0 || colon + 1 == endpoint.size()) {
+        return Error("expected host:port, got '" + std::string(endpoint) + "'");
+    }
+    const std::string_view host = endpoint.substr(0, colon);
+    const std::string_view port_text = endpoint.substr(colon + 1);
+    if (!std::ranges::all_of(host,
+                             [](char c) { return IsAsciiAlnum(c) || c == '-' || c == '.'; })) {
+        return Error("invalid host in '" + std::string(endpoint) + "'");
+    }
+    if (port_text.size() > kMaxPortDigits ||
+        !std::ranges::all_of(port_text, [](char c) { return c >= '0' && c <= '9'; })) {
+        return Error("invalid port in '" + std::string(endpoint) + "'");
+    }
+    const unsigned long port = std::stoul(std::string(port_text));
+    if (port < 1 || port > kMaxPort) {
+        return Error("port out of range in '" + std::string(endpoint) + "'");
+    }
+    return HostPort{.host = std::string(host), .port = static_cast<std::uint16_t>(port)};
 }
 
 std::vector<Connection> FeedHandlerConfig::ConnectionsFor(Exchange exchange) const {

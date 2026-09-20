@@ -608,7 +608,7 @@ class DeribitFixLoopback : public ::testing::Test {
         return FixClientConfig{
             .host = "127.0.0.1",
             .port = server_.Port(),
-            .symbol = "BTC-PERPETUAL",
+            .symbols = {"BTC-PERPETUAL"},
             .md_req_id = "ct-md-loopback",
             .connect_timeout_ms = kStepTimeoutMs,
             .recv_timeout_ms = kLoopbackRecvTimeoutMs,

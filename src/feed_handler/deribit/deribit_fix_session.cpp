@@ -163,23 +163,25 @@ std::string FixSession::BuildLogonWithNonce(std::uint64_t timestamp_ms,
 }
 
 std::string FixSession::BuildMarketDataRequest(std::string_view md_req_id,
-                                               std::string_view symbol) {
+                                               std::span<const std::string> symbols) {
     // NoMDEntryTypes(267)=2 is followed by its two MDEntryType(269) members,
-    // then NoRelatedSym(146)=1 by its Symbol(55). Repeating groups are
-    // positional in FIX: a count field, then exactly that many members in
+    // then NoRelatedSym(146)=N by its N Symbol(55) members. Repeating groups
+    // are positional in FIX: a count field, then exactly that many members in
     // order. Building them as a flat ordered field list is correct; only
-    // *parsing* them back into a structure is the part v1 skips
-    // (fix_message.h).
-    const std::array<fix::Field, 8> body = {
+    // *parsing* them back into a structure needs fix::ReadGroup.
+    std::vector<fix::Field> body = {
         fix::Field{.tag = fix::tag::kMdReqId, .value = std::string(md_req_id)},
         fix::Field{.tag = fix::tag::kSubscriptionRequestType, .value = "1"},
         fix::Field{.tag = fix::tag::kMarketDepth, .value = "0"},
         fix::Field{.tag = fix::tag::kNoMdEntryTypes, .value = "2"},
         fix::Field{.tag = fix::tag::kMdEntryType, .value = "0"},
         fix::Field{.tag = fix::tag::kMdEntryType, .value = "1"},
-        fix::Field{.tag = fix::tag::kNoRelatedSym, .value = "1"},
-        fix::Field{.tag = fix::tag::kSymbol, .value = std::string(symbol)},
+        fix::Field{.tag = fix::tag::kNoRelatedSym, .value = std::to_string(symbols.size())},
     };
+    body.reserve(body.size() + symbols.size());
+    for (const std::string& symbol : symbols) {
+        body.push_back(fix::Field{.tag = fix::tag::kSymbol, .value = symbol});
+    }
     return Send(fix::msg_type::kMarketDataRequest, body);
 }
 

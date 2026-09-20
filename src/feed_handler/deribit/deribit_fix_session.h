@@ -137,8 +137,15 @@ class FixSession {
     std::string BuildLogonWithNonce(std::uint64_t timestamp_ms, std::span<const std::byte> nonce);
 
     /// MarketDataRequest(35=V): snapshot + updates, full depth, Bid and Offer,
-    /// one symbol (exchanges/deribit.md).
-    std::string BuildMarketDataRequest(std::string_view md_req_id, std::string_view symbol);
+    /// for every symbol in `symbols` (exchanges/deribit.md). One request covers
+    /// them all through the NoRelatedSym(146) repeating group; Deribit answers
+    /// with one snapshot per symbol.
+    ///
+    /// The symbols go into SOH-delimited fields without escaping, so they must
+    /// already have passed the config layer's symbol check. Must not be empty:
+    /// a NoRelatedSym of 0 is not a request for anything.
+    std::string BuildMarketDataRequest(std::string_view md_req_id,
+                                       std::span<const std::string> symbols);
 
     /// Heartbeat(35=0) sent on our own timer.
     std::string BuildHeartbeat();
