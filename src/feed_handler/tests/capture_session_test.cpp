@@ -89,8 +89,8 @@ TEST_F(CaptureSessionDir, CreatesTheDirectoryAndOpensAFilePerIncarnation) {
 TEST_F(CaptureSessionDir, FilePrefixNamesTheFileButNotTheHeaderExchange) {
     // Two connections to one exchange, same directory, both on incarnation 1:
     // only distinct prefixes keep their files apart.
-    CaptureSession first({.directory = dir_, .exchange = "kraken"}, "kraken-btc");
-    CaptureSession second({.directory = dir_, .exchange = "kraken"}, "kraken-eth");
+    CaptureSession first({.directory = dir_, .exchange = "kraken", .file_prefix = "kraken-btc"});
+    CaptureSession second({.directory = dir_, .exchange = "kraken", .file_prefix = "kraken-eth"});
 
     const auto first_path = first.BeginIncarnation("connected", kSource);
     const auto second_path = second.BeginIncarnation("connected", kSource);

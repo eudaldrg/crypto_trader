@@ -101,8 +101,8 @@ int main(int argc, char** argv) {
         Capture capture;
         capture.session = std::make_unique<feed_handler::CaptureSession>(
             feed_handler::CaptureSession::Config{.directory = config->journal_dir,
-                                                 .exchange = "deribit"},
-            connection.id);
+                                                 .exchange = "deribit",
+                                                 .file_prefix = connection.id});
         capture.client = std::make_unique<feed_handler::deribit::FixClient>(
             std::move(sessions[index]), *capture.session,
             feed_handler::deribit::FixClientConfig{.id = connection.id,

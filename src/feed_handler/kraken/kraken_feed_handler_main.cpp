@@ -159,8 +159,8 @@ int main(int argc, char** argv) {
         Capture capture;
         capture.session = std::make_unique<feed_handler::CaptureSession>(
             feed_handler::CaptureSession::Config{.directory = config->journal_dir,
-                                                 .exchange = "kraken"},
-            connection.id);
+                                                 .exchange = "kraken",
+                                                 .file_prefix = connection.id});
         capture.client = std::make_unique<feed_handler::kraken::WsClient>(
             rest, std::move(credentials[index]), *capture.session,
             feed_handler::kraken::WsClientConfig{.url = connection.endpoint,
