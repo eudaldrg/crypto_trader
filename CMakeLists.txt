@@ -340,6 +340,7 @@ if(BUILD_TESTING)
     src/feed_handler/tests/runner_test.cpp
     src/feed_handler/tests/selection_test.cpp
     src/feed_handler/tests/staleness_watchdog_test.cpp
+    src/feed_handler/tests/stop_signal_test.cpp
   )
   target_link_libraries(feed_handler_tests PRIVATE feed_handler)
   # The committed default config is parsed by a test so it cannot rot.
