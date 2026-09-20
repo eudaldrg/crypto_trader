@@ -603,6 +603,49 @@ Testing notes worth keeping:
   by latching the writer's sticky error with an oversized record, which is the
   same sticky state a full disk leaves behind.
 
+### Configuration and capture scope (2026-09-20)
+
+**Configuration is a TOML file, one `[[connections]]` entry per socket.** The
+binaries used to hardcode one symbol each; they now take `--config <path>`
+(required, not guessed from the working directory) and open every entry for
+their own exchange. TOML over YAML/JSON/XML because its array-of-tables is
+exactly "a list of connection entries", its scalars are unambiguous, and it
+allows comments; `toml++` is header-only and comes in through `FetchContent`
+like GoogleTest. One entry is one socket and one journal, which keeps this ADR's
+"one file per (exchange, connection-incarnation), not per symbol" rule intact
+and makes a second Deribit instrument or a shard past Kraken's 200 symbols a
+config edit. Credentials are named by environment variable, never stored (the
+schema and its validation are in `docs/modules/feed-handler.md`).
+
+**Multi-symbol is one subscribe per connection.** Kraken's `symbol` param is an
+array; Deribit's `NoRelatedSym(146)` is a repeating group. Both verified live
+(`exchanges/kraken.md`, `exchanges/deribit.md`). Neither has a wildcard, so
+symbols are always enumerated.
+
+**Initial capture scope: 5 to 10 symbols per exchange, one connection each, raw
+and uncompressed.** Measured from real captures in this repo:
+
+| | rate | per day |
+|---|---|---|
+| Kraken `BTC/USD` `level3` alone | ~50 msg/s, ~17.8 KiB/s | ~1.5 GiB |
+| Deribit `BTC-PERPETUAL` alone | ~9.6 msg/s, ~2.4 KiB/s | ~0.2 GiB |
+| Kraken `BTC/USD` + `ETH/USD` (30 s sample, 2026-09-20) | ~28 KiB/s of journal | ~2.3 GiB |
+
+Scaled against Kraken's 24h trade counts (`BTC/USD` is about 6.2% of all-pair
+trades, the top five about 21%) and Deribit's ~5,540 active instruments (~5,100
+of them BTC/ETH options), the options are: (a) BTC only on both exchanges,
+~2 GiB/day; (b) the top five per exchange, ~6 GiB/day; (c) everything, ~40 to
+90 GiB/day (1 to 3 TB a month). (c) buys no extra portfolio story over (b), for
+all of the cost, so (b) is the target. The ETH sample ran at several times
+`BTC/USD`'s update rate, so per-symbol volume varies widely and (b) is an
+estimate to re-measure once it is running, not a budget.
+
+Deliberately not done: the journal stays raw text per this ADR's format, so a
+schema or compression pass is later work; this capture exists to collect a couple
+of days of real data to design that against. Subscribe pacing (needed past about
+40 Kraken symbols at depth 10) and connection sharding (past 200) wait until the
+symbol count gets near either.
+
 ## Consequences
 
 - Kraken-first, Deribit-second implementation order is intentional: it
