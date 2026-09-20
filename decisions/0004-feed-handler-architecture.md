@@ -683,7 +683,9 @@ once (130).
 and only then joined. Kraken turns IXWebSocket's automatic reconnection off
 before closing, or its thread would treat the close as a forced reconnect;
 Deribit's request is only a flag and a wakeup, and its own thread still sends the
-Logout on the way out.
+Logout on the way out. The stop flag, the fatal latch and the timed wait that
+ends on either (the lost-wakeup rule described in the sections above) now live
+in `StopSignal` (`stop_signal.h`), shared by both clients and tested on its own.
 
 **Startup order: non-Kraken connections, then the Kraken instrument lookup, then
 the Kraken connections.** The `AssetPairs` lookup is a blocking REST GET (10 s connect
