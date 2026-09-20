@@ -34,7 +34,13 @@ secondary/future target (real market data here is L2, not L3).
 - `263` (SubscriptionRequestType) = 1 (snapshot + updates).
 - `264` (MarketDepth) = 0 (full book).
 - `267`/`269` (NoMDEntryTypes / MDEntryType) = Bid (0) and Offer (1).
-- `146`/`55` (NoRelatedSym / Symbol) = e.g. `BTC-PERPETUAL`.
+- `146`/`55` (NoRelatedSym / Symbol) = e.g. `BTC-PERPETUAL`. `146` is a real
+  repeating group: `146=N` followed by N `55` fields requests N instruments in
+  one message. Confirmed on the testnet 2026-09-20 with `BTC-PERPETUAL` and
+  `ETH-PERPETUAL`: one `35=W` snapshot per symbol, then `35=X` incrementals for
+  both on the same session. What Deribit does when only one of several symbols
+  is invalid (a `35=Y` for the whole request, or a snapshot for the rest) has not
+  been tried.
 
 ### Responses
 
