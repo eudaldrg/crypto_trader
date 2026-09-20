@@ -150,5 +150,9 @@ nothing else names an exchange:
 5. One `case` in `CaptureSet::Build`, plus a step in `StartAll` only if the
    exchange needs something done before its connections start.
 
-Credentials need nothing: a config entry names its variables and
-`ResolveCredentials` reads them for any exchange.
+Credentials need nothing for an exchange that authenticates with a key and a
+secret: a config entry names its two variables and `ResolveCredentials` reads
+them. An exchange that needs something else (a passphrase, or no credentials at
+all) would also touch the config validator and `credentials.h`; a
+`requires_credentials` field on its traits row is the smallest fit if that
+comes up.
