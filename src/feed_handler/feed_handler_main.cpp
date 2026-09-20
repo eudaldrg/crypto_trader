@@ -8,8 +8,6 @@
 // ResolveCredentials; they are never read from a file by this process, never
 // logged and never journaled. This file names no exchange: everything
 // exchange-specific is behind CaptureConnection.
-#include <string>
-
 #include "feed_handler/capture_set.h"
 #include "feed_handler/config/feed_handler_config.h"
 #include "feed_handler/credentials.h"
@@ -63,5 +61,5 @@ int main(int argc, char** argv) {
     for (const auto& connection : set->Connections()) {
         feed_handler::LogInfo(connection->Summary());
     }
-    return result.fatal ? kExitCaptureFailed : kExitCleanShutdown;
+    return result.Fatal() ? kExitCaptureFailed : kExitCleanShutdown;
 }

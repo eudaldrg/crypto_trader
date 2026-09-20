@@ -83,6 +83,9 @@ void LogInstrumentReference(RestClient& rest, std::span<const config::Connection
     }
     LogInfo("loaded " + std::to_string(*loaded) + " asset pairs");
     for (const config::Connection& connection : connections) {
+        if (connection.exchange != config::Exchange::kKraken) {
+            continue;
+        }
         const TaggedLog log(connection.id);
         for (const std::string& symbol : connection.symbols) {
             const AssetPair* pair = rest.FindAssetPair(symbol);

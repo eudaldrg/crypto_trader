@@ -41,8 +41,9 @@ class CaptureSet {
 
     /// Starts every non-Kraken connection, then the Kraken instrument-reference
     /// lookup, then the Kraken connections. That order is the point:
-    ///  - The lookup is a blocking REST GET with no timeout. Run before anything
-    ///    starts, a slow Kraken REST endpoint would delay Deribit's capture.
+    ///  - The lookup is a blocking REST GET (10 s connect and 20 s transfer
+    ///    timeouts, so up to about 30 s). Run before anything starts, a slow
+    ///    Kraken REST endpoint would delay Deribit's capture.
     ///  - It cannot simply run after the Kraken connections start: it takes the
     ///    RestClient's request mutex, the same one every token fetch takes, so
     ///    it would stall connections that are mid-connect, and FindAssetPair
@@ -69,10 +70,10 @@ class CaptureSet {
     // and this set has to be returned by value.
     std::unique_ptr<kraken::RestClient> rest_;
     std::vector<std::unique_ptr<CaptureConnection>> connections_;
-    /// Parallel to `connections_`, for the start order.
-    std::vector<config::Exchange> exchanges_;
-    /// The Kraken entries, for the instrument-reference lookup.
-    std::vector<config::Connection> kraken_connections_;
+    /// The entries the connections were built from, parallel to `connections_`:
+    /// what StartAll needs to tell Kraken from the rest and to log the Kraken
+    /// instrument reference.
+    std::vector<config::Connection> entries_;
 };
 
 }  // namespace feed_handler

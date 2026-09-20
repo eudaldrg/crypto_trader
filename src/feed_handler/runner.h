@@ -15,19 +15,31 @@
 
 namespace feed_handler {
 
+/// Installs SIGINT and SIGTERM handlers. The first signal makes
+/// ShutdownRequested() true. A SECOND signal calls _exit(130): shutdown of
+/// several connections takes longer than a single one did, and a second Ctrl-C
+/// must not be swallowed while it drags on.
+void InstallSignalHandlers();
+
+/// True once a SIGINT or SIGTERM has arrived.
+bool ShutdownRequested();
+
 struct RunOptions {
     /// How often to look for a stop request or a fatal connection.
     std::chrono::milliseconds poll = std::chrono::milliseconds{100};
-    /// Asked once per poll; true ends the run cleanly. Empty means "until a
-    /// SIGINT/SIGTERM arrives" (ShutdownRequested()).
-    std::function<bool()> should_stop = nullptr;
+    /// Asked once per poll; true ends the run cleanly. Must not be empty. The
+    /// default is "until a SIGINT/SIGTERM arrives".
+    std::function<bool()> should_stop = ShutdownRequested;
 };
 
 struct RunResult {
-    /// A connection went fatal (a journal could not be opened or written).
-    bool fatal = false;
-    /// Which one, when `fatal`; the first found in the order given.
+    /// The connection that went fatal (a journal could not be opened or
+    /// written), the first found in the order given; empty when none did.
     std::string fatal_id = {};
+
+    bool Fatal() const {
+        return !fatal_id.empty();
+    }
 };
 
 /// Polls until `options.should_stop()` (or a signal) or any connection's
@@ -42,14 +54,5 @@ struct RunResult {
 /// at the same time.
 RunResult Run(std::span<const std::unique_ptr<CaptureConnection>> connections,
               const RunOptions& options = {});
-
-/// Installs SIGINT and SIGTERM handlers. The first signal makes
-/// ShutdownRequested() true. A SECOND signal calls _exit(130): shutdown of
-/// several connections takes longer than a single one did, and a second Ctrl-C
-/// must not be swallowed while it drags on.
-void InstallSignalHandlers();
-
-/// True once a SIGINT or SIGTERM has arrived.
-bool ShutdownRequested();
 
 }  // namespace feed_handler
