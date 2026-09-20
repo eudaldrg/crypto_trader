@@ -15,10 +15,8 @@
 #pragma once
 
 #include <atomic>
-#include <condition_variable>
 #include <cstdint>
 #include <memory>
-#include <mutex>
 #include <span>
 #include <string>
 #include <string_view>
@@ -30,6 +28,7 @@
 #include "feed_handler/kraken/kraken_rest_client.h"
 #include "feed_handler/logging.h"
 #include "feed_handler/staleness_watchdog.h"
+#include "feed_handler/stop_signal.h"
 
 namespace ix {
 class WebSocket;
@@ -166,7 +165,7 @@ class WsClient {
     /// or a write into an open one failed. The owning process should shut down
     /// rather than stay connected while dropping data on the floor.
     bool Fatal() const {
-        return fatal_.load(std::memory_order_acquire);
+        return stop_signal_.Fatal();
     }
 
     std::uint64_t MessagesReceived() const {
@@ -192,22 +191,6 @@ class WsClient {
     /// capture failed) while waiting, in which case the caller must abandon the
     /// setup.
     bool ThrottleConnectionSetup();
-    /// Returns true if shutdown was requested, or capture failed, while
-    /// waiting -- both mean "stop what you were about to do". Every wait in
-    /// this client goes through here, which is what makes the notify_all() on
-    /// the fatal path actually end them.
-    bool WaitForStop(std::uint64_t millis);
-    /// Latches the capture failure and wakes every waiter.
-    ///
-    /// The mutation is made under `stop_mutex_`, not just the notify: a waiter
-    /// evaluates the predicate under that mutex, and a flag flipped outside it
-    /// can land in the window between that evaluation and the wait registering
-    /// -- the notification is then delivered to nobody and the waiter sleeps out
-    /// its whole timeout (up to max_reconnect_wait_ms). The notify itself is
-    /// deliberately left outside the lock: by then the new state is already
-    /// published, so notifying after unlocking only saves the woken thread from
-    /// waking straight onto a mutex this thread still holds.
-    void LatchFatal();
 
     RestClient& rest_;
     Credentials creds_;
@@ -219,10 +202,9 @@ class WsClient {
     StalenessWatchdog watchdog_;
 
     std::thread watchdog_thread_;
-    std::mutex stop_mutex_;
-    std::condition_variable stop_cv_;
-    std::atomic<bool> stopping_{false};
-    std::atomic<bool> fatal_{false};
+    /// The stop request and the fatal latch, with the wakeup every timed wait in
+    /// this client goes through (stop_signal.h).
+    StopSignal stop_signal_;
     std::atomic<bool> started_{false};
     /// Set by the first Join(), so a second one (or the destructor) is a no-op.
     std::atomic<bool> joined_{false};

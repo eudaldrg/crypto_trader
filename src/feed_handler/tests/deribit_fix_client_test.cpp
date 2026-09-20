@@ -859,7 +859,7 @@ TEST_F(DeribitFixLoopback, RequestStopReturnsWithoutJoiningAndJoinThenCompletes)
 }
 
 TEST_F(DeribitFixLoopback, StopsPromptlyWhileWaitingOutTheReconnectBackoff) {
-    // A notify_all() issued without holding stop_mutex_ can land in the window
+    // A notify issued without the StopSignal's mutex held can land in the window
     // between a waiter evaluating the predicate and its wait actually
     // registering, and the wakeup is then delivered to nobody. Not a deadlock --
     // the timeout still expires -- but shutdown then sleeps out the whole

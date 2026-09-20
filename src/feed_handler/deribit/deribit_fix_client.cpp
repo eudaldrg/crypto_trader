@@ -219,19 +219,9 @@ void FixClient::Start() {
 }
 
 void FixClient::RequestStop() {
-    {
-        // Under the mutex for the same reason latch_fatal() is: the connection
-        // thread checks this flag under it, and a store made outside it can be
-        // lost in the gap between that check and the wait, which would leave
-        // shutdown waiting out a whole reconnect backoff. Joining stays in
-        // Join(), outside the lock -- the thread it waits for needs this mutex
-        // to notice.
-        const std::lock_guard<std::mutex> lock(stop_mutex_);
-        if (stopping_.exchange(true, std::memory_order_acq_rel)) {
-            return;
-        }
-    }
-    stop_cv_.notify_all();
+    // Joining stays in Join(): the thread it waits for needs the signal's mutex
+    // to notice the request.
+    stop_signal_.RequestStop();
 }
 
 void FixClient::Join() {
@@ -251,12 +241,12 @@ void FixClient::Stop() {
 
 void FixClient::Run() {
     std::uint64_t consecutive_failures = 0;
-    while (!Stopping() && !Fatal()) {
+    while (!stop_signal_.StopRequested() && !Fatal()) {
         const std::uint64_t delay_ms = ReconnectDelayMs(
             consecutive_failures, cfg_.min_reconnect_wait_ms, cfg_.max_reconnect_wait_ms);
         if (delay_ms != 0) {
             log_.Info("waiting " + std::to_string(delay_ms) + "ms before reconnecting");
-            if (WaitForStop(delay_ms)) {
+            if (stop_signal_.WaitFor(std::chrono::milliseconds(delay_ms))) {
                 return;
             }
         }
@@ -303,7 +293,7 @@ void FixClient::RunOneConnection() {
         // Same rule as Kraken: staying connected while unable to capture would
         // silently throw away the data this process exists to collect.
         log_.Error("cannot start capture: " + path.error());
-        LatchFatal();
+        stop_signal_.LatchFatal();
         return;
     }
     log_.Info("incarnation " + std::to_string(capture_.Incarnation()) + " started, journaling to " +
@@ -322,7 +312,7 @@ void FixClient::RunOneConnection() {
     watchdog_.NoteActivity(MonotonicNowNs());
     std::string buffer(kReceiveBufferBytes, '\0');
 
-    while (!Stopping() && !Fatal()) {
+    while (!stop_signal_.StopRequested() && !Fatal()) {
         // Before the recv(), not inside its timeout branch: the Heartbeat is
         // owed on outbound silence (exchanges/deribit.md), and on a busy feed
         // recv() keeps returning data promptly, so a check that only ran when
@@ -364,7 +354,7 @@ void FixClient::RunOneConnection() {
         }
     }
 
-    if (logged_on_ && Stopping()) {
+    if (logged_on_ && stop_signal_.StopRequested()) {
         // Sent from this thread, not from stop(): the socket stays
         // single-threaded, which is the whole point of owning it here.
         SendAll(socket_fd.Get(), session_.BuildLogout("shutting down"));
@@ -473,7 +463,7 @@ bool FixClient::JournalMessage(std::string_view raw) {
         return false;
     }
     log_.Error("journal write failed: " + std::string(reason));
-    LatchFatal();
+    stop_signal_.LatchFatal();
     return false;
 }
 
@@ -601,22 +591,6 @@ bool FixClient::SendAll(int fd, std::string_view bytes) {
     }
     last_outbound_ns_ = MonotonicNowNs();
     return true;
-}
-
-bool FixClient::WaitForStop(std::uint64_t millis) {
-    std::unique_lock<std::mutex> lock(stop_mutex_);
-    return stop_cv_.wait_for(lock, std::chrono::milliseconds(millis),
-                             [this] { return Stopping() || Fatal(); });
-}
-
-void FixClient::LatchFatal() {
-    {
-        const std::lock_guard<std::mutex> lock(stop_mutex_);
-        fatal_.store(true, std::memory_order_release);
-    }
-    // Both callers run on the connection thread, which never holds stop_mutex_
-    // outside wait_for_stop(), so taking it here cannot self-deadlock.
-    stop_cv_.notify_all();
 }
 
 }  // namespace feed_handler::deribit

@@ -34,10 +34,8 @@
 #pragma once
 
 #include <atomic>
-#include <condition_variable>
 #include <cstdint>
 #include <expected>
-#include <mutex>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -49,6 +47,7 @@
 #include "feed_handler/fix/fix_message.h"
 #include "feed_handler/logging.h"
 #include "feed_handler/staleness_watchdog.h"
+#include "feed_handler/stop_signal.h"
 
 namespace feed_handler::deribit {
 
@@ -182,7 +181,7 @@ class FixClient {
     /// rather than stay connected while discarding the data it exists to
     /// collect.
     bool Fatal() const {
-        return fatal_.load(std::memory_order_acquire);
+        return stop_signal_.Fatal();
     }
 
     std::uint64_t MessagesReceived() const {
@@ -231,22 +230,6 @@ class FixClient {
     /// Writes the whole buffer, tolerating short writes and EINTR. Outbound
     /// only -- these bytes never reach the journal.
     bool SendAll(int fd, std::string_view bytes);
-    /// Returns true if shutdown was requested while waiting.
-    bool WaitForStop(std::uint64_t millis);
-    /// Latches the capture failure and wakes every waiter.
-    ///
-    /// The mutation is made under `stop_mutex_`, not just the notify: a waiter
-    /// evaluates the predicate under that mutex, and a flag flipped outside it
-    /// can land in the window between that evaluation and the wait registering
-    /// -- the notification is then delivered to nobody and the waiter sleeps out
-    /// its whole timeout (up to max_reconnect_wait_ms). The notify itself is
-    /// deliberately left outside the lock: by then the new state is already
-    /// published, so notifying after unlocking only saves the woken thread from
-    /// waking straight onto a mutex this thread still holds.
-    void LatchFatal();
-    bool Stopping() const {
-        return stopping_.load(std::memory_order_acquire);
-    }
 
     FixClientConfig cfg_;
     /// Every line tagged with `cfg_.id`.
@@ -262,13 +245,12 @@ class FixClient {
     std::uint64_t last_outbound_ns_ = 0;
 
     std::thread thread_;
-    std::mutex stop_mutex_;
-    std::condition_variable stop_cv_;
-    std::atomic<bool> stopping_{false};
+    /// The stop request and the fatal latch, with the wakeup every timed wait in
+    /// this client goes through (stop_signal.h).
+    StopSignal stop_signal_;
     std::atomic<bool> started_{false};
     /// Set by the first Join(), so a second one (or the destructor) is a no-op.
     std::atomic<bool> joined_{false};
-    std::atomic<bool> fatal_{false};
     std::atomic<std::uint64_t> messages_received_{0};
     std::atomic<std::uint64_t> snapshots_received_{0};
     std::atomic<std::uint64_t> incrementals_received_{0};

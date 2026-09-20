@@ -228,19 +228,11 @@ void WsClient::Start() {
 }
 
 void WsClient::RequestStop() {
-    {
-        // Under the mutex for the same reason latch_fatal() is: the watchdog
-        // thread checks this flag under it, and a store made outside it can be
-        // lost in the gap between that check and the wait, which would leave
-        // shutdown waiting out a whole poll interval or backoff. Joining stays
-        // in Join(), outside the lock -- the thread it waits for needs this
-        // mutex to notice.
-        const std::lock_guard<std::mutex> lock(stop_mutex_);
-        if (stopping_.exchange(true, std::memory_order_acq_rel)) {
-            return;
-        }
+    // Joining stays in Join(): the threads it waits for need the signal's mutex
+    // to notice the request.
+    if (!stop_signal_.RequestStop()) {
+        return;
     }
-    stop_cv_.notify_all();
     if (started_.load(std::memory_order_acquire)) {
         // Reconnection off first, or the library's thread would treat this close
         // like the watchdog's ForceReconnect() and set the connection up again.
@@ -313,7 +305,7 @@ void WsClient::HandleOpen() {
         // Staying connected while unable to capture would silently throw away
         // the data this process exists to collect.
         log_.Error("cannot start capture: " + path.error());
-        LatchFatal();
+        stop_signal_.LatchFatal();
         return;
     }
 
@@ -343,7 +335,7 @@ void WsClient::HandleMessage(const std::string& payload) {
             // journal_message -- capturing nothing while looking healthy is the
             // one outcome this process must not have.
             log_.Error("journal write failed: " + std::string(reason));
-            LatchFatal();
+            stop_signal_.LatchFatal();
         }
     }
 
@@ -380,8 +372,8 @@ void WsClient::RunWatchdog() {
     // Ends on a capture failure as well as on shutdown: once capture is dead
     // the process is on its way out, and forcing further reconnects would only
     // spend Kraken's REST rate limit on connections nothing can journal.
-    while (!stopping_.load(std::memory_order_acquire) && !Fatal()) {
-        if (WaitForStop(cfg_.watchdog_poll_ms)) {
+    while (!stop_signal_.StopRequested() && !Fatal()) {
+        if (stop_signal_.WaitFor(std::chrono::milliseconds(cfg_.watchdog_poll_ms))) {
             return;
         }
         if (!watchdog_.IsStale(MonotonicNowNs())) {
@@ -404,7 +396,8 @@ bool WsClient::ThrottleConnectionSetup() {
         // re-establishes instantly -- its reconnect bounds do not apply. Each
         // of those needs a fresh signed REST token, so the floor on how often
         // one connection can be set up has to live here.
-        if (WaitForStop(cfg_.min_reconnect_wait_ms - elapsed_ms)) {
+        if (stop_signal_.WaitFor(
+                std::chrono::milliseconds(cfg_.min_reconnect_wait_ms - elapsed_ms))) {
             return true;
         }
     }
@@ -429,29 +422,7 @@ void WsClient::BackOffAfterSetupFailure() {
     // that succeeds and then fails at the token/subscribe step would otherwise
     // reconnect immediately and retry the signed REST call in a tight loop.
     log_.Warn("waiting " + std::to_string(delay_ms) + "ms before the next connection attempt");
-    WaitForStop(delay_ms);
-}
-
-bool WsClient::WaitForStop(std::uint64_t millis) {
-    std::unique_lock<std::mutex> lock(stop_mutex_);
-    // fatal() is part of the predicate, not just of the callers' loops: the
-    // fatal paths notify this condition variable, and a predicate that only
-    // looked at stopping_ would leave those notifications waking a waiter that
-    // immediately went back to sleep for the rest of its timeout.
-    return stop_cv_.wait_for(lock, std::chrono::milliseconds(millis), [this] {
-        return stopping_.load(std::memory_order_acquire) || Fatal();
-    });
-}
-
-void WsClient::LatchFatal() {
-    {
-        const std::lock_guard<std::mutex> lock(stop_mutex_);
-        fatal_.store(true, std::memory_order_release);
-    }
-    // Both callers run on IXWebSocket's thread, which holds stop_mutex_ only
-    // inside wait_for_stop() and never across one of these calls, so taking it
-    // here cannot self-deadlock.
-    stop_cv_.notify_all();
+    stop_signal_.WaitFor(std::chrono::milliseconds(delay_ms));
 }
 
 }  // namespace feed_handler::kraken
