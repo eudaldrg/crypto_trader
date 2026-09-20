@@ -230,7 +230,8 @@ TEST(DeribitMarketDataRequest, ListsEverySymbolInTheRepeatingGroupInOrder) {
     // One request covers every instrument through NoRelatedSym(146); Deribit
     // answers with one snapshot per symbol.
     FixSession session(TestConfig());
-    const std::vector<std::string> symbols = {"BTC-PERPETUAL", "ETH-PERPETUAL", "SOL_USDC-PERPETUAL"};
+    const std::vector<std::string> symbols = {"BTC-PERPETUAL", "ETH-PERPETUAL",
+                                              "SOL_USDC-PERPETUAL"};
     const std::string request = session.BuildMarketDataRequest("md-1", symbols);
     const auto parsed = ParseMessage(request);
     ASSERT_TRUE(parsed.has_value()) << parsed.error();
@@ -249,8 +250,7 @@ TEST(DeribitMarketDataRequest, ListsEverySymbolInTheRepeatingGroupInOrder) {
 TEST(DeribitMarketDataRequest, ProducesTheExpectedWireMessage) {
     FixSession session(TestConfig());
     ASSERT_FALSE(session.BuildLogonWithNonce(kTestTimestampMs, FixedNonce()).empty());
-    EXPECT_EQ(session.BuildMarketDataRequest("md-1", kOneSymbol),
-              Wire(kExpectedMarketDataRequest));
+    EXPECT_EQ(session.BuildMarketDataRequest("md-1", kOneSymbol), Wire(kExpectedMarketDataRequest));
 }
 
 TEST(DeribitMarketDataRequest, AsksForBothSidesOfTheBook) {

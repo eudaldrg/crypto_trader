@@ -50,8 +50,9 @@ std::expected<std::filesystem::path, std::string> CaptureSession::BeginIncarnati
     }
 
     const std::filesystem::path path =
-        cfg_.directory / JournalFileName(cfg_.file_prefix.empty() ? cfg_.exchange : cfg_.file_prefix,
-                                         incarnation_, RealtimeNowNs());
+        cfg_.directory /
+        JournalFileName(cfg_.file_prefix.empty() ? cfg_.exchange : cfg_.file_prefix, incarnation_,
+                        RealtimeNowNs());
     try {
         writer_ = std::make_unique<JournalWriter>(path, JournalWriter::Config{
                                                             .exchange = cfg_.exchange,
