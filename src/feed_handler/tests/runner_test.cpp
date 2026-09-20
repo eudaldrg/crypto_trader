@@ -89,7 +89,7 @@ TEST(CaptureRunner, AStopRequestEndsCleanlyAndStopsEveryConnectionOnce) {
     const auto result =
         feed_handler::Run(fixture.connections, {.poll = kTinyPoll, .should_stop = StopAfter(3)});
 
-    EXPECT_FALSE(result.fatal);
+    EXPECT_FALSE(result.Fatal());
     EXPECT_TRUE(result.fatal_id.empty());
     for (const char* id : {"a", "b", "c"}) {
         EXPECT_EQ(fixture.Count(std::string(id) + ":RequestStop"), 1U) << id;
@@ -108,7 +108,7 @@ TEST(CaptureRunner, AFatalConnectionLatchesItsIdAndStopsEveryConnection) {
     const auto result =
         feed_handler::Run(fixture.connections, {.poll = kTinyPoll, .should_stop = StopAfter(1000)});
 
-    EXPECT_TRUE(result.fatal);
+    EXPECT_TRUE(result.Fatal());
     EXPECT_EQ(result.fatal_id, "b");
     for (const char* id : {"a", "b", "c"}) {
         EXPECT_EQ(fixture.Count(std::string(id) + ":RequestStop"), 1U) << id;
@@ -148,7 +148,7 @@ TEST(CaptureRunner, AFatalAlreadyLatchedIsNoticedOnTheFirstPoll) {
                                                     return false;
                                                 }});
 
-    EXPECT_TRUE(result.fatal);
+    EXPECT_TRUE(result.Fatal());
     EXPECT_EQ(result.fatal_id, "a");
     EXPECT_EQ(polls, 0) << "it polled the stop request before looking at the connections";
 }
@@ -160,7 +160,7 @@ TEST(CaptureRunner, AFatalWinsOverAStopRequestedAtTheSameTime) {
     const auto result =
         feed_handler::Run(fixture.connections, {.poll = kTinyPoll, .should_stop = StopAfter(0)});
 
-    EXPECT_TRUE(result.fatal);
+    EXPECT_TRUE(result.Fatal());
     EXPECT_EQ(result.fatal_id, "a");
 }
 
@@ -192,7 +192,7 @@ TEST(CaptureRunner, NoConnectionsStillEndsOnAStopRequest) {
     Fixture fixture;
     const auto result =
         feed_handler::Run(fixture.connections, {.poll = kTinyPoll, .should_stop = StopAfter(1)});
-    EXPECT_FALSE(result.fatal);
+    EXPECT_FALSE(result.Fatal());
 }
 
 TEST(CaptureRunner, NoSignalHasArrivedInATestProcess) {

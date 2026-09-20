@@ -19,9 +19,11 @@
 // feed_handler/credentials.h does, and it is the only code that does.
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -40,6 +42,17 @@ enum class Environment : std::uint8_t {
 
 std::string_view ToString(Exchange exchange);
 std::string_view ToString(Environment env);
+
+/// Every exchange, the one list the config parser, the command line and their
+/// usage text are built from. A new Exchange enumerator goes here and in
+/// ToString (whose switch the compiler checks).
+inline constexpr std::array<Exchange, 2> kAllExchanges = {Exchange::kKraken, Exchange::kDeribit};
+
+/// The exchange whose ToString() is `name`, or nullopt.
+std::optional<Exchange> ExchangeFromString(std::string_view name);
+
+/// Every exchange's name joined by `separator`: "kraken|deribit".
+std::string ExchangeNames(std::string_view separator);
 
 struct HostPort {
     std::string host;
@@ -74,9 +87,6 @@ struct FeedHandlerConfig {
     /// Local runtime state that belongs to this machine (Kraken's nonce mark).
     std::filesystem::path state_dir = "state";
     std::vector<Connection> connections;
-
-    /// The connections belonging to one exchange, in file order.
-    std::vector<Connection> ConnectionsFor(Exchange exchange) const;
 };
 
 /// Parses and validates TOML text. `source_name` only labels parse errors.

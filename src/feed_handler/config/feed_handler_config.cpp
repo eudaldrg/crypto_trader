@@ -4,7 +4,6 @@
 #include <charconv>
 #include <fstream>
 #include <initializer_list>
-#include <iterator>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -119,13 +118,11 @@ std::expected<Exchange, std::string> ParseExchange(const toml::table& table,
     if (!text) {
         return Error(text.error());
     }
-    if (*text == "kraken") {
-        return Exchange::kKraken;
+    if (const auto exchange = ExchangeFromString(*text)) {
+        return *exchange;
     }
-    if (*text == "deribit") {
-        return Exchange::kDeribit;
-    }
-    return Error(where + ": unknown exchange '" + *text + "' (expected \"kraken\" or \"deribit\")");
+    return Error(where + ": unknown exchange '" + *text + "' (expected " + ExchangeNames(" or ") +
+                 ")");
 }
 
 std::expected<Environment, std::string> ParseEnvironment(const toml::table& table,
@@ -209,11 +206,8 @@ std::expected<void, std::string> ResolveEndpoint(const toml::table& table, Conne
             return Error(where + ": no default endpoint for deribit " +
                          std::string(ToString(connection.env)) + "; set 'endpoint'");
         }
-        connection.host_port = {.host = std::string(deribit::kTestnetHost),
-                                .port = deribit::kFixPort};
-        connection.endpoint =
-            connection.host_port.host + ":" + std::to_string(connection.host_port.port);
-        return {};
+        // The default goes through the same validation as an explicit endpoint.
+        given = std::string(deribit::kTestnetHost) + ":" + std::to_string(deribit::kFixPort);
     }
     auto host_port = ParseHostPort(**given);
     if (!host_port) {
@@ -358,6 +352,24 @@ std::string_view ToString(Environment env) {
     return "unknown";
 }
 
+std::optional<Exchange> ExchangeFromString(std::string_view name) {
+    for (const Exchange exchange : kAllExchanges) {
+        if (ToString(exchange) == name) {
+            return exchange;
+        }
+    }
+    return std::nullopt;
+}
+
+std::string ExchangeNames(std::string_view separator) {
+    std::string names;
+    for (const Exchange exchange : kAllExchanges) {
+        names += names.empty() ? "" : separator;
+        names += ToString(exchange);
+    }
+    return names;
+}
+
 std::expected<HostPort, std::string> ParseHostPort(std::string_view endpoint) {
     const std::size_t colon = endpoint.rfind(':');
     if (colon == std::string_view::npos || colon == 0 || colon + 1 == endpoint.size()) {
@@ -379,13 +391,6 @@ std::expected<HostPort, std::string> ParseHostPort(std::string_view endpoint) {
         return Error("invalid port in '" + std::string(endpoint) + "'");
     }
     return HostPort{.host = std::string(host), .port = port};
-}
-
-std::vector<Connection> FeedHandlerConfig::ConnectionsFor(Exchange exchange) const {
-    std::vector<Connection> result;
-    std::ranges::copy_if(connections, std::back_inserter(result),
-                         [exchange](const Connection& c) { return c.exchange == exchange; });
-    return result;
 }
 
 std::expected<FeedHandlerConfig, std::string> ParseConfig(std::string_view toml_text,

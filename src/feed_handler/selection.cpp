@@ -1,7 +1,6 @@
 #include "feed_handler/selection.h"
 
 #include <algorithm>
-#include <array>
 #include <cstddef>
 #include <span>
 #include <string_view>
@@ -12,30 +11,9 @@ namespace {
 
 using Error = std::unexpected<std::string>;
 
-constexpr std::array<config::Exchange, 2> kExchanges = {config::Exchange::kKraken,
-                                                        config::Exchange::kDeribit};
-
-std::string ExchangeNames() {
-    std::string names;
-    for (const config::Exchange exchange : kExchanges) {
-        names += names.empty() ? "" : "|";
-        names += config::ToString(exchange);
-    }
-    return names;
-}
-
 std::string Usage(std::string_view program) {
-    return "usage: " + std::string(program) + " --config <path> [--exchange " + ExchangeNames() +
-           "] [--only <id>[,<id>...]]";
-}
-
-std::optional<config::Exchange> ExchangeFromName(std::string_view name) {
-    for (const config::Exchange exchange : kExchanges) {
-        if (config::ToString(exchange) == name) {
-            return exchange;
-        }
-    }
-    return std::nullopt;
+    return "usage: " + std::string(program) + " --config <path> [--exchange " +
+           config::ExchangeNames("|") + "] [--only <id>[,<id>...]]";
 }
 
 /// Splits "a,b,c" into ids. An empty piece ("a,,b", a trailing comma) is an
@@ -76,7 +54,6 @@ std::expected<CommandLine, std::string> ParseCommandLine(int argc, const char* c
     const auto fail = [&usage](const std::string& reason) { return Error(reason + "\n" + usage); };
 
     CommandLine command_line;
-    bool have_config = false;
     for (std::size_t index = 1; index < args.size(); ++index) {
         const std::string_view arg = args[index];
         std::string_view name = arg;
@@ -99,10 +76,11 @@ std::expected<CommandLine, std::string> ParseCommandLine(int argc, const char* c
         }
 
         if (name == "--config") {
-            if (have_config) {
+            // Empty values are rejected above, so a non-empty path means it was
+            // already given.
+            if (!command_line.config_path.empty()) {
                 return fail("--config given more than once");
             }
-            have_config = true;
             command_line.config_path = std::string(*value);
         } else if (name == "--only") {
             auto ids = SplitIds(*value);
@@ -114,14 +92,14 @@ std::expected<CommandLine, std::string> ParseCommandLine(int argc, const char* c
             if (command_line.exchange) {
                 return fail("--exchange given more than once");
             }
-            command_line.exchange = ExchangeFromName(*value);
+            command_line.exchange = config::ExchangeFromString(*value);
             if (!command_line.exchange) {
                 return fail("unknown exchange '" + std::string(*value) + "' (expected " +
-                            ExchangeNames() + ")");
+                            config::ExchangeNames("|") + ")");
             }
         }
     }
-    if (!have_config) {
+    if (command_line.config_path.empty()) {
         return fail("--config is required");
     }
     return command_line;

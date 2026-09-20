@@ -167,7 +167,7 @@ TEST_F(CaptureSetTest, ADeribitOnlySetStartsRunsAndStopsWithoutHanging) {
     const auto result = feed_handler::Run(
         set->Connections(),
         {.poll = std::chrono::milliseconds{10}, .should_stop = [&polls] { return ++polls > 3; }});
-    EXPECT_FALSE(result.fatal);
+    EXPECT_FALSE(result.Fatal());
 }
 
 }  // namespace

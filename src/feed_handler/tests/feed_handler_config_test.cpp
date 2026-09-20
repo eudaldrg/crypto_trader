@@ -88,25 +88,6 @@ state_dir = "/data/state"
     EXPECT_EQ(config->connections[0].endpoint, "wss://beta.example.test/v2");
 }
 
-TEST(FeedHandlerConfig, ConnectionsForKeepsFileOrderPerExchange) {
-    const auto config = ParseConfig(kKraken + kDeribit + R"(
-[[connections]]
-id = "kraken-sol"
-exchange = "kraken"
-env = "prod"
-symbols = ["SOL/USD"]
-api_key_env = "KRAKEN_API_KEY"
-api_secret_env = "KRAKEN_API_SECRET"
-)");
-    ASSERT_TRUE(config.has_value()) << config.error();
-
-    const auto kraken = config->ConnectionsFor(Exchange::kKraken);
-    ASSERT_EQ(kraken.size(), 2U);
-    EXPECT_EQ(kraken[0].id, "kraken-btc");
-    EXPECT_EQ(kraken[1].id, "kraken-sol");
-    EXPECT_EQ(config->ConnectionsFor(Exchange::kDeribit).size(), 1U);
-}
-
 TEST(FeedHandlerConfig, ReportsTomlSyntaxErrorsWithALocation) {
     const auto config = ParseConfig("journal_dir = \n", "my.toml");
     ASSERT_FALSE(config.has_value());
@@ -233,6 +214,16 @@ TEST(FeedHandlerConfig, ValidatesEndpointShape) {
     ExpectRejected(kDeribit + "endpoint = \"host:port\"\n", "invalid endpoint");
 }
 
+TEST(FeedHandlerConfig, EveryExchangeRoundTripsThroughItsName) {
+    for (const Exchange exchange : feed_handler::config::kAllExchanges) {
+        EXPECT_EQ(
+            feed_handler::config::ExchangeFromString(feed_handler::config::ToString(exchange)),
+            exchange);
+    }
+    EXPECT_FALSE(feed_handler::config::ExchangeFromString("binance").has_value());
+    EXPECT_EQ(feed_handler::config::ExchangeNames("|"), "kraken|deribit");
+}
+
 TEST(FeedHandlerConfig, ParseHostPortSplitsAndBoundsThePort) {
     const auto ok = ParseHostPort("fix-test.deribit.com:9881");
     ASSERT_TRUE(ok.has_value()) << ok.error();
@@ -271,8 +262,9 @@ TEST(FeedHandlerConfig, TheCommittedDefaultConfigIsValid) {
     const auto config =
         LoadConfigFile(std::filesystem::path(FEED_HANDLER_CONFIG_DIR) / "feed_handler.toml");
     ASSERT_TRUE(config.has_value()) << config.error();
-    EXPECT_EQ(config->ConnectionsFor(Exchange::kKraken).size(), 1U);
-    EXPECT_EQ(config->ConnectionsFor(Exchange::kDeribit).size(), 1U);
+    ASSERT_EQ(config->connections.size(), 2U);
+    EXPECT_EQ(config->connections[0].exchange, Exchange::kKraken);
+    EXPECT_EQ(config->connections[1].exchange, Exchange::kDeribit);
 }
 
 }  // namespace

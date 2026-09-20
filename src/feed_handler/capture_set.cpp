@@ -1,8 +1,6 @@
 #include "feed_handler/capture_set.h"
 
-#include <algorithm>
 #include <filesystem>
-#include <utility>
 
 #include "feed_handler/deribit/deribit_capture.h"
 #include "feed_handler/kraken/kraken_capture.h"
@@ -27,52 +25,48 @@ std::expected<CaptureSet, std::string> CaptureSet::Build(
     }
 
     CaptureSet set;
-    const bool any_kraken = std::ranges::any_of(connections, [](const config::Connection& c) {
-        return c.exchange == config::Exchange::kKraken;
-    });
-    if (any_kraken) {
-        // One RestClient for the whole process, shared by every Kraken
-        // connection: it owns the nonce high-water mark that keeps signed calls
-        // strictly increasing across reconnects (exchanges/kraken.md), so it
-        // must never be rebuilt per connection, and it serializes their token
-        // fetches. The state file extends that guarantee across restarts, best
-        // effort and never a reason not to start (kraken_signing.h).
-        set.rest_ = std::make_unique<kraken::RestClient>(
-            std::string(kraken::RestClient::kDefaultBaseUrl), config.state_dir / kNonceStateFile);
-    }
-
+    set.entries_.assign(connections.begin(), connections.end());
     for (std::size_t index = 0; index < connections.size(); ++index) {
         const config::Connection& connection = connections[index];
         switch (connection.exchange) {
             case config::Exchange::kKraken:
+                if (set.rest_ == nullptr) {
+                    // One RestClient for the whole process, shared by every
+                    // Kraken connection: it owns the nonce high-water mark that
+                    // keeps signed calls strictly increasing across reconnects
+                    // (exchanges/kraken.md), so it must never be rebuilt per
+                    // connection, and it serializes their token fetches. The
+                    // state file extends that guarantee across restarts, best
+                    // effort and never a reason not to start (kraken_signing.h).
+                    set.rest_ = std::make_unique<kraken::RestClient>(
+                        std::string(kraken::RestClient::kDefaultBaseUrl),
+                        config.state_dir / kNonceStateFile);
+                }
                 set.connections_.push_back(
                     kraken::MakeKrakenCapture(config, connection, credentials[index], *set.rest_));
-                set.kraken_connections_.push_back(connection);
                 break;
             case config::Exchange::kDeribit:
                 set.connections_.push_back(
                     deribit::MakeDeribitCapture(config, connection, credentials[index]));
                 break;
         }
-        set.exchanges_.push_back(connection.exchange);
     }
     return set;
 }
 
 void CaptureSet::StartAll() {
-    for (std::size_t index = 0; index < connections_.size(); ++index) {
-        if (exchanges_[index] != config::Exchange::kKraken) {
-            connections_[index]->Start();
+    const auto start = [this](bool kraken) {
+        for (std::size_t index = 0; index < connections_.size(); ++index) {
+            if ((entries_[index].exchange == config::Exchange::kKraken) == kraken) {
+                connections_[index]->Start();
+            }
         }
-    }
+    };
+    start(false);
     if (rest_ != nullptr) {
-        kraken::LogInstrumentReference(*rest_, kraken_connections_);
+        kraken::LogInstrumentReference(*rest_, entries_);
     }
-    for (std::size_t index = 0; index < connections_.size(); ++index) {
-        if (exchanges_[index] == config::Exchange::kKraken) {
-            connections_[index]->Start();
-        }
-    }
+    start(true);
 }
 
 }  // namespace feed_handler

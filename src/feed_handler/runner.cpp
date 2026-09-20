@@ -41,9 +41,6 @@ bool ShutdownRequested() {
 RunResult Run(std::span<const std::unique_ptr<CaptureConnection>> connections,
               const RunOptions& options) {
     RunResult result;
-    const auto stop_requested = [&options] {
-        return options.should_stop ? options.should_stop() : ShutdownRequested();
-    };
 
     while (true) {
         // Fatal first: a latched failure is reported even if a stop was
@@ -51,12 +48,11 @@ RunResult Run(std::span<const std::unique_ptr<CaptureConnection>> connections,
         const auto failed = std::ranges::find_if(
             connections, [](const std::unique_ptr<CaptureConnection>& c) { return c->Fatal(); });
         if (failed != connections.end()) {
-            result.fatal = true;
             result.fatal_id = std::string((*failed)->Id());
             LogError("[" + result.fatal_id + "] capture failed, stopping every connection");
             break;
         }
-        if (stop_requested()) {
+        if (options.should_stop()) {
             LogInfo("shutdown requested");
             break;
         }
