@@ -125,9 +125,11 @@ struct FixClientConfig {
     /// The connection's identity in log lines, so several connections in one
     /// process can be told apart. The config's `id`.
     std::string id = "deribit";
-    /// Testnet. Plain TCP, no TLS (experiments/deribit_fix_probe.py).
-    std::string host = std::string(kTestnetHost);
-    std::uint16_t port = kFixPort;
+    /// Plain TCP, no TLS (experiments/deribit_fix_probe.py). No default: the
+    /// config resolves the endpoint (deribit_endpoints.h has the testnet one), so
+    /// every site names it.
+    std::string host;
+    std::uint16_t port;
     /// All requested in one MarketDataRequest on this one session.
     std::vector<std::string> symbols = {"BTC-PERPETUAL"};
     std::string md_req_id = "ct-md-1";

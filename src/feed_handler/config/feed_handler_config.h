@@ -28,6 +28,8 @@
 #include <string_view>
 #include <vector>
 
+#include "feed_handler/exchange_traits.h"
+
 namespace feed_handler::config {
 
 enum class Exchange : std::uint8_t {
@@ -42,6 +44,9 @@ enum class Environment : std::uint8_t {
 
 std::string_view ToString(Exchange exchange);
 std::string_view ToString(Environment env);
+
+/// The rules a config entry for `exchange` is validated against.
+const ExchangeTraits& TraitsOf(Exchange exchange);
 
 /// Every exchange, the one list the config parser, the command line and their
 /// usage text are built from. A new Exchange enumerator goes here and in
