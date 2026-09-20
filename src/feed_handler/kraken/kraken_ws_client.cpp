@@ -11,6 +11,7 @@
 
 #include "feed_handler/logging.h"
 #include "feed_handler/message_sink.h"
+#include "feed_handler/symbols.h"
 
 namespace feed_handler::kraken {
 namespace {
@@ -160,15 +161,6 @@ std::string DescribeSymbols(const std::vector<std::string>& symbols) {
     return symbols.size() == 1 ? symbols.front() : std::to_string(symbols.size()) + " symbols";
 }
 
-std::string JoinSymbols(const std::vector<std::string>& symbols) {
-    std::string joined;
-    for (const std::string& symbol : symbols) {
-        joined += joined.empty() ? "" : ",";
-        joined += symbol;
-    }
-    return joined;
-}
-
 }  // namespace
 
 WsClient::WsClient(RestClient& rest, Credentials creds, CaptureSession& session, WsClientConfig cfg)
@@ -176,6 +168,7 @@ WsClient::WsClient(RestClient& rest, Credentials creds, CaptureSession& session,
       creds_(std::move(creds)),
       session_(session),
       cfg_(std::move(cfg)),
+      log_(cfg_.id),
       ws_(std::make_unique<ix::WebSocket>()),
       watchdog_(cfg_.staleness_timeout_ns) {
     ws_->setUrl(cfg_.url);
@@ -201,12 +194,12 @@ WsClient::WsClient(RestClient& rest, Credentials creds, CaptureSession& session,
                 // while, and a closed file is a complete, readable one.
                 watchdog_.Disarm();
                 session_.Close();
-                Warn("websocket closed (code " + std::to_string(message->closeInfo.code) +
+                log_.Warn("websocket closed (code " + std::to_string(message->closeInfo.code) +
                         "): " + message->closeInfo.reason);
                 break;
             case ix::WebSocketMessageType::Error:
                 watchdog_.Disarm();
-                Error("websocket error: " + message->errorInfo.reason + " (retry " +
+                log_.Error("websocket error: " + message->errorInfo.reason + " (retry " +
                          std::to_string(message->errorInfo.retries) + ")");
                 break;
             case ix::WebSocketMessageType::Ping:
@@ -223,25 +216,13 @@ WsClient::WsClient(RestClient& rest, Credentials creds, CaptureSession& session,
     });
 }
 
-void WsClient::Info(std::string_view message) const {
-    LogInfo("[" + cfg_.id + "] " + std::string(message));
-}
-
-void WsClient::Warn(std::string_view message) const {
-    LogWarn("[" + cfg_.id + "] " + std::string(message));
-}
-
-void WsClient::Error(std::string_view message) const {
-    LogError("[" + cfg_.id + "] " + std::string(message));
-}
-
 WsClient::~WsClient() {
     Stop();
 }
 
 void WsClient::Start() {
     started_.store(true, std::memory_order_release);
-    Info("connecting to " + cfg_.url + " for " + DescribeSymbols(cfg_.symbols));
+    log_.Info("connecting to " + cfg_.url + " for " + DescribeSymbols(cfg_.symbols));
     watchdog_thread_ = std::thread([this] { RunWatchdog(); });
     ws_->start();
 }
@@ -284,11 +265,11 @@ void WsClient::HandleOpen() {
     }
     watchdog_.NoteActivity(MonotonicNowNs());
     subscribe_acks_ = 0;
-    Info("connected");
+    log_.Info("connected");
 
     const auto token = rest_.FetchWebsocketsToken(creds_);
     if (!token) {
-        Error("token fetch failed: " + token.error());
+        log_.Error("token fetch failed: " + token.error());
         BackOffAfterSetupFailure();
         ForceReconnect("token fetch failed");
         return;
@@ -299,7 +280,7 @@ void WsClient::HandleOpen() {
     // (decisions/0004).
     const auto sent = ws_->send(BuildSubscribeMessage(cfg_.symbols, token->token));
     if (!sent.success) {
-        Error("failed to send level3 subscribe");
+        log_.Error("failed to send level3 subscribe");
         BackOffAfterSetupFailure();
         ForceReconnect("subscribe send failed");
         return;
@@ -310,13 +291,13 @@ void WsClient::HandleOpen() {
     if (!path) {
         // Staying connected while unable to capture would silently throw away
         // the data this process exists to collect.
-        Error("cannot start capture: " + path.error());
+        log_.Error("cannot start capture: " + path.error());
         LatchFatal();
         return;
     }
 
     consecutive_setup_failures_ = 0;
-    Info("incarnation " + std::to_string(session_.Incarnation()) + " started, journaling to " +
+    log_.Info("incarnation " + std::to_string(session_.Incarnation()) + " started, journaling to " +
          path->string());
 }
 
@@ -333,14 +314,14 @@ void WsClient::HandleMessage(const std::string& payload) {
             // No open incarnation yet -- a message that arrived between the
             // socket opening and handle_open() finishing. Loud, but the next
             // incarnation fixes it, so it is not a reason to end the process.
-            Error("dropped a message: no journal file open");
+            log_.Error("dropped a message: no journal file open");
         } else {
             // A sticky writer error (a full disk, say) never heals: every later
             // message would be dropped just as silently. Same rule as a journal
             // file that cannot be opened at all, and as Deribit's
             // journal_message -- capturing nothing while looking healthy is the
             // one outcome this process must not have.
-            Error("journal write failed: " + std::string(reason));
+            log_.Error("journal write failed: " + std::string(reason));
             LatchFatal();
         }
     }
@@ -349,7 +330,7 @@ void WsClient::HandleMessage(const std::string& payload) {
     switch (classified.kind) {
         case MessageKind::kSubscribeAck:
             ++subscribe_acks_;
-            Info("subscribed to level3 " +
+            log_.Info("subscribed to level3 " +
                     (classified.symbol.empty() ? DescribeSymbols(cfg_.symbols) : classified.symbol) +
                     " (" + std::to_string(subscribe_acks_) + "/" +
                     std::to_string(cfg_.symbols.size()) + ")");
@@ -357,13 +338,13 @@ void WsClient::HandleMessage(const std::string& payload) {
         case MessageKind::kSubscribeError:
             // The connection stays open after a rejected subscribe and simply
             // never delivers data, so this has to be loud.
-            Error("kraken rejected the level3 subscribe: " + classified.detail);
+            log_.Error("kraken rejected the level3 subscribe: " + classified.detail);
             break;
         case MessageKind::kMethodError:
-            Error("kraken method error: " + classified.detail);
+            log_.Error("kraken method error: " + classified.detail);
             break;
         case MessageKind::kBookSnapshot:
-            Info("received level3 snapshot");
+            log_.Info("received level3 snapshot");
             break;
         case MessageKind::kUnknown:
         case MessageKind::kHeartbeat:
@@ -413,7 +394,7 @@ void WsClient::ForceReconnect(std::string_view reason) {
     // Disarm first: the watchdog must not fire again on the silence between
     // this close and the next connection's first message.
     watchdog_.Disarm();
-    Warn("forcing reconnect: " + std::string(reason));
+    log_.Warn("forcing reconnect: " + std::string(reason));
     ws_->close();
 }
 
@@ -425,7 +406,7 @@ void WsClient::BackOffAfterSetupFailure() {
     // IXWebSocket only backs off when the *connection* fails; a connection
     // that succeeds and then fails at the token/subscribe step would otherwise
     // reconnect immediately and retry the signed REST call in a tight loop.
-    Warn("waiting " + std::to_string(delay_ms) + "ms before the next connection attempt");
+    log_.Warn("waiting " + std::to_string(delay_ms) + "ms before the next connection attempt");
     WaitForStop(delay_ms);
 }
 

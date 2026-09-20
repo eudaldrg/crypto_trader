@@ -20,6 +20,7 @@
 
 #include "feed_handler/logging.h"
 #include "feed_handler/message_sink.h"
+#include "feed_handler/symbols.h"
 
 namespace feed_handler::deribit {
 namespace {
@@ -201,22 +202,9 @@ std::uint64_t ReconnectDelayMs(std::uint64_t consecutive_failures, std::uint64_t
     return std::min(max_ms, min_ms << doublings);
 }
 
-namespace {
-
-std::string JoinSymbols(const std::vector<std::string>& symbols) {
-    std::string joined;
-    for (const std::string& symbol : symbols) {
-        joined += joined.empty() ? "" : ",";
-        joined += symbol;
-    }
-    return joined;
-}
-
-}  // namespace
-
 FixClient::FixClient(SessionConfig session_cfg, CaptureSession& capture, FixClientConfig cfg)
     : cfg_(std::move(cfg)),
-      symbols_text_(JoinSymbols(cfg_.symbols)),
+      log_(cfg_.id),
       capture_(capture),
       session_(std::move(session_cfg)),
       watchdog_(cfg_.staleness_timeout_ns) {}
@@ -254,7 +242,7 @@ void FixClient::Run() {
         const std::uint64_t delay_ms = ReconnectDelayMs(
             consecutive_failures, cfg_.min_reconnect_wait_ms, cfg_.max_reconnect_wait_ms);
         if (delay_ms != 0) {
-            Info("waiting " + std::to_string(delay_ms) + "ms before reconnecting");
+            log_.Info("waiting " + std::to_string(delay_ms) + "ms before reconnecting");
             if (WaitForStop(delay_ms)) {
                 return;
             }
@@ -274,7 +262,7 @@ void FixClient::RunOneConnection() {
     connection_attempts_.fetch_add(1, std::memory_order_relaxed);
     const auto connected = ConnectSocket();
     if (!connected) {
-        Error(connected.error());
+        log_.Error(connected.error());
         return;
     }
     const ScopedFd socket_fd(*connected);
@@ -282,7 +270,7 @@ void FixClient::RunOneConnection() {
     // Closing a session with nothing open is a no-op, so it is also harmless if
     // begin_incarnation() itself fails.
     const ScopedCapture capture_guard(capture_);
-    Info("connected to " + cfg_.host + ":" + std::to_string(cfg_.port));
+    log_.Info("connected to " + cfg_.host + ":" + std::to_string(cfg_.port));
 
     // Everything that defines a connection incarnation resets together: fresh
     // FIX sequence numbers (Deribit accepts a session restarting at 1 without
@@ -294,28 +282,28 @@ void FixClient::RunOneConnection() {
     subscribed_ = false;
     last_outbound_ns_ = MonotonicNowNs();
 
-    const auto path = capture_.BeginIncarnation("deribit fix " + symbols_text_ + " connected to " +
+    const auto path = capture_.BeginIncarnation("deribit fix " + JoinSymbols(cfg_.symbols) + " connected to " +
                                                     cfg_.host + ":" + std::to_string(cfg_.port),
                                                 kWireSource);
     if (!path) {
         // Same rule as Kraken: staying connected while unable to capture would
         // silently throw away the data this process exists to collect.
-        Error("cannot start capture: " + path.error());
+        log_.Error("cannot start capture: " + path.error());
         LatchFatal();
         return;
     }
-    Info("incarnation " + std::to_string(capture_.Incarnation()) + " started, journaling to " +
+    log_.Info("incarnation " + std::to_string(capture_.Incarnation()) + " started, journaling to " +
             path->string());
 
     const auto logon = session_.BuildLogon();
     if (!logon) {
-        Error(logon.error());
+        log_.Error(logon.error());
         return;
     }
     if (!SendAll(socket_fd.Get(), *logon)) {
         return;
     }
-    Info("sent Logon");
+    log_.Info("sent Logon");
 
     watchdog_.NoteActivity(MonotonicNowNs());
     std::string buffer(kReceiveBufferBytes, '\0');
@@ -341,17 +329,17 @@ void FixClient::RunOneConnection() {
                 if (watchdog_.IsStale(MonotonicNowNs())) {
                     forced_reconnects_.fetch_add(1, std::memory_order_relaxed);
                     watchdog_.Disarm();
-                    Warn("forcing reconnect: no inbound message in " +
+                    log_.Warn("forcing reconnect: no inbound message in " +
                             std::to_string(cfg_.staleness_timeout_ns / kNanosPerSecond) + "s");
                     return;
                 }
                 continue;
             }
-            Warn("recv failed: " + ErrnoText(errno));
+            log_.Warn("recv failed: " + ErrnoText(errno));
             return;
         }
         if (received == 0) {
-            Warn("deribit closed the connection");
+            log_.Warn("deribit closed the connection");
             return;
         }
 
@@ -366,20 +354,8 @@ void FixClient::RunOneConnection() {
         // Sent from this thread, not from stop(): the socket stays
         // single-threaded, which is the whole point of owning it here.
         SendAll(socket_fd.Get(), session_.BuildLogout("shutting down"));
-        Info("sent Logout");
+        log_.Info("sent Logout");
     }
-}
-
-void FixClient::Info(std::string_view message) const {
-    LogInfo("[" + cfg_.id + "] " + std::string(message));
-}
-
-void FixClient::Warn(std::string_view message) const {
-    LogWarn("[" + cfg_.id + "] " + std::string(message));
-}
-
-void FixClient::Error(std::string_view message) const {
-    LogError("[" + cfg_.id + "] " + std::string(message));
 }
 
 bool FixClient::DrainFramedMessages(int fd) {
@@ -390,7 +366,7 @@ bool FixClient::DrainFramedMessages(int fd) {
                 // Framing is sticky on purpose (fix_message.h): once alignment
                 // is lost every following byte is unaligned, and there is no
                 // resynchronisation to attempt.
-                Error("framing lost, dropping the connection: " + framer_.Error());
+                log_.Error("framing lost, dropping the connection: " + framer_.Error());
                 return false;
             }
             return true;
@@ -410,7 +386,7 @@ bool FixClient::DrainFramedMessages(int fd) {
             // A structurally delimited message that fails BodyLength/CheckSum
             // validation means the stream is not what it claims to be; the
             // answer is the same reconnect a gap gets.
-            Error("invalid message, dropping the connection: " + parsed.error());
+            log_.Error("invalid message, dropping the connection: " + parsed.error());
             return false;
         }
 
@@ -418,14 +394,14 @@ bool FixClient::DrainFramedMessages(int fd) {
         switch (decision.kind) {
             case InboundKind::kLogonAck:
                 logged_on_ = true;
-                Info("Logon accepted");
+                log_.Info("Logon accepted");
                 break;
             case InboundKind::kMarketDataSnapshot:
                 // One 35=W per requested symbol per (re)connect, so logging each
                 // is a per-symbol subscription check the way Kraken's per-symbol
                 // acks are.
                 snapshots_received_.fetch_add(1, std::memory_order_relaxed);
-                Info("received a " + std::string(ToString(decision.kind)) + " for " +
+                log_.Info("received a " + std::string(ToString(decision.kind)) + " for " +
                      std::string(parsed->Get(fix::tag::kSymbol).value_or("<no symbol>")));
                 break;
             case InboundKind::kMarketDataIncremental:
@@ -434,10 +410,10 @@ bool FixClient::DrainFramedMessages(int fd) {
             case InboundKind::kMarketDataRequestReject:
                 // Loud, for the same reason Kraken's rejected subscribe is: the
                 // session stays up and simply never delivers data.
-                Error("deribit rejected the MarketDataRequest: " + decision.detail);
+                log_.Error("deribit rejected the MarketDataRequest: " + decision.detail);
                 break;
             case InboundKind::kSessionReject:
-                Error("deribit rejected a session message: " + decision.detail);
+                log_.Error("deribit rejected a session message: " + decision.detail);
                 break;
             case InboundKind::kHeartbeat:
             case InboundKind::kTestRequest:
@@ -454,8 +430,8 @@ bool FixClient::DrainFramedMessages(int fd) {
                         return false;
                     }
                     subscribed_ = true;
-                    Info("sent MarketDataRequest for " + std::to_string(cfg_.symbols.size()) +
-                         " symbol(s): " + symbols_text_);
+                    log_.Info("sent MarketDataRequest for " + std::to_string(cfg_.symbols.size()) +
+                         " symbol(s): " + JoinSymbols(cfg_.symbols));
                 }
                 break;
             case InboundAction::kAnswerTestRequest:
@@ -464,7 +440,7 @@ bool FixClient::DrainFramedMessages(int fd) {
                 }
                 break;
             case InboundAction::kReconnect:
-                Warn("dropping the session (" + std::string(ToString(decision.kind)) +
+                log_.Warn("dropping the session (" + std::string(ToString(decision.kind)) +
                         "): " + decision.detail);
                 return false;
             case InboundAction::kNone:
@@ -479,10 +455,10 @@ bool FixClient::JournalMessage(std::string_view raw) {
     }
     const std::string_view reason = capture_.Error();
     if (reason.empty()) {
-        Error("dropped a message: no journal file open");
+        log_.Error("dropped a message: no journal file open");
         return false;
     }
-    Error("journal write failed: " + std::string(reason));
+    log_.Error("journal write failed: " + std::string(reason));
     LatchFatal();
     return false;
 }
@@ -580,7 +556,7 @@ std::expected<int, std::string> FixClient::ConnectSocket() {
         // Not fatal if the kernel refuses it -- it is a latency tweak, not a
         // correctness requirement.
         if (::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one)) != 0) {
-            Warn("cannot set TCP_NODELAY: " + ErrnoText(errno));
+            log_.Warn("cannot set TCP_NODELAY: " + ErrnoText(errno));
         }
 
         ::freeaddrinfo(resolved);
@@ -604,7 +580,7 @@ bool FixClient::SendAll(int fd, std::string_view bytes) {
             if (errno == EINTR) {
                 continue;
             }
-            Warn("send failed: " + ErrnoText(errno));
+            log_.Warn("send failed: " + ErrnoText(errno));
             return false;
         }
         sent += static_cast<std::size_t>(written);

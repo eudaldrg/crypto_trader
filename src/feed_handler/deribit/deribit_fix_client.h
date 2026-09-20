@@ -46,6 +46,7 @@
 #include "feed_handler/capture_session.h"
 #include "feed_handler/deribit/deribit_fix_session.h"
 #include "feed_handler/fix/fix_message.h"
+#include "feed_handler/logging.h"
 #include "feed_handler/staleness_watchdog.h"
 
 namespace feed_handler::deribit {
@@ -235,14 +236,10 @@ class FixClient {
     bool Stopping() const {
         return stopping_.load(std::memory_order_acquire);
     }
-    /// Log lines tagged with this connection's id.
-    void Info(std::string_view message) const;
-    void Warn(std::string_view message) const;
-    void Error(std::string_view message) const;
 
     FixClientConfig cfg_;
-    /// `cfg_.symbols` comma-joined, for the journal's incarnation marker.
-    std::string symbols_text_;
+    /// Every line tagged with `cfg_.id`.
+    TaggedLog log_;
     CaptureSession& capture_;
     FixSession session_;
     StalenessWatchdog watchdog_;
