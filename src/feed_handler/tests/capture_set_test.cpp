@@ -18,8 +18,7 @@
 namespace {
 
 using feed_handler::CaptureSet;
-using feed_handler::Credential;
-using feed_handler::config::Connection;
+using feed_handler::ResolvedConnection;
 using feed_handler::config::FeedHandlerConfig;
 using feed_handler::test_support::DeribitEntry;
 using feed_handler::test_support::kFakeCredential;
@@ -43,17 +42,15 @@ class CaptureSetTest : public ::testing::Test {
         std::filesystem::remove_all(dir_);
     }
 
-    /// The entries at `indices` of the parsed config, in the order given.
-    std::vector<Connection> Pick(std::initializer_list<std::size_t> indices) const {
-        std::vector<Connection> picked;
+    /// The entries at `indices` of the parsed config, in the order given, each
+    /// with a fake credential.
+    std::vector<ResolvedConnection> Pick(std::initializer_list<std::size_t> indices) const {
+        std::vector<ResolvedConnection> picked;
         for (const std::size_t index : indices) {
-            picked.push_back(config_.connections[index]);
+            picked.push_back(
+                {.connection = config_.connections[index], .credential = kFakeCredential});
         }
         return picked;
-    }
-
-    static std::vector<Credential> Credentials(std::size_t count) {
-        return std::vector<Credential>(count, kFakeCredential);
     }
 
     FeedHandlerConfig config_;
@@ -61,9 +58,7 @@ class CaptureSetTest : public ::testing::Test {
 };
 
 TEST_F(CaptureSetTest, BuildKeepsTheEntriesInTheOrderGiven) {
-    const auto connections = Pick({1, 0, 2});
-    const auto credentials = Credentials(connections.size());
-    const auto set = CaptureSet::Build(config_, connections, credentials);
+    const auto set = CaptureSet::Build(config_, Pick({1, 0, 2}));
     ASSERT_TRUE(set.has_value()) << set.error();
 
     ASSERT_EQ(set->Connections().size(), 3U);
@@ -72,33 +67,18 @@ TEST_F(CaptureSetTest, BuildKeepsTheEntriesInTheOrderGiven) {
     EXPECT_EQ(set->Connections()[2]->Id(), "deribit-b");
 }
 
-TEST_F(CaptureSetTest, ACountMismatchBetweenConnectionsAndCredentialsIsAnError) {
-    const auto connections = Pick({0, 1});
-    const auto credentials = Credentials(1);
-    const auto set = CaptureSet::Build(config_, connections, credentials);
-    ASSERT_FALSE(set.has_value());
-    EXPECT_NE(set.error().find("2 connections but 1 credentials"), std::string::npos)
-        << set.error();
-}
-
 TEST_F(CaptureSetTest, ARestClientExistsOnlyWhenAKrakenConnectionIsSelected) {
-    const auto deribit_only = Pick({1, 2});
-    const auto deribit_credentials = Credentials(deribit_only.size());
-    const auto without = CaptureSet::Build(config_, deribit_only, deribit_credentials);
+    const auto without = CaptureSet::Build(config_, Pick({1, 2}));
     ASSERT_TRUE(without.has_value()) << without.error();
     EXPECT_FALSE(without->HasRestClient());
 
-    const auto with_kraken = Pick({0, 1});
-    const auto kraken_credentials = Credentials(with_kraken.size());
-    const auto with = CaptureSet::Build(config_, with_kraken, kraken_credentials);
+    const auto with = CaptureSet::Build(config_, Pick({0, 1}));
     ASSERT_TRUE(with.has_value()) << with.error();
     EXPECT_TRUE(with->HasRestClient());
 }
 
 TEST_F(CaptureSetTest, BuildStartsNothingAndTouchesNoFilesystem) {
-    const auto connections = Pick({0, 1, 2});
-    const auto credentials = Credentials(connections.size());
-    const auto set = CaptureSet::Build(config_, connections, credentials);
+    const auto set = CaptureSet::Build(config_, Pick({0, 1, 2}));
     ASSERT_TRUE(set.has_value()) << set.error();
     EXPECT_FALSE(std::filesystem::exists(dir_));
 }
@@ -106,19 +86,15 @@ TEST_F(CaptureSetTest, BuildStartsNothingAndTouchesNoFilesystem) {
 TEST_F(CaptureSetTest, DestroyingASetThatWasNeverStartedIsClean) {
     // Kraken and Deribit both present: the connections that reference the
     // RestClient are destroyed before it.
-    const auto connections = Pick({0, 1, 2});
-    const auto credentials = Credentials(connections.size());
     {
-        auto set = CaptureSet::Build(config_, connections, credentials);
+        auto set = CaptureSet::Build(config_, Pick({0, 1, 2}));
         ASSERT_TRUE(set.has_value()) << set.error();
     }
     SUCCEED();
 }
 
 TEST_F(CaptureSetTest, ASetIsMovableAndTheMovedToSetOwnsTheConnections) {
-    const auto connections = Pick({0, 1});
-    const auto credentials = Credentials(connections.size());
-    auto built = CaptureSet::Build(config_, connections, credentials);
+    auto built = CaptureSet::Build(config_, Pick({0, 1}));
     ASSERT_TRUE(built.has_value()) << built.error();
 
     CaptureSet moved = std::move(*built);
@@ -128,9 +104,7 @@ TEST_F(CaptureSetTest, ASetIsMovableAndTheMovedToSetOwnsTheConnections) {
 
 TEST_F(CaptureSetTest, ADeribitOnlySetStartsRunsAndStopsWithoutHanging) {
     // Unreachable endpoints: each connection just retries in the background.
-    const auto connections = Pick({1, 2});
-    const auto credentials = Credentials(connections.size());
-    auto set = CaptureSet::Build(config_, connections, credentials);
+    auto set = CaptureSet::Build(config_, Pick({1, 2}));
     ASSERT_TRUE(set.has_value()) << set.error();
 
     set->StartAll();

@@ -15,10 +15,10 @@ EnvReader SystemEnv() {
     };
 }
 
-std::expected<std::vector<Credential>, std::string> ResolveCredentials(
+std::expected<std::vector<ResolvedConnection>, std::string> ResolveCredentials(
     std::span<const config::Connection> connections, const EnvReader& env) {
-    std::vector<Credential> credentials;
-    credentials.reserve(connections.size());
+    std::vector<ResolvedConnection> resolved;
+    resolved.reserve(connections.size());
     std::string missing;
 
     // Reads one variable into `out`; on failure records only its name.
@@ -37,12 +37,12 @@ std::expected<std::vector<Credential>, std::string> ResolveCredentials(
         Credential credential;
         read(connection, connection.api_key_env, credential.key);
         read(connection, connection.api_secret_env, credential.secret);
-        credentials.push_back(std::move(credential));
+        resolved.push_back({.connection = connection, .credential = std::move(credential)});
     }
     if (!missing.empty()) {
         return std::unexpected("missing or empty environment variable(s): " + missing);
     }
-    return credentials;
+    return resolved;
 }
 
 }  // namespace feed_handler

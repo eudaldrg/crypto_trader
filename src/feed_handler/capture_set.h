@@ -21,14 +21,13 @@ namespace feed_handler {
 
 class CaptureSet {
   public:
-    /// Builds one connection per entry of `connections`, in order, with
-    /// `credentials[i]` for `connections[i]` (the two spans must be the same
-    /// length). Starts nothing and touches no network. A RestClient is created
-    /// only if a Kraken connection is selected, with its nonce state file in
-    /// `config.state_dir`.
+    /// Builds one connection per entry of `connections`, in order, each with the
+    /// credential it was resolved with. Starts nothing and touches no network. A
+    /// RestClient is created only if a Kraken connection is selected, with its
+    /// nonce state file in `config.state_dir`. The credentials are moved into the
+    /// connections, so the set does not keep a second copy of a secret.
     static std::expected<CaptureSet, std::string> Build(
-        const config::FeedHandlerConfig& config, std::span<const config::Connection> connections,
-        std::span<const Credential> credentials);
+        const config::FeedHandlerConfig& config, std::vector<ResolvedConnection> connections);
 
     CaptureSet(CaptureSet&&) = default;
     CaptureSet& operator=(CaptureSet&&) = delete;
