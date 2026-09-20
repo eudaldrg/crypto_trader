@@ -10,7 +10,6 @@
 
 namespace {
 
-using feed_handler::Credential;
 using feed_handler::EnvReader;
 using feed_handler::ResolveCredentials;
 using feed_handler::config::Connection;
@@ -37,16 +36,18 @@ std::vector<Connection> Connections() {
     return MustParse(KrakenEntry("kraken-a") + DeribitEntry("deribit-a")).connections;
 }
 
-TEST(FeedHandlerCredentials, ReturnsOneCredentialPerConnectionInOrder) {
+TEST(FeedHandlerCredentials, ReturnsEachConnectionPairedWithItsCredentialInOrder) {
     const auto resolved = ResolveCredentials(
         Connections(),
         FakeEnv({{"K_KEY", "k1"}, {"K_SECRET", "k2"}, {"D_KEY", "d1"}, {"D_SECRET", "d2"}}));
     ASSERT_TRUE(resolved.has_value()) << resolved.error();
     ASSERT_EQ(resolved->size(), 2U);
-    EXPECT_EQ((*resolved)[0].key, "k1");
-    EXPECT_EQ((*resolved)[0].secret, "k2");
-    EXPECT_EQ((*resolved)[1].key, "d1");
-    EXPECT_EQ((*resolved)[1].secret, "d2");
+    EXPECT_EQ((*resolved)[0].connection.id, "kraken-a");
+    EXPECT_EQ((*resolved)[0].credential.key, "k1");
+    EXPECT_EQ((*resolved)[0].credential.secret, "k2");
+    EXPECT_EQ((*resolved)[1].connection.id, "deribit-a");
+    EXPECT_EQ((*resolved)[1].credential.key, "d1");
+    EXPECT_EQ((*resolved)[1].credential.secret, "d2");
 }
 
 TEST(FeedHandlerCredentials, AMissingVariableIsNamedWithItsConnectionId) {

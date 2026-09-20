@@ -32,13 +32,20 @@ struct Credential {
     std::string secret = {};
 };
 
-/// One Credential per connection, in order. A variable that is unset or empty
+/// A connection together with the credentials it named, so nothing downstream
+/// has to keep two parallel lists in step.
+struct ResolvedConnection {
+    config::Connection connection = {};
+    Credential credential = {};
+};
+
+/// One ResolvedConnection per connection, in order. A variable that is unset or empty
 /// is missing. The error names EVERY missing variable, tagged with its
 /// connection id, so one run shows the whole list; it never contains a value,
 /// including the values of the variables that were set. An entry is never
 /// skipped for lack of credentials: that would look healthy while capturing
 /// nothing.
-std::expected<std::vector<Credential>, std::string> ResolveCredentials(
+std::expected<std::vector<ResolvedConnection>, std::string> ResolveCredentials(
     std::span<const config::Connection> connections, const EnvReader& env);
 
 }  // namespace feed_handler

@@ -16,18 +16,10 @@ constexpr const char* kNonceStateFile = "kraken-nonce.state";
 }  // namespace
 
 std::expected<CaptureSet, std::string> CaptureSet::Build(
-    const config::FeedHandlerConfig& config, std::span<const config::Connection> connections,
-    std::span<const Credential> credentials) {
-    if (connections.size() != credentials.size()) {
-        return std::unexpected("internal error: " + std::to_string(connections.size()) +
-                               " connections but " + std::to_string(credentials.size()) +
-                               " credentials");
-    }
-
+    const config::FeedHandlerConfig& config, std::vector<ResolvedConnection> connections) {
     CaptureSet set;
-    set.entries_.assign(connections.begin(), connections.end());
-    for (std::size_t index = 0; index < connections.size(); ++index) {
-        const config::Connection& connection = connections[index];
+    for (ResolvedConnection& resolved : connections) {
+        const config::Connection& connection = resolved.connection;
         switch (connection.exchange) {
             case config::Exchange::kKraken:
                 if (set.rest_ == nullptr) {
@@ -42,14 +34,15 @@ std::expected<CaptureSet, std::string> CaptureSet::Build(
                         std::string(kraken::RestClient::kDefaultBaseUrl),
                         config.state_dir / kNonceStateFile);
                 }
-                set.connections_.push_back(
-                    kraken::MakeKrakenCapture(config, connection, credentials[index], *set.rest_));
+                set.connections_.push_back(kraken::MakeKrakenCapture(
+                    config, connection, std::move(resolved.credential), *set.rest_));
                 break;
             case config::Exchange::kDeribit:
-                set.connections_.push_back(
-                    deribit::MakeDeribitCapture(config, connection, credentials[index]));
+                set.connections_.push_back(deribit::MakeDeribitCapture(
+                    config, connection, std::move(resolved.credential)));
                 break;
         }
+        set.entries_.push_back(std::move(resolved.connection));
     }
     return set;
 }

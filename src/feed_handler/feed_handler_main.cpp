@@ -42,13 +42,13 @@ int main(int argc, char** argv) {
         return kExitStartupError;
     }
     // Every missing variable is reported by NAME at once; values never are.
-    const auto credentials = feed_handler::ResolveCredentials(*selected, feed_handler::SystemEnv());
-    if (!credentials) {
-        feed_handler::LogError(credentials.error());
+    auto resolved = feed_handler::ResolveCredentials(*selected, feed_handler::SystemEnv());
+    if (!resolved) {
+        feed_handler::LogError(resolved.error());
         return kExitStartupError;
     }
 
-    auto set = feed_handler::CaptureSet::Build(*config, *selected, *credentials);
+    auto set = feed_handler::CaptureSet::Build(*config, std::move(*resolved));
     if (!set) {
         feed_handler::LogError(set.error());
         return kExitStartupError;
