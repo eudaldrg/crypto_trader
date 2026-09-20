@@ -34,18 +34,20 @@
 #pragma once
 
 #include <atomic>
-#include <condition_variable>
 #include <cstdint>
 #include <expected>
-#include <mutex>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 #include "feed_handler/capture_session.h"
+#include "feed_handler/deribit/deribit_endpoints.h"
 #include "feed_handler/deribit/deribit_fix_session.h"
 #include "feed_handler/fix/fix_message.h"
+#include "feed_handler/logging.h"
 #include "feed_handler/staleness_watchdog.h"
+#include "feed_handler/stop_signal.h"
 
 namespace feed_handler::deribit {
 
@@ -119,10 +121,16 @@ std::uint64_t ReconnectDelayMs(std::uint64_t consecutive_failures, std::uint64_t
                                std::uint64_t max_ms);
 
 struct FixClientConfig {
-    /// Testnet. Plain TCP, no TLS (experiments/deribit_fix_probe.py).
-    std::string host = "fix-test.deribit.com";
-    std::uint16_t port = 9881;
-    std::string symbol = "BTC-PERPETUAL";
+    /// The connection's identity in log lines, so several connections in one
+    /// process can be told apart. The config's `id`.
+    std::string id = "deribit";
+    /// Plain TCP, no TLS (experiments/deribit_fix_probe.py). No default: the
+    /// config resolves the endpoint (deribit_endpoints.h has the testnet one), so
+    /// every site names it.
+    std::string host;
+    std::uint16_t port;
+    /// All requested in one MarketDataRequest on this one session.
+    std::vector<std::string> symbols = {"BTC-PERPETUAL"};
     std::string md_req_id = "ct-md-1";
     /// connect() is done non-blocking + poll() purely so a dead host cannot
     /// hold the thread for the kernel's own multi-minute SYN timeout.
@@ -143,7 +151,7 @@ struct FixClientConfig {
 /// Not copyable or movable: the thread captures `this`.
 class FixClient {
   public:
-    FixClient(SessionConfig session_cfg, CaptureSession& capture, FixClientConfig cfg = {});
+    FixClient(SessionConfig session_cfg, CaptureSession& capture, FixClientConfig cfg);
 
     FixClient(const FixClient&) = delete;
     FixClient& operator=(const FixClient&) = delete;
@@ -154,10 +162,18 @@ class FixClient {
     /// Starts the connection thread and returns immediately.
     void Start();
 
-    /// Requests shutdown and joins the thread. The thread sends a Logout on its
-    /// way out if it is still logged on -- sending it from the owning thread
-    /// rather than from here is what keeps the socket single-threaded.
-    /// Idempotent.
+    /// Asks the connection thread to stop, and returns without waiting. Only a
+    /// flag and a wakeup: the thread sends the Logout on its own way out, so the
+    /// socket stays single-threaded. Idempotent. A process with several
+    /// connections requests every stop first and only then joins, so shutdown
+    /// costs one receive timeout, not one per connection.
+    void RequestStop();
+
+    /// Waits for the connection thread to end, requesting the stop first if
+    /// nobody has. Idempotent.
+    void Join();
+
+    /// Permanent shutdown: RequestStop() then Join(). Idempotent.
     void Stop();
 
     /// True when capture cannot continue: a journal file could not be opened,
@@ -165,7 +181,7 @@ class FixClient {
     /// rather than stay connected while discarding the data it exists to
     /// collect.
     bool Fatal() const {
-        return fatal_.load(std::memory_order_acquire);
+        return stop_signal_.Fatal();
     }
 
     std::uint64_t MessagesReceived() const {
@@ -214,24 +230,10 @@ class FixClient {
     /// Writes the whole buffer, tolerating short writes and EINTR. Outbound
     /// only -- these bytes never reach the journal.
     bool SendAll(int fd, std::string_view bytes);
-    /// Returns true if shutdown was requested while waiting.
-    bool WaitForStop(std::uint64_t millis);
-    /// Latches the capture failure and wakes every waiter.
-    ///
-    /// The mutation is made under `stop_mutex_`, not just the notify: a waiter
-    /// evaluates the predicate under that mutex, and a flag flipped outside it
-    /// can land in the window between that evaluation and the wait registering
-    /// -- the notification is then delivered to nobody and the waiter sleeps out
-    /// its whole timeout (up to max_reconnect_wait_ms). The notify itself is
-    /// deliberately left outside the lock: by then the new state is already
-    /// published, so notifying after unlocking only saves the woken thread from
-    /// waking straight onto a mutex this thread still holds.
-    void LatchFatal();
-    bool Stopping() const {
-        return stopping_.load(std::memory_order_acquire);
-    }
 
     FixClientConfig cfg_;
+    /// Every line tagged with `cfg_.id`.
+    TaggedLog log_;
     CaptureSession& capture_;
     FixSession session_;
     StalenessWatchdog watchdog_;
@@ -243,11 +245,12 @@ class FixClient {
     std::uint64_t last_outbound_ns_ = 0;
 
     std::thread thread_;
-    std::mutex stop_mutex_;
-    std::condition_variable stop_cv_;
-    std::atomic<bool> stopping_{false};
+    /// The stop request and the fatal latch, with the wakeup every timed wait in
+    /// this client goes through (stop_signal.h).
+    StopSignal stop_signal_;
     std::atomic<bool> started_{false};
-    std::atomic<bool> fatal_{false};
+    /// Set by the first Join(), so a second one (or the destructor) is a no-op.
+    std::atomic<bool> joined_{false};
     std::atomic<std::uint64_t> messages_received_{0};
     std::atomic<std::uint64_t> snapshots_received_{0};
     std::atomic<std::uint64_t> incrementals_received_{0};

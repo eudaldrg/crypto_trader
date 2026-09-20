@@ -46,6 +46,7 @@
 #include "feed_handler/journal_reader.h"
 #include "feed_handler/message_sink.h"
 #include "feed_handler/tests/recording_sink.h"
+#include "feed_handler/tests/test_support.h"
 
 namespace {
 
@@ -608,7 +609,7 @@ class DeribitFixLoopback : public ::testing::Test {
         return FixClientConfig{
             .host = "127.0.0.1",
             .port = server_.Port(),
-            .symbol = "BTC-PERPETUAL",
+            .symbols = {"BTC-PERPETUAL"},
             .md_req_id = "ct-md-loopback",
             .connect_timeout_ms = kStepTimeoutMs,
             .recv_timeout_ms = kLoopbackRecvTimeoutMs,
@@ -824,8 +825,41 @@ TEST_F(DeribitFixLoopback, SendsItsScheduledHeartbeatWhileInboundDataKeepsFlowin
     client.Stop();
 }
 
+TEST_F(DeribitFixLoopback, RequestStopReturnsWithoutJoiningAndJoinThenCompletes) {
+    server_.StopListening();  // The thread sits in the reconnect backoff wait.
+    FixClientConfig cfg = LoopbackConfig();
+    cfg.min_reconnect_wait_ms = kStuckBackoffMs;
+    cfg.max_reconnect_wait_ms = kStuckBackoffMs;
+
+    CaptureSession capture({.directory = dir_, .exchange = "deribit"});
+    FixClient client(TestConfig(), capture, cfg);
+    client.Start();
+
+    const auto give_up =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(kStepTimeoutMs);
+    while (client.ConnectionAttempts() == 0 && std::chrono::steady_clock::now() < give_up) {
+        std::this_thread::yield();
+    }
+    ASSERT_GE(client.ConnectionAttempts(), 1U) << "the client never tried to connect";
+
+    const auto before = std::chrono::steady_clock::now();
+    client.RequestStop();
+    const auto request_ms = feed_handler::test_support::ElapsedSince(before).count();
+    EXPECT_LT(request_ms, kPromptStopMs) << "RequestStop() should not wait for the thread";
+
+    client.Join();
+    const auto joined_ms = feed_handler::test_support::ElapsedSince(before).count();
+    EXPECT_LT(joined_ms, kPromptStopMs)
+        << "Join() waited out the " << kStuckBackoffMs << "ms backoff instead of being woken";
+
+    // Every later call is harmless, and so is the destructor after them.
+    client.RequestStop();
+    client.Join();
+    client.Stop();
+}
+
 TEST_F(DeribitFixLoopback, StopsPromptlyWhileWaitingOutTheReconnectBackoff) {
-    // A notify_all() issued without holding stop_mutex_ can land in the window
+    // A notify issued without the StopSignal's mutex held can land in the window
     // between a waiter evaluating the predicate and its wait actually
     // registering, and the wakeup is then delivered to nobody. Not a deadlock --
     // the timeout still expires -- but shutdown then sleeps out the whole

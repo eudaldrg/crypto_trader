@@ -24,12 +24,12 @@
 
 namespace feed_handler {
 
-/// `<exchange>-<incarnation>-<UTC timestamp>.journal`, e.g.
+/// `<prefix>-<incarnation>-<UTC timestamp>.journal`, e.g.
 /// "kraken-000003-20260916T213000Z.journal". The incarnation comes first after
-/// the exchange so a directory listing sorts by connection order, and the
+/// the prefix so a directory listing sorts by connection order, and the
 /// timestamp keeps files from separate process runs (which both start
 /// counting incarnations at 1) from colliding.
-std::string JournalFileName(std::string_view exchange, std::uint64_t incarnation,
+std::string JournalFileName(std::string_view prefix, std::uint64_t incarnation,
                             std::uint64_t realtime_ns);
 
 /// Owns one journal file at a time and fans every captured frame out to it
@@ -46,8 +46,14 @@ class CaptureSession {
   public:
     struct Config {
         std::filesystem::path directory = "journal";
-        /// Short exchange tag; also the journal file name prefix.
+        /// Short exchange tag, written into every journal file's header and,
+        /// unless `file_prefix` says otherwise, used as the file name prefix.
         std::string exchange = "kraken";
+        /// Journal file name prefix; empty means `exchange`. A process running
+        /// several connections to one exchange gives each its own, so their
+        /// files cannot collide: every session counts incarnations from 1, and a
+        /// same-second start would share a name.
+        std::string file_prefix = {};
     };
 
     explicit CaptureSession(Config cfg) : cfg_(std::move(cfg)) {}

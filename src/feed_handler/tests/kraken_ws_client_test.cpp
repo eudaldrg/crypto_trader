@@ -26,12 +26,14 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "feed_handler/capture_session.h"
 #include "feed_handler/journal_format.h"
 #include "feed_handler/kraken/kraken_rest_client.h"
 #include "feed_handler/message_sink.h"
 #include "feed_handler/tests/recording_sink.h"
+#include "feed_handler/tests/test_support.h"
 
 namespace {
 
@@ -100,7 +102,8 @@ feed_handler::kraken::Credentials TestCredentials() {
 // cannot parse TEST macros that follow another definition inside one.
 
 TEST(KrakenSubscribeMessage, MatchesTheShapeKrakenDocuments) {
-    const std::string message = BuildSubscribeMessage("BTC/USD", "fake-token-not-a-credential");
+    const std::vector<std::string> symbols = {"BTC/USD"};
+    const std::string message = BuildSubscribeMessage(symbols, "fake-token-not-a-credential");
     EXPECT_EQ(message, R"({"method":"subscribe","params":{"channel":"level3","symbol":["BTC/USD"],)"
                        R"("snapshot":true,"token":"fake-token-not-a-credential"}})");
 }
@@ -108,15 +111,32 @@ TEST(KrakenSubscribeMessage, MatchesTheShapeKrakenDocuments) {
 TEST(KrakenSubscribeMessage, AsksForASnapshotBecauseThatIsTheRecoveryMechanism) {
     // exchanges/kraken.md: there is no resume-from-sequence-number request, so
     // every (re)subscribe has to ask for a fresh snapshot.
-    const std::string message = BuildSubscribeMessage("BTC/USD", "fake-token");
+    const std::vector<std::string> symbols = {"BTC/USD"};
+    const std::string message = BuildSubscribeMessage(symbols, "fake-token");
     EXPECT_NE(message.find(R"("snapshot":true)"), std::string::npos);
     // WS v2 spells bitcoin BTC, not REST's XBT.
     EXPECT_NE(message.find(R"("BTC/USD")"), std::string::npos);
 }
 
+TEST(KrakenSubscribeMessage, ListsEverySymbolInOneSubscribeInConfigOrder) {
+    // One socket, one subscribe: Kraken's `symbol` param is documented as an
+    // array, so several symbols cost one message rather than one each.
+    const std::vector<std::string> symbols = {"BTC/USD", "ETH/USD", "SOL/EUR"};
+    EXPECT_EQ(BuildSubscribeMessage(symbols, "fake-token"),
+              R"({"method":"subscribe","params":{"channel":"level3",)"
+              R"("symbol":["BTC/USD","ETH/USD","SOL/EUR"],"snapshot":true,"token":"fake-token"}})");
+}
+
 TEST(KrakenMessageClassification, RecognizesASuccessfulSubscribeAck) {
     const auto classified = ClassifyMessage(kSubscribeAck);
     EXPECT_EQ(classified.kind, MessageKind::kSubscribeAck);
+}
+
+TEST(KrakenMessageClassification, ASubscribeAckNamesTheSymbolItAcknowledges) {
+    // A multi-symbol subscribe is answered with one ack per symbol.
+    EXPECT_EQ(ClassifyMessage(kSubscribeAck).symbol, "BTC/USD");
+    EXPECT_TRUE(ClassifyMessage(kSubscribeError).symbol.empty());
+    EXPECT_TRUE(ClassifyMessage(R"({"method":"subscribe","success":true})").symbol.empty());
 }
 
 TEST(KrakenMessageClassification, RecognizesARejectedSubscribeAndKeepsTheReason) {
@@ -242,8 +262,34 @@ TEST_F(KrakenCapture, DoesNotEndTheProcessOverAMessageThatArrivedBeforeTheFirstI
     EXPECT_EQ(session.TotalRecordsWritten(), 0U);
 }
 
+TEST_F(KrakenCapture, RequestStopReturnsWithoutJoiningAndJoinThenCompletes) {
+    feed_handler::kraken::WsClientConfig cfg;
+    cfg.url = std::string(kUnreachableUrl);
+    cfg.watchdog_poll_ms = kLongWatchdogPollMs;
+    cfg.min_reconnect_wait_ms = 10;
+    cfg.max_reconnect_wait_ms = 50;
+
+    CaptureSession session({.directory = dir_, .exchange = "kraken"});
+    WsClient client(rest_, TestCredentials(), session, cfg);
+    client.Start();
+
+    const auto before = std::chrono::steady_clock::now();
+    client.RequestStop();
+    const auto request_ms = feed_handler::test_support::ElapsedSince(before).count();
+    EXPECT_LT(request_ms, kPromptStopMs) << "RequestStop() should not wait for the threads";
+
+    client.Join();
+    const auto joined_ms = feed_handler::test_support::ElapsedSince(before).count();
+    EXPECT_LT(joined_ms, kPromptStopMs) << "the watchdog waited out its poll interval";
+
+    // Every later call is harmless, and so is the destructor after them.
+    client.RequestStop();
+    client.Join();
+    client.Stop();
+}
+
 TEST_F(KrakenCapture, StopsPromptlyWhileTheWatchdogIsWaitingOutItsPollInterval) {
-    // A notify_all() issued without holding stop_mutex_ can land in the window
+    // A notify issued without the StopSignal's mutex held can land in the window
     // between the watchdog evaluating the predicate and its wait actually
     // registering, and the wakeup is then delivered to nobody -- shutdown
     // sleeps out the rest of the wait instead. A race cannot be hit on demand,

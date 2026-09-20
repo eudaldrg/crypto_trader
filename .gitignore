@@ -37,8 +37,8 @@ Thumbs.db
 *.env
 secrets.*
 
-# Captured market data journals (real exchange data, written by
-# kraken_feed_handler into ./journal by default — never commit these)
+# Captured market data journals (real exchange data, written by feed_handler
+# into the config's journal_dir, ./journal by default — never commit these)
 journal/
 *.journal
 
