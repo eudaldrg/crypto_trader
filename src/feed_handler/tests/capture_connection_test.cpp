@@ -4,7 +4,6 @@
 #include "feed_handler/capture_connection.h"
 
 #include <gtest/gtest.h>
-#include <unistd.h>
 
 #include <chrono>
 #include <filesystem>
@@ -16,51 +15,29 @@
 #include "feed_handler/deribit/deribit_capture.h"
 #include "feed_handler/kraken/kraken_capture.h"
 #include "feed_handler/kraken/kraken_rest_client.h"
+#include "feed_handler/tests/test_support.h"
 
 namespace {
 
 using feed_handler::CaptureConnection;
-using feed_handler::Credential;
 using feed_handler::config::FeedHandlerConfig;
+using feed_handler::test_support::DeribitEntry;
+using feed_handler::test_support::ElapsedSince;
+using feed_handler::test_support::kFakeCredential;
+using feed_handler::test_support::KrakenEntry;
+using feed_handler::test_support::MustParse;
+using feed_handler::test_support::UniqueTestDir;
 
 constexpr std::chrono::milliseconds kBound{3'000};
-
-/// Fake values, not credentials; the Kraken secret is base64 of "fake-secret".
-const Credential kFakeCredential{.key = "fake-key-not-a-credential", .secret = "ZmFrZS1zZWNyZXQ="};
 
 class CaptureConnections : public ::testing::Test {
   protected:
     void SetUp() override {
-        journal_dir_ =
-            std::filesystem::temp_directory_path() /
-            ("capture_connections_" +
-             std::string(::testing::UnitTest::GetInstance()->current_test_info()->name()) + "_" +
-             std::to_string(::getpid()));
-        std::filesystem::remove_all(journal_dir_);
-
-        const auto parsed =
-            feed_handler::config::ParseConfig("journal_dir = \"" + journal_dir_.string() + R"("
-
-[[connections]]
-id = "kraken-a"
-exchange = "kraken"
-env = "prod"
-symbols = ["BTC/USD"]
-endpoint = "ws://127.0.0.1:1"
-api_key_env = "K_KEY"
-api_secret_env = "K_SECRET"
-
-[[connections]]
-id = "deribit-a"
-exchange = "deribit"
-env = "testnet"
-symbols = ["BTC-PERPETUAL"]
-endpoint = "127.0.0.1:1"
-api_key_env = "D_KEY"
-api_secret_env = "D_SECRET"
-)");
-        ASSERT_TRUE(parsed.has_value()) << parsed.error();
-        config_ = *parsed;
+        journal_dir_ = UniqueTestDir("capture_connections");
+        config_ =
+            MustParse("journal_dir = \"" + journal_dir_.string() + "\"\n" +
+                      KrakenEntry("kraken-a", "BTC/USD", "endpoint = \"ws://127.0.0.1:1\"\n") +
+                      DeribitEntry("deribit-a", "BTC-PERPETUAL", "endpoint = \"127.0.0.1:1\"\n"));
     }
 
     void TearDown() override {
@@ -83,8 +60,7 @@ api_secret_env = "D_SECRET"
         connection.Start();
         connection.RequestStop();
         connection.Join();
-        return std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - before);
+        return ElapsedSince(before);
     }
 
     FeedHandlerConfig config_;

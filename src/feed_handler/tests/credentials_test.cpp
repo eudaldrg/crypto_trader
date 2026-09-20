@@ -6,13 +6,17 @@
 #include <string>
 #include <vector>
 
+#include "feed_handler/tests/test_support.h"
+
 namespace {
 
 using feed_handler::Credential;
 using feed_handler::EnvReader;
 using feed_handler::ResolveCredentials;
 using feed_handler::config::Connection;
-using feed_handler::config::ParseConfig;
+using feed_handler::test_support::DeribitEntry;
+using feed_handler::test_support::KrakenEntry;
+using feed_handler::test_support::MustParse;
 
 // Distinctive fakes, so a test can prove a value never reaches an error string.
 constexpr const char* kKrakenKeyValue = "fake-kraken-key-value-7f3a";
@@ -30,25 +34,7 @@ EnvReader FakeEnv(std::map<std::string, std::string> values) {
 }
 
 std::vector<Connection> Connections() {
-    const auto config = ParseConfig(R"(
-[[connections]]
-id = "kraken-a"
-exchange = "kraken"
-env = "prod"
-symbols = ["BTC/USD"]
-api_key_env = "K_KEY"
-api_secret_env = "K_SECRET"
-
-[[connections]]
-id = "deribit-a"
-exchange = "deribit"
-env = "testnet"
-symbols = ["BTC-PERPETUAL"]
-api_key_env = "D_KEY"
-api_secret_env = "D_SECRET"
-)");
-    EXPECT_TRUE(config.has_value());
-    return config->connections;
+    return MustParse(KrakenEntry("kraken-a") + DeribitEntry("deribit-a")).connections;
 }
 
 TEST(FeedHandlerCredentials, ReturnsOneCredentialPerConnectionInOrder) {
