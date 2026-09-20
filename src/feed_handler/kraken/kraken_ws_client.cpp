@@ -72,6 +72,7 @@ MessageClassification ClassifyMessage(std::string_view json) {
     std::string channel;
     std::string type;
     std::string error;
+    std::string result_symbol;
     bool has_method = false;
     bool success = false;
     bool has_success = false;
@@ -93,6 +94,14 @@ MessageClassification ClassifyMessage(std::string_view json) {
                 success = flag;
                 has_success = true;
             }
+        } else if (key == "result") {
+            // Only a subscribe ack has a `result` object with a symbol; anything
+            // else there is left unread, which on-demand simply skips.
+            simdjson::ondemand::object result;
+            if (field.value().get_object().get(result) == simdjson::SUCCESS &&
+                result["symbol"].get_string().get(text) == simdjson::SUCCESS) {
+                result_symbol.assign(text);
+            }
         } else if (key == "error") {
             if (field.value().get_string().get(text) == simdjson::SUCCESS) {
                 error.assign(text);
@@ -113,7 +122,8 @@ MessageClassification ClassifyMessage(std::string_view json) {
         if (!failed) {
             return {
                 .kind = method == "subscribe" ? MessageKind::kSubscribeAck : MessageKind::kUnknown,
-                .detail = method};
+                .detail = method,
+                .symbol = std::move(result_symbol)};
         }
         return {.kind = method == "subscribe" ? MessageKind::kSubscribeError
                                               : MessageKind::kMethodError,
@@ -123,19 +133,43 @@ MessageClassification ClassifyMessage(std::string_view json) {
     return {.kind = ClassifyChannel(channel, type), .detail = type};
 }
 
-std::string BuildSubscribeMessage(std::string_view symbol, std::string_view token) {
+std::string BuildSubscribeMessage(std::span<const std::string> symbols, std::string_view token) {
     // Hand-built rather than via a JSON writer: the payload is fixed shape and
-    // both interpolated values are constrained (a literal symbol and Kraken's
-    // own base64-ish token), so there is nothing here needing escaping.
+    // every interpolated value is constrained (config-validated symbols and
+    // Kraken's own base64-ish token), so there is nothing here needing
+    // escaping.
     std::string message;
-    message.reserve(160 + token.size());
-    message += R"({"method":"subscribe","params":{"channel":"level3","symbol":[")";
-    message += symbol;
-    message += R"("],"snapshot":true,"token":")";
+    message.reserve(160 + token.size() + symbols.size() * 16);
+    message += R"({"method":"subscribe","params":{"channel":"level3","symbol":[)";
+    for (std::size_t index = 0; index < symbols.size(); ++index) {
+        message += index == 0 ? "\"" : ",\"";
+        message += symbols[index];
+        message += '"';
+    }
+    message += R"(],"snapshot":true,"token":")";
     message += token;
     message += R"("}})";
     return message;
 }
+
+namespace {
+
+/// "BTC/USD" for one symbol, "3 symbols" for several: the connection id already
+/// says which entry this is, and a 200-symbol list would drown the log line.
+std::string DescribeSymbols(const std::vector<std::string>& symbols) {
+    return symbols.size() == 1 ? symbols.front() : std::to_string(symbols.size()) + " symbols";
+}
+
+std::string JoinSymbols(const std::vector<std::string>& symbols) {
+    std::string joined;
+    for (const std::string& symbol : symbols) {
+        joined += joined.empty() ? "" : ",";
+        joined += symbol;
+    }
+    return joined;
+}
+
+}  // namespace
 
 WsClient::WsClient(RestClient& rest, Credentials creds, CaptureSession& session, WsClientConfig cfg)
     : rest_(rest),
@@ -195,7 +229,7 @@ WsClient::~WsClient() {
 
 void WsClient::Start() {
     started_.store(true, std::memory_order_release);
-    LogInfo("connecting to " + cfg_.url + " for " + cfg_.symbol);
+    LogInfo("[" + cfg_.id + "] connecting to " + cfg_.url + " for " + DescribeSymbols(cfg_.symbols));
     watchdog_thread_ = std::thread([this] { RunWatchdog(); });
     ws_->start();
 }
@@ -237,7 +271,8 @@ void WsClient::HandleOpen() {
         return;
     }
     watchdog_.NoteActivity(MonotonicNowNs());
-    LogInfo("connected");
+    subscribe_acks_ = 0;
+    LogInfo("[" + cfg_.id + "] connected");
 
     const auto token = rest_.FetchWebsocketsToken(creds_);
     if (!token) {
@@ -250,7 +285,7 @@ void WsClient::HandleOpen() {
     // Outbound only: never stamped, never journaled. The token lives in the
     // message body, so journaling this would archive a live credential
     // (decisions/0004).
-    const auto sent = ws_->send(BuildSubscribeMessage(cfg_.symbol, token->token));
+    const auto sent = ws_->send(BuildSubscribeMessage(cfg_.symbols, token->token));
     if (!sent.success) {
         LogError("failed to send level3 subscribe");
         BackOffAfterSetupFailure();
@@ -259,7 +294,7 @@ void WsClient::HandleOpen() {
     }
 
     const auto path = session_.BeginIncarnation(
-        "kraken level3 " + cfg_.symbol + " connected to " + cfg_.url, kWireSource);
+        "kraken level3 " + JoinSymbols(cfg_.symbols) + " connected to " + cfg_.url, kWireSource);
     if (!path) {
         // Staying connected while unable to capture would silently throw away
         // the data this process exists to collect.
@@ -269,8 +304,8 @@ void WsClient::HandleOpen() {
     }
 
     consecutive_setup_failures_ = 0;
-    LogInfo("incarnation " + std::to_string(session_.Incarnation()) + " started, journaling to " +
-            path->string());
+    LogInfo("[" + cfg_.id + "] incarnation " + std::to_string(session_.Incarnation()) +
+            " started, journaling to " + path->string());
 }
 
 void WsClient::HandleMessage(const std::string& payload) {
@@ -301,18 +336,22 @@ void WsClient::HandleMessage(const std::string& payload) {
     const MessageClassification classified = ClassifyMessage(payload);
     switch (classified.kind) {
         case MessageKind::kSubscribeAck:
-            LogInfo("subscribed to level3 " + cfg_.symbol);
+            ++subscribe_acks_;
+            LogInfo("[" + cfg_.id + "] subscribed to level3 " +
+                    (classified.symbol.empty() ? DescribeSymbols(cfg_.symbols) : classified.symbol) +
+                    " (" + std::to_string(subscribe_acks_) + "/" +
+                    std::to_string(cfg_.symbols.size()) + ")");
             break;
         case MessageKind::kSubscribeError:
             // The connection stays open after a rejected subscribe and simply
             // never delivers data, so this has to be loud.
-            LogError("kraken rejected the level3 subscribe: " + classified.detail);
+            LogError("[" + cfg_.id + "] kraken rejected the level3 subscribe: " + classified.detail);
             break;
         case MessageKind::kMethodError:
-            LogError("kraken method error: " + classified.detail);
+            LogError("[" + cfg_.id + "] kraken method error: " + classified.detail);
             break;
         case MessageKind::kBookSnapshot:
-            LogInfo("received level3 snapshot");
+            LogInfo("[" + cfg_.id + "] received level3 snapshot");
             break;
         case MessageKind::kUnknown:
         case MessageKind::kHeartbeat:

@@ -19,9 +19,11 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 #include "feed_handler/capture_session.h"
 #include "feed_handler/kraken/kraken_rest_client.h"
@@ -65,23 +67,38 @@ struct MessageClassification {
     /// Exchange-supplied error/status text, for the log line. Inbound only, so
     /// it can never contain our token.
     std::string detail;
+    /// For a `kSubscribeAck`, the symbol it acknowledges. Kraken answers a
+    /// multi-symbol subscribe with one ack per symbol, so this is what tells a
+    /// fully subscribed connection from a partly subscribed one. Empty
+    /// otherwise, and when the ack does not carry one. Has a default
+    /// initializer so the designated-init sites that never set it stay valid
+    /// under -Wmissing-designated-field-initializers.
+    std::string symbol = {};
 };
 
 /// Minimal top-level classification of one inbound Kraken v2 message.
 /// Single pass over the top-level object; nothing inside `data` is touched.
 MessageClassification ClassifyMessage(std::string_view json);
 
-/// Builds the level3 subscribe payload (exchanges/kraken.md).
+/// Builds the level3 subscribe payload for `symbols` (exchanges/kraken.md).
+///
+/// The symbols are spliced in without JSON escaping, so they must already have
+/// passed the config layer's symbol check (feed_handler/config): no quote,
+/// backslash or control character can appear in one.
 ///
 /// The result carries a live credential in-body: it must never be journaled
 /// or logged. JournalWriter has no outbound path at all, which is what keeps
 /// that structural rather than a rule to remember.
-std::string BuildSubscribeMessage(std::string_view symbol, std::string_view token);
+std::string BuildSubscribeMessage(std::span<const std::string> symbols, std::string_view token);
 
 struct WsClientConfig {
     std::string url = "wss://ws-l3.kraken.com/v2";
-    /// WS v2 spells bitcoin "BTC", not REST's "XBT" (exchanges/kraken.md).
-    std::string symbol = "BTC/USD";
+    /// The connection's identity in log lines, so several connections in one
+    /// process can be told apart. The config's `id`.
+    std::string id = "kraken";
+    /// WS v2 spells bitcoin "BTC", not REST's "XBT" (exchanges/kraken.md). All
+    /// of them ride one subscribe on one socket, up to Kraken's cap of 200.
+    std::vector<std::string> symbols = {"BTC/USD"};
     /// WebSocket-level ping. IXWebSocket defaults this to -1 (off), so it is
     /// set deliberately; it is the transport half of liveness detection, with
     /// the staleness watchdog below as the independent application half.
@@ -195,9 +212,12 @@ class WsClient {
     std::atomic<bool> started_{false};
     std::atomic<std::uint64_t> messages_received_{0};
     std::atomic<std::uint64_t> forced_reconnects_{0};
-    /// Both touched only on the WebSocket thread.
+    /// All touched only on the WebSocket thread.
     unsigned consecutive_setup_failures_ = 0;
     std::uint64_t last_setup_ns_ = 0;
+    /// Subscribe acks seen on the current connection, against
+    /// `cfg_.symbols.size()` expected. Reset on every (re)connect.
+    std::size_t subscribe_acks_ = 0;
 };
 
 }  // namespace feed_handler::kraken
