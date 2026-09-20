@@ -124,15 +124,6 @@ int main(int argc, char** argv) {
         feed_handler::LogError("no kraken [[connections]] in " + config_path->string());
         return 1;
     }
-    if (std::ranges::any_of(connections, [](const feed_handler::config::Connection& connection) {
-            return connection.env != feed_handler::config::Environment::kProd;
-        })) {
-        // GetWebSocketsToken is a production REST call; there is no Kraken
-        // testnet REST endpoint to pair a non-prod websocket with.
-        feed_handler::LogError("kraken connections must have env = \"prod\"");
-        return 1;
-    }
-
     std::vector<feed_handler::kraken::Credentials> credentials;
     if (!ResolveCredentials(connections, credentials)) {
         return 1;
@@ -163,9 +154,8 @@ int main(int argc, char** argv) {
                                                  .file_prefix = connection.id});
         capture.client = std::make_unique<feed_handler::kraken::WsClient>(
             rest, std::move(credentials[index]), *capture.session,
-            feed_handler::kraken::WsClientConfig{.url = connection.endpoint,
-                                                 .id = connection.id,
-                                                 .symbols = connection.symbols});
+            feed_handler::kraken::WsClientConfig{
+                .url = connection.endpoint, .id = connection.id, .symbols = connection.symbols});
         captures.push_back(std::move(capture));
     }
     for (const Capture& capture : captures) {

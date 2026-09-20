@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "feed_handler/capture_session.h"
+#include "feed_handler/kraken/kraken_endpoints.h"
 #include "feed_handler/kraken/kraken_rest_client.h"
 #include "feed_handler/logging.h"
 #include "feed_handler/staleness_watchdog.h"
@@ -93,7 +94,7 @@ MessageClassification ClassifyMessage(std::string_view json);
 std::string BuildSubscribeMessage(std::span<const std::string> symbols, std::string_view token);
 
 struct WsClientConfig {
-    std::string url = "wss://ws-l3.kraken.com/v2";
+    std::string url = std::string(kDefaultWsUrl);
     /// The connection's identity in log lines, so several connections in one
     /// process can be told apart. The config's `id`.
     std::string id = "kraken";

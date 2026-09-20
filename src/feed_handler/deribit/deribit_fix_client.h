@@ -44,6 +44,7 @@
 #include <vector>
 
 #include "feed_handler/capture_session.h"
+#include "feed_handler/deribit/deribit_endpoints.h"
 #include "feed_handler/deribit/deribit_fix_session.h"
 #include "feed_handler/fix/fix_message.h"
 #include "feed_handler/logging.h"
@@ -125,8 +126,8 @@ struct FixClientConfig {
     /// process can be told apart. The config's `id`.
     std::string id = "deribit";
     /// Testnet. Plain TCP, no TLS (experiments/deribit_fix_probe.py).
-    std::string host = "fix-test.deribit.com";
-    std::uint16_t port = 9881;
+    std::string host = std::string(kTestnetHost);
+    std::uint16_t port = kFixPort;
     /// All requested in one MarketDataRequest on this one session.
     std::vector<std::string> symbols = {"BTC-PERPETUAL"};
     std::string md_req_id = "ct-md-1";
