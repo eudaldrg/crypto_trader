@@ -139,8 +139,18 @@ class WsClient {
     /// immediately; everything after this happens on those threads.
     void Start();
 
-    /// Permanent shutdown: stops the watchdog, closes the socket and joins
-    /// IXWebSocket's thread. Idempotent.
+    /// Asks the client to stop, and returns without waiting for anything.
+    /// Wakes the watchdog and asks IXWebSocket to close with automatic
+    /// reconnection off, so its thread winds down on its own. Idempotent. A
+    /// process with several connections requests every stop first and only then
+    /// joins, so shutdown costs one wind-down, not one per connection.
+    void RequestStop();
+
+    /// Waits for the client to finish stopping: requests the stop first if
+    /// nobody has, joins the watchdog thread and IXWebSocket's thread. Idempotent.
+    void Join();
+
+    /// Permanent shutdown: RequestStop() then Join(). Idempotent.
     void Stop();
 
     /// Handles one inbound Kraken wire message: journal it, then classify it.
@@ -214,6 +224,8 @@ class WsClient {
     std::atomic<bool> stopping_{false};
     std::atomic<bool> fatal_{false};
     std::atomic<bool> started_{false};
+    /// Set by the first Join(), so a second one (or the destructor) is a no-op.
+    std::atomic<bool> joined_{false};
     std::atomic<std::uint64_t> messages_received_{0};
     std::atomic<std::uint64_t> forced_reconnects_{0};
     /// All touched only on the WebSocket thread.

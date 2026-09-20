@@ -195,12 +195,12 @@ WsClient::WsClient(RestClient& rest, Credentials creds, CaptureSession& session,
                 watchdog_.Disarm();
                 session_.Close();
                 log_.Warn("websocket closed (code " + std::to_string(message->closeInfo.code) +
-                        "): " + message->closeInfo.reason);
+                          "): " + message->closeInfo.reason);
                 break;
             case ix::WebSocketMessageType::Error:
                 watchdog_.Disarm();
                 log_.Error("websocket error: " + message->errorInfo.reason + " (retry " +
-                         std::to_string(message->errorInfo.retries) + ")");
+                           std::to_string(message->errorInfo.retries) + ")");
                 break;
             case ix::WebSocketMessageType::Ping:
             case ix::WebSocketMessageType::Pong:
@@ -227,20 +227,36 @@ void WsClient::Start() {
     ws_->start();
 }
 
-void WsClient::Stop() {
+void WsClient::RequestStop() {
     {
         // Under the mutex for the same reason latch_fatal() is: the watchdog
         // thread checks this flag under it, and a store made outside it can be
         // lost in the gap between that check and the wait, which would leave
-        // shutdown waiting out a whole poll interval or backoff. The join stays
-        // outside the lock -- the thread it waits for needs this mutex to
-        // notice.
+        // shutdown waiting out a whole poll interval or backoff. Joining stays
+        // in Join(), outside the lock -- the thread it waits for needs this
+        // mutex to notice.
         const std::lock_guard<std::mutex> lock(stop_mutex_);
         if (stopping_.exchange(true, std::memory_order_acq_rel)) {
             return;
         }
     }
     stop_cv_.notify_all();
+    if (started_.load(std::memory_order_acquire)) {
+        // Reconnection off first, or the library's thread would treat this close
+        // like the watchdog's ForceReconnect() and set the connection up again.
+        // With it off, close() only sends the close frame and the thread ends
+        // its run loop once the handshake is done, so Join()'s stop() has
+        // little left to wait for.
+        ws_->disableAutomaticReconnection();
+        ws_->close();
+    }
+}
+
+void WsClient::Join() {
+    RequestStop();
+    if (joined_.exchange(true, std::memory_order_acq_rel)) {
+        return;
+    }
     if (watchdog_thread_.joinable()) {
         watchdog_thread_.join();
     }
@@ -249,6 +265,11 @@ void WsClient::Stop() {
         // permanent, so joining IXWebSocket's thread is exactly what we want.
         ws_->stop();
     }
+}
+
+void WsClient::Stop() {
+    RequestStop();
+    Join();
 }
 
 void WsClient::HandleOpen() {
@@ -298,7 +319,7 @@ void WsClient::HandleOpen() {
 
     consecutive_setup_failures_ = 0;
     log_.Info("incarnation " + std::to_string(session_.Incarnation()) + " started, journaling to " +
-         path->string());
+              path->string());
 }
 
 void WsClient::HandleMessage(const std::string& payload) {
@@ -330,10 +351,11 @@ void WsClient::HandleMessage(const std::string& payload) {
     switch (classified.kind) {
         case MessageKind::kSubscribeAck:
             ++subscribe_acks_;
-            log_.Info("subscribed to level3 " +
-                    (classified.symbol.empty() ? DescribeSymbols(cfg_.symbols) : classified.symbol) +
-                    " (" + std::to_string(subscribe_acks_) + "/" +
-                    std::to_string(cfg_.symbols.size()) + ")");
+            log_.Info(
+                "subscribed to level3 " +
+                (classified.symbol.empty() ? DescribeSymbols(cfg_.symbols) : classified.symbol) +
+                " (" + std::to_string(subscribe_acks_) + "/" + std::to_string(cfg_.symbols.size()) +
+                ")");
             break;
         case MessageKind::kSubscribeError:
             // The connection stays open after a rejected subscribe and simply
