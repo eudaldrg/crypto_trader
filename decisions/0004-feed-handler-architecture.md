@@ -646,6 +646,59 @@ of days of real data to design that against. Subscribe pacing (needed past about
 40 Kraken symbols at depth 10) and connection sharding (past 200) wait until the
 symbol count gets near either.
 
+### Single capture binary (2026-09-20)
+
+**One `feed_handler` binary replaces `kraken_feed_handler` and
+`deribit_feed_handler`.** The two mains were about 60% identical (config
+prelude, credential resolution, signal handling, poll loop, teardown), and
+merging them removes that duplication once instead of twice. One process is also
+where this ADR's threading model is heading: the epoll-per-thread-group end goal
+and the cross-feed consumers (a merged replay source, a strategy reading several
+books) both want the connections in one address space. The dated "as implemented"
+sections above that name the old binaries are left as the records they are.
+
+**Selection is by connection id.** `--only <id>[,...]` and `--exchange` narrow
+the config's entries, and an unknown id or an empty selection is an error. The
+config's unit is the connection, so "restart one shard" needs `--only`;
+`--exchange` is shorthand for a whole exchange.
+
+**`--exchange` is not a credential control, and an entry is never skipped for
+missing credentials.** Least privilege comes from the environment the process is
+started in (the capture launcher exports only one exchange's variables). The
+flag only stops the process asking for variables it will not have. Skipping an
+entry whose variables are unset was rejected: it looks healthy while capturing
+nothing. A missing variable is an error naming every one by name, never a value.
+
+**Any connection's fatal error stops all of them, with no option.** A journal
+that cannot be opened or written is usually a shared disk, and a flag nobody
+sets to false would be speculative. The accepted regression against two
+processes is that one connection's bad journal directory or id now stops the
+others; the log names the connection that latched. Exit codes are 0 clean, 1 a
+connection went fatal, 2 a startup error, so a supervisor can tell a bad
+invocation from a capture that died. A second signal during shutdown exits at
+once (130).
+
+**Stopping is split into `RequestStop()` and `Join()`.** The clients' blocking
+`Stop()` made N connections cost N wind-downs. Every stop is now requested first
+and only then joined. Kraken turns IXWebSocket's automatic reconnection off
+before closing, or its thread would treat the close as a forced reconnect;
+Deribit's request is only a flag and a wakeup, and its own thread still sends the
+Logout on the way out.
+
+**Startup order: non-Kraken connections, then the Kraken instrument lookup, then
+the Kraken connections.** The `AssetPairs` lookup is a blocking REST GET with no
+timeout and must not delay Deribit's capture; it cannot simply run after the
+Kraken connections start because it takes the same request mutex as their token
+fetches and reads the pair table unsynchronised. `CaptureSet` owns the shared
+`RestClient` ahead of the connections so it outlives every Kraken client by
+member order rather than by a comment in `main()`.
+
+The seam between the process and a connection is a small virtual
+`CaptureConnection` (start, request stop, join, fatal, id, summary). It is
+control plane, a handful of calls per process, so it does not conflict with
+ADR 0006's compile-time-polymorphism preference, which is about the per-message
+path.
+
 ## Consequences
 
 - Kraken-first, Deribit-second implementation order is intentional: it

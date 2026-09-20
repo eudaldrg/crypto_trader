@@ -15,17 +15,17 @@ profiling discipline — against real exchange data rather than a simulation.
 first vertical slice of the feed handler in `src/feed_handler/` — the
 `MessageSink` seam, the v1 capture journal (writer + reader), the Kraken REST
 auth / `AssetPairs` client, the Kraken `level3` WebSocket client, and the
-`kraken_feed_handler` binary that captures live market data to a journal
-(credentials from the environment, runs until SIGINT). Both capture binaries
-take `--config <path>`, a TOML file listing `[[connections]]`, one per socket
-and journal, each with its own symbols (`config/feed_handler.toml`,
-`docs/modules/feed-handler.md`). The second exchange backend is
+`feed_handler` binary that captures live market data to a journal. It takes
+`--config <path>`, a TOML file listing `[[connections]]`, one per socket and
+journal, each with its own symbols (`config/feed_handler.toml`,
+`docs/modules/feed-handler.md`), and runs every entry across both exchanges,
+optionally narrowed with `--exchange` and `--only`; credentials come from the
+environment and it runs until SIGINT. The second exchange backend is
 complete to the same depth: `src/feed_handler/fix/` (generic hand-rolled
-FIX.4.4 builder/parser/framer), `src/feed_handler/deribit/` (session
-mechanics plus a raw-POSIX-socket client on its own thread) and the
-`deribit_feed_handler` binary, which logs on to Deribit's FIX testnet
-(credentials from the environment), subscribes to the configured instruments
-and journals into the configured `journal_dir` until SIGINT. A golden
+FIX.4.4 builder/parser/framer) and `src/feed_handler/deribit/` (session
+mechanics plus a raw-POSIX-socket client on its own thread), which logs on to
+Deribit's FIX testnet, subscribes to the configured instruments and journals
+into the configured `journal_dir`. A golden
 (deliberately simple, `std::map`-based) order book also exists in
 `src/order_book/` — L1/L2/L3 granularity, no matching yet (see
 `decisions/0006`) — but it is not yet wired to the feed

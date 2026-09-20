@@ -150,8 +150,8 @@ Captured by `kraken_feed_handler` over a 45s `BTC/USD` `level3` session
 ## Multi-symbol subscribe (confirmed live 2026-09-20)
 
 `params.symbol` is an array, and one `subscribe` message carries all of them.
-Confirmed with `["BTC/USD", "ETH/USD"]` on the production feed (30 s, via
-`kraken_feed_handler --config`):
+Confirmed with `["BTC/USD", "ETH/USD"]` on the production feed (30 s, via the
+feed handler's `--config` mode):
 
 - **One method response per symbol**, each carrying that symbol in
   `result.symbol` (`{"method":"subscribe","result":{"channel":"level3",

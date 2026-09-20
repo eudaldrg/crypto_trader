@@ -11,21 +11,31 @@ and how to check one without ever printing what is in it.
 
 ```bash
 cmake --build build/release
-./build/release/bin/kraken_feed_handler  --config config/feed_handler.toml
-./build/release/bin/deribit_feed_handler --config config/feed_handler.toml
+./build/release/bin/feed_handler --config config/feed_handler.toml
+./build/release/bin/feed_handler --config config/feed_handler.toml --exchange kraken
+./build/release/bin/feed_handler --config config/feed_handler.toml --only kraken-btc-usd
 ```
 
-Each runs until SIGINT/SIGTERM and shuts down cleanly (journal flushed, Deribit
-logged out). `--config` is required. Copy `config/feed_handler.toml` and edit
-its `symbols` to change what is captured; the schema is in
-`docs/modules/feed-handler.md`.
+One binary runs every `[[connections]]` entry, across both exchanges, until
+SIGINT/SIGTERM, then shuts down cleanly (journals flushed, Deribit logged out).
+`--config` is required; `--exchange` and `--only` narrow the set, and a filter
+that matches nothing is an error. Exit codes: 0 clean, 1 a connection went
+fatal (the log names it), 2 a startup, config, selection or credential error. A
+second Ctrl-C during shutdown exits at once.
+
+Copy `config/feed_handler.toml` and edit its `symbols` to change what is
+captured; the schema is in `docs/modules/feed-handler.md`.
 
 The credentials the config names (`KRAKEN_API_KEY`, `KRAKEN_API_SECRET`,
 `DERIBIT_TESTNET_CLIENT_ID`, `DERIBIT_TESTNET_CLIENT_SECRET`) must be in the
-environment of the process. Do not `source` or print `experiments/.env` to get
-them there: use a small launcher that reads the file and `exec`s the binary
-with only that exchange's variables, and prints variable names, never values,
-when one is missing.
+environment of the process, for every entry that runs. A missing one is an
+error naming it, and no entry is ever skipped for lack of credentials. Do not
+`source` or print `experiments/.env` to get them there: use a small launcher
+that reads the file and `exec`s the binary with only that exchange's variables,
+and prints variable names, never values, when one is missing. To run one
+exchange under such a launcher, pass `--exchange` as well: the flag does not
+restrict credentials, the launcher's environment does, but without it the
+process would ask for the other exchange's variables and refuse to start.
 
 ## Where it goes
 

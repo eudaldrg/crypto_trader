@@ -6,22 +6,66 @@ decisions: [decisions/0001-feed-source-selection.md, decisions/0004-feed-handler
 
 # Feed handler
 
-The capture side of the pipeline: `kraken_feed_handler` and
-`deribit_feed_handler` connect to an exchange, subscribe to the configured
-symbols, and journal every inbound wire message verbatim. Which connections to
-open is a TOML file passed with `--config`; the design rationale is in
-`decisions/0004`, and this is what the file means and what to watch for.
+The capture side of the pipeline: one `feed_handler` binary connects to every
+configured exchange, subscribes to the configured symbols, and journals every
+inbound wire message verbatim. Which connections to open is a TOML file passed
+with `--config`; the design rationale is in `decisions/0004`, and this is what
+the file means and what to watch for.
 
 ## One connection, one socket, one journal
 
 Each `[[connections]]` entry is one socket, one subscribe and one journal file
-sequence. A binary opens every entry for its own exchange and ignores the rest,
-so one config file can drive both:
+sequence. The one binary runs every entry, across exchanges:
 
 ```
-kraken_feed_handler  --config config/feed_handler.toml
-deribit_feed_handler --config config/feed_handler.toml
+feed_handler --config config/feed_handler.toml
+feed_handler --config config/feed_handler.toml --exchange kraken
+feed_handler --config config/feed_handler.toml --only kraken-btc-usd,deribit-btc-perp
 ```
+
+`--exchange kraken|deribit` and `--only <id>[,<id>...]` (repeatable) narrow the
+set, and together they narrow it further. An unknown id, or a filter that leaves
+nothing, is an error rather than an empty capture.
+
+### Credentials and `--exchange`
+
+`--exchange` is **not** a credential control. Least privilege comes from the
+environment the process is started in (the capture launcher exports only one
+exchange's variables); the flag only stops the process asking for variables it
+will not have. Every selected entry needs its variables set, and a missing one
+is an error naming every missing variable by NAME, never by value. An entry is
+never skipped because its credentials are unset: that would look healthy while
+capturing nothing.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | clean shutdown after SIGINT/SIGTERM |
+| 1 | a connection went fatal (a journal file could not be opened or written) |
+| 2 | startup error: bad arguments, config, selection or credentials |
+
+A second SIGINT/SIGTERM during shutdown exits immediately with 130, so a slow
+multi-connection shutdown never swallows a second Ctrl-C.
+
+### Fatal stops everything
+
+Any connection's fatal error stops every connection, and the log names which
+one (`[<id>] capture failed, stopping every connection`). It is deliberate and
+has no option: the common cause is a shared disk. The cost is that one
+connection's bad journal directory or id now stops the others, which two
+separate processes would not have done.
+
+### Startup and shutdown order
+
+Startup: every non-Kraken connection starts first, then the Kraken instrument
+lookup (`AssetPairs`), then the Kraken connections. The lookup is a blocking
+REST GET with no timeout, so run first it would delay Deribit's capture behind a
+slow Kraken endpoint, and it cannot simply run after the Kraken connections
+start because it takes the same request mutex as their token fetches.
+
+Shutdown: a stop is requested on every connection first and only then are they
+joined, so N connections wind down together instead of one after another.
 
 The journal file is `<id>-<incarnation>-<UTC timestamp>.journal`. The id is in
 the name because two connections to one exchange would otherwise both write
@@ -42,7 +86,7 @@ binaries used to hardcode) and a test parses it, so it cannot rot.
 | `journal_dir`, `state_dir` | top level, optional | default `journal`, `state`, relative to the working directory |
 | `id` | connection | lowercase letters, digits, `_`, `-`, at most 48; names the journal files |
 | `exchange` | connection | `kraken` or `deribit` |
-| `env` | connection | `prod` or `testnet`, required so a connection never silently picks one |
+| `env` | connection | `prod` or `testnet` (Kraken: `prod` only), required so a connection never silently picks one |
 | `feed` | connection, optional | `level3` (Kraken) or `book` (Deribit): the only one each supports |
 | `symbols` | connection | non-empty, no duplicates, characters `A-Za-z0-9_-./` only |
 | `endpoint` | connection, optional | Kraken: a `ws(s)://` URL. Deribit: `host:port` |
@@ -60,11 +104,11 @@ SOH-delimited FIX field (Deribit). Loosening it means adding escaping first.
 ## Gotchas
 
 - **Endpoint defaults exist only where this project has connected**: Kraken
-  prod and Deribit testnet. Deribit prod and Kraken testnet require an explicit
-  `endpoint`; the Deribit production FIX host has not been verified here.
-- **Kraken connections must be `env = "prod"`**: the token call is a
-  production REST call and there is no Kraken testnet REST endpoint to pair a
-  different websocket with.
+  prod and Deribit testnet. Deribit prod requires an explicit `endpoint`; the
+  Deribit production FIX host has not been verified here.
+- **Kraken connections must be `env = "prod"`**, rejected when the config is
+  loaded: the token call is a production REST call and there is no Kraken
+  testnet REST endpoint to pair a different websocket with.
 - **Kraken: at most 200 symbols per connection** (validated), and the
   subscribe is one message. The subscribe cost is depth-weighted (5 per symbol
   at depth 10 against a 200/s budget, `decisions/0004`), so a burst past about
@@ -79,5 +123,5 @@ SOH-delimited FIX field (Deribit). Loosening it means adding escaping first.
 - **All Kraken connections share one `RestClient`**, deliberately: it owns the
   nonce high-water mark, and its token fetches are serialized by a mutex
   because the nonce source and HTTP client under it are single-threaded.
-- **Every log line carries `[<id>]`**, which is how connections in one process
-  are told apart.
+- **Every log line past config load carries `[<id>]`**, which is how connections
+  in one process are told apart.
