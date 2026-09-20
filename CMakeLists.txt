@@ -283,6 +283,7 @@ find_package(ZLIB REQUIRED)
 add_library(feed_handler STATIC
   src/feed_handler/capture_session.cpp
   src/feed_handler/config/feed_handler_config.cpp
+  src/feed_handler/credentials.cpp
   src/feed_handler/journal_format.cpp
   src/feed_handler/journal_reader.cpp
   src/feed_handler/journal_writer.cpp
@@ -328,6 +329,7 @@ if(BUILD_TESTING)
 
   add_project_test(feed_handler_tests
     src/feed_handler/tests/capture_session_test.cpp
+    src/feed_handler/tests/credentials_test.cpp
     src/feed_handler/tests/deribit_fix_client_test.cpp
     src/feed_handler/tests/deribit_fix_session_test.cpp
     src/feed_handler/tests/feed_handler_config_test.cpp
