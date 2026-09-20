@@ -49,18 +49,14 @@ class CaptureSession {
         /// Short exchange tag, written into every journal file's header and,
         /// unless `file_prefix` says otherwise, used as the file name prefix.
         std::string exchange = "kraken";
+        /// Journal file name prefix; empty means `exchange`. A process running
+        /// several connections to one exchange gives each its own, so their
+        /// files cannot collide: every session counts incarnations from 1, and a
+        /// same-second start would share a name.
+        std::string file_prefix = {};
     };
 
-    /// `file_prefix` names the journal files instead of `exchange` when it is
-    /// not empty. A process running several connections to one exchange gives
-    /// each its own, so their files cannot collide: every session counts
-    /// incarnations from 1, and a same-second start would share a name. It is
-    /// a parameter rather than a Config field because Config is built with
-    /// designated initializers, and -Wmissing-designated-field-initializers
-    /// would make every existing site spell out the new field.
-    explicit CaptureSession(Config cfg, std::string file_prefix = {})
-        : cfg_(std::move(cfg)),
-          file_prefix_(file_prefix.empty() ? cfg_.exchange : std::move(file_prefix)) {}
+    explicit CaptureSession(Config cfg) : cfg_(std::move(cfg)) {}
 
     /// Registers an additional sink to receive every frame this session
     /// captures, after the journal writer has taken it. NON-OWNING: `sink` must
@@ -123,7 +119,6 @@ class CaptureSession {
 
   private:
     Config cfg_;
-    std::string file_prefix_;
     std::unique_ptr<JournalWriter> writer_;
     /// Non-owning, in registration order. Expected to hold one or two entries,
     /// so a vector walk is the whole dispatch cost.
