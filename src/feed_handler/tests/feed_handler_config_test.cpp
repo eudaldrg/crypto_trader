@@ -2,13 +2,11 @@
 
 #include <gtest/gtest.h>
 
-#include <array>
 #include <filesystem>
 #include <string>
 
 namespace {
 
-using feed_handler::config::ConfigPathFromArgs;
 using feed_handler::config::Environment;
 using feed_handler::config::Exchange;
 using feed_handler::config::LoadConfigFile;
@@ -275,37 +273,6 @@ TEST(FeedHandlerConfig, TheCommittedDefaultConfigIsValid) {
     ASSERT_TRUE(config.has_value()) << config.error();
     EXPECT_EQ(config->ConnectionsFor(Exchange::kKraken).size(), 1U);
     EXPECT_EQ(config->ConnectionsFor(Exchange::kDeribit).size(), 1U);
-}
-
-TEST(FeedHandlerConfigArgs, AcceptsBothFlagSpellings) {
-    const std::array<const char*, 3> spaced = {"prog", "--config", "a.toml"};
-    const auto first = ConfigPathFromArgs(static_cast<int>(spaced.size()), spaced.data());
-    ASSERT_TRUE(first.has_value()) << first.error();
-    EXPECT_EQ(*first, "a.toml");
-
-    const std::array<const char*, 2> joined = {"prog", "--config=b.toml"};
-    const auto second = ConfigPathFromArgs(static_cast<int>(joined.size()), joined.data());
-    ASSERT_TRUE(second.has_value()) << second.error();
-    EXPECT_EQ(*second, "b.toml");
-}
-
-TEST(FeedHandlerConfigArgs, RejectsEverythingElseWithTheUsageLine) {
-    const std::array<const char*, 1> none = {"prog"};
-    const std::array<const char*, 2> dangling = {"prog", "--config"};
-    const std::array<const char*, 2> empty_value = {"prog", "--config="};
-    const std::array<const char*, 2> unknown = {"prog", "--verbose"};
-    const std::array<const char*, 5> twice = {"prog", "--config", "a", "--config", "b"};
-
-    const auto expect_usage = [](const auto& args) {
-        const auto path = ConfigPathFromArgs(static_cast<int>(args.size()), args.data());
-        ASSERT_FALSE(path.has_value());
-        EXPECT_EQ(path.error(), "usage: prog --config <path>");
-    };
-    expect_usage(none);
-    expect_usage(dangling);
-    expect_usage(empty_value);
-    expect_usage(unknown);
-    expect_usage(twice);
 }
 
 }  // namespace

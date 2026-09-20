@@ -15,7 +15,8 @@
 // capture nothing while looking healthy.
 //
 // Credentials are never in the file: `api_key_env`/`api_secret_env` name the
-// environment variables that hold them, and this module never reads those.
+// environment variables that hold them. This module never reads those;
+// feed_handler/credentials.h does, and it is the only code that does.
 #pragma once
 
 #include <cstdint>
@@ -85,19 +86,8 @@ std::expected<FeedHandlerConfig, std::string> ParseConfig(std::string_view toml_
 /// Reads and parses a file; the error names the path.
 std::expected<FeedHandlerConfig, std::string> LoadConfigFile(const std::filesystem::path& path);
 
-/// Extracts the path from `--config <path>` or `--config=<path>`. The flag is
-/// required: which connections to open is not something to guess from the
-/// working directory. On any other argument the error is the usage line.
-std::expected<std::filesystem::path, std::string> ConfigPathFromArgs(int argc,
-                                                                     const char* const* argv);
-
 /// Splits and validates a Deribit-style `host:port` endpoint: a hostname of
 /// letters, digits, `-` and `.`, and a port in 1..65535.
 std::expected<HostPort, std::string> ParseHostPort(std::string_view endpoint);
-
-/// Value of the environment variable `name`, or empty when unset. The one
-/// place credentials are read, so it is also the one place that must never log
-/// what it returns.
-std::string EnvOrEmpty(const std::string& name);
 
 }  // namespace feed_handler::config
