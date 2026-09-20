@@ -290,9 +290,11 @@ add_library(feed_handler STATIC
   src/feed_handler/logging.cpp
   src/feed_handler/message_sink.cpp
   src/feed_handler/selection.cpp
+  src/feed_handler/deribit/deribit_capture.cpp
   src/feed_handler/deribit/deribit_fix_client.cpp
   src/feed_handler/deribit/deribit_fix_session.cpp
   src/feed_handler/fix/fix_message.cpp
+  src/feed_handler/kraken/kraken_capture.cpp
   src/feed_handler/kraken/kraken_rest_client.cpp
   src/feed_handler/kraken/kraken_signing.cpp
   src/feed_handler/kraken/kraken_ws_client.cpp
@@ -328,6 +330,7 @@ if(BUILD_TESTING)
   target_link_libraries(dependency_smoke_test PRIVATE ixwebsocket::ixwebsocket simdjson::simdjson)
 
   add_project_test(feed_handler_tests
+    src/feed_handler/tests/capture_connection_test.cpp
     src/feed_handler/tests/capture_session_test.cpp
     src/feed_handler/tests/credentials_test.cpp
     src/feed_handler/tests/deribit_fix_client_test.cpp
