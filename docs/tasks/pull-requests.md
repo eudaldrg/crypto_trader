@@ -8,8 +8,36 @@ How to open, update and review a pull request in this repository, and the one
 `gh` failure that looks like success.
 
 Opening or merging a PR, and pushing, need the owner's explicit go-ahead each
-time; a yes to one does not carry over to the next. Branches are `feature/...`,
-PRs are squash-merged.
+time; a yes to one does not carry over to the next. Branches are `feature/...`
+and PRs target `dev`, where they are squash-merged. `dev` goes into `main` only
+for a release, as a merge commit, when the owner asks.
+
+One exception is configured, not assumed. `.claude/workflows.json` sets
+`git.askBeforePush` and `git.askBeforePR` to `false`, so a green
+`implement-plan` run pushes its branch and opens the PR into the branch it was
+cut from, in the same session. That is deliberate: coming back to a cold prompt
+cache just to type "open the PR" costs a full context. It never force-pushes and
+never merges, and it does nothing after a failed or incomplete run. Everything
+else here, including interactive sessions, still asks first.
+
+## Before opening a PR
+
+The push-time hook runs the full suite under ASan+UBSan and TSan
+(`decisions/0005`). It exists only after `pre-commit install --hook-type
+pre-push`, and a fresh clone has none, so a push can succeed without the suite
+having run. Check `ls .git/hooks/pre-push` before trusting it.
+
+Run the same hook without pushing:
+
+```bash
+pre-commit run --all-files --hook-stage pre-push
+```
+
+An `implement-plan` run does this itself: the `sanitizers` check in
+`.claude/workflows.json` has no `scopedCmd`, so it runs once at the end, before
+the push, and a finding fails the run in the session that has the context to fix
+it. An interactive session has no such check, so run the command above before
+asking to push.
 
 ## Updating a PR's title or body
 
@@ -32,12 +60,14 @@ newlines survive.
 
 ## Reviewing what a branch adds
 
-Compare against the merge-base with three dots, so commits that landed on
-`main` since the branch was cut do not show up as removals:
+Compare against the merge-base with three dots, so commits that landed on the
+base branch since the branch was cut do not show up as removals. The base is
+`dev` for a feature branch, and always the `origin/` ref: a local `dev` or
+`main` can lag the remote and inflate the diff with work that is already merged.
 
 ```bash
-git diff --stat origin/main...HEAD     # the whole branch, per file
-git log --stat origin/main..HEAD       # commit by commit
+git diff --stat origin/dev...HEAD     # the whole branch, per file
+git log --stat origin/dev..HEAD       # commit by commit
 ```
 
 `gh pr diff <n>` shows what is on GitHub, not local commits that are not
