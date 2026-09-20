@@ -151,7 +151,7 @@ struct FixClientConfig {
 /// Not copyable or movable: the thread captures `this`.
 class FixClient {
   public:
-    FixClient(SessionConfig session_cfg, CaptureSession& capture, FixClientConfig cfg = {});
+    FixClient(SessionConfig session_cfg, CaptureSession& capture, FixClientConfig cfg);
 
     FixClient(const FixClient&) = delete;
     FixClient& operator=(const FixClient&) = delete;

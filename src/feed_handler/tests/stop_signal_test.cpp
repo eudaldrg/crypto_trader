@@ -24,6 +24,18 @@ TEST(StopSignal, NothingIsSetUntilSomethingHappens) {
     EXPECT_FALSE(signal.Fatal());
 }
 
+TEST(StopSignal, StoppingIsTrueForEitherLatchButStopRequestedOnlyForAStop) {
+    StopSignal stopped;
+    EXPECT_FALSE(stopped.Stopping());
+    stopped.RequestStop();
+    EXPECT_TRUE(stopped.Stopping());
+
+    StopSignal failed;
+    failed.LatchFatal();
+    EXPECT_TRUE(failed.Stopping());
+    EXPECT_FALSE(failed.StopRequested());
+}
+
 TEST(StopSignal, OnlyTheFirstRequestReportsItMadeIt) {
     StopSignal signal;
     EXPECT_TRUE(signal.RequestStop());

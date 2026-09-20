@@ -61,12 +61,6 @@ bool IsValidEnvName(std::string_view name) {
     return std::ranges::all_of(name, [](char c) { return IsAsciiAlnum(c) || c == '_'; });
 }
 
-bool IsValidWebSocketUrl(std::string_view url) {
-    const bool scheme_ok = url.starts_with("wss://") || url.starts_with("ws://");
-    return scheme_ok && url.find_first_of(" \t\r\n\"\\") == std::string_view::npos &&
-           url.size() > std::string_view("wss://").size();
-}
-
 std::string Label(std::size_t index, std::string_view id) {
     std::string label = "connections[" + std::to_string(index) + "]";
     if (!id.empty()) {
@@ -360,6 +354,12 @@ std::string_view ToString(Environment env) {
             return "testnet";
     }
     return "unknown";
+}
+
+bool IsValidWebSocketUrl(std::string_view url) {
+    const bool scheme_ok = url.starts_with("wss://") || url.starts_with("ws://");
+    return scheme_ok && url.find_first_of(" \t\r\n\"\\") == std::string_view::npos &&
+           url.size() > std::string_view("wss://").size();
 }
 
 std::optional<Exchange> ExchangeFromString(std::string_view name) {
