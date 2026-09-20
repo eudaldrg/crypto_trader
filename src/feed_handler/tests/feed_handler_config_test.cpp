@@ -83,8 +83,7 @@ TEST(FeedHandlerConfig, ReadsExplicitDirectoriesAndEndpoints) {
     const auto config = ParseConfig(R"(
 journal_dir = "/data/journals"
 state_dir = "/data/state"
-)" + KrakenWith("env", R"(env = "testnet")") +
-                                    "endpoint = \"wss://beta.example.test/v2\"\n");
+)" + kKraken + "endpoint = \"wss://beta.example.test/v2\"\n");
     ASSERT_TRUE(config.has_value()) << config.error();
     EXPECT_EQ(config->journal_dir, "/data/journals");
     EXPECT_EQ(config->state_dir, "/data/state");
@@ -191,12 +190,40 @@ TEST(FeedHandlerConfig, ChecksTheFeedAgainstWhatTheExchangeSupports) {
 }
 
 TEST(FeedHandlerConfig, RequiresAnEndpointWhereNoDefaultHasBeenVerified) {
-    ExpectRejected(KrakenWith("env", R"(env = "testnet")"),
-                   "no default endpoint for kraken testnet");
     std::string deribit_prod = kDeribit;
     deribit_prod.replace(deribit_prod.find("testnet"), 7, "prod");
     ExpectRejected(deribit_prod, "no default endpoint for deribit prod");
     EXPECT_TRUE(ParseConfig(deribit_prod + "endpoint = \"www.example.test:9881\"\n").has_value());
+}
+
+TEST(FeedHandlerConfig, KrakenHasNoTestnetSoItIsRejectedAtParseTime) {
+    // Even with an explicit endpoint: the token call is a production REST call,
+    // so a non-prod Kraken entry could never connect.
+    const std::string testnet = KrakenWith("env", R"(env = "testnet")");
+    ExpectRejected(testnet, "kraken supports env = \"prod\" only");
+    ExpectRejected(testnet + "endpoint = \"wss://beta.example.test/v2\"\n",
+                   "kraken supports env = \"prod\" only");
+}
+
+TEST(FeedHandlerConfig, DeribitHostPortIsResolvedOnceOntoTheConnection) {
+    const auto defaulted = ParseConfig(kDeribit);
+    ASSERT_TRUE(defaulted.has_value()) << defaulted.error();
+    EXPECT_EQ(defaulted->connections[0].host_port.host, "fix-test.deribit.com");
+    EXPECT_EQ(defaulted->connections[0].host_port.port, 9881);
+
+    std::string prod = kDeribit;
+    prod.replace(prod.find("testnet"), 7, "prod");
+    const auto explicit_endpoint = ParseConfig(prod + "endpoint = \"www.example.test:9882\"\n");
+    ASSERT_TRUE(explicit_endpoint.has_value()) << explicit_endpoint.error();
+    EXPECT_EQ(explicit_endpoint->connections[0].endpoint, "www.example.test:9882");
+    EXPECT_EQ(explicit_endpoint->connections[0].host_port.host, "www.example.test");
+    EXPECT_EQ(explicit_endpoint->connections[0].host_port.port, 9882);
+
+    // Kraken carries no host and port.
+    const auto kraken = ParseConfig(kKraken);
+    ASSERT_TRUE(kraken.has_value()) << kraken.error();
+    EXPECT_TRUE(kraken->connections[0].host_port.host.empty());
+    EXPECT_EQ(kraken->connections[0].host_port.port, 0);
 }
 
 TEST(FeedHandlerConfig, ValidatesEndpointShape) {
@@ -216,7 +243,8 @@ TEST(FeedHandlerConfig, ParseHostPortSplitsAndBoundsThePort) {
 
     EXPECT_EQ(ParseHostPort("h:1")->port, 1);
     EXPECT_EQ(ParseHostPort("h:65535")->port, 65535);
-    for (const char* bad : {"h:0", "h:65536", "h:", ":1", "h", "h:1x", "h:-1", "h:123456", "a b:1"}) {
+    for (const char* bad :
+         {"h:0", "h:65536", "h:", ":1", "h", "h:1x", "h:-1", "h:+1", "h:123456", "a b:1"}) {
         EXPECT_FALSE(ParseHostPort(bad).has_value()) << bad;
     }
 }

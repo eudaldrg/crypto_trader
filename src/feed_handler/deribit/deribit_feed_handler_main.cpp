@@ -92,12 +92,6 @@ int main(int argc, char** argv) {
     captures.reserve(connections.size());
     for (std::size_t index = 0; index < connections.size(); ++index) {
         const auto& connection = connections[index];
-        // Validated as host:port when the config was loaded.
-        const auto endpoint = feed_handler::config::ParseHostPort(connection.endpoint);
-        if (!endpoint) {
-            feed_handler::LogError("[" + connection.id + "] " + endpoint.error());
-            return 1;
-        }
         Capture capture;
         capture.session = std::make_unique<feed_handler::CaptureSession>(
             feed_handler::CaptureSession::Config{.directory = config->journal_dir,
@@ -106,8 +100,8 @@ int main(int argc, char** argv) {
         capture.client = std::make_unique<feed_handler::deribit::FixClient>(
             std::move(sessions[index]), *capture.session,
             feed_handler::deribit::FixClientConfig{.id = connection.id,
-                                                   .host = endpoint->host,
-                                                   .port = endpoint->port,
+                                                   .host = connection.host_port.host,
+                                                   .port = connection.host_port.port,
                                                    .symbols = connection.symbols});
         captures.push_back(std::move(capture));
     }

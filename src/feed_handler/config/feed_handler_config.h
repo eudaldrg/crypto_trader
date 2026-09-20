@@ -40,9 +40,10 @@ enum class Environment : std::uint8_t {
 std::string_view ToString(Exchange exchange);
 std::string_view ToString(Environment env);
 
-/// Kraken refuses more than this many symbols on one WebSocket connection
-/// (docs.kraken.com, confirmed in the capture-scope notes of decisions/0004).
-inline constexpr std::size_t kKrakenMaxSymbolsPerConnection = 200;
+struct HostPort {
+    std::string host;
+    std::uint16_t port = 0;
+};
 
 /// One connection, fully resolved: every default has been applied, so a
 /// consumer never needs to know which keys the file actually spelled out.
@@ -57,6 +58,9 @@ struct Connection {
     std::vector<std::string> symbols;
     /// Kraken: a `ws://` or `wss://` URL. Deribit: `host:port`.
     std::string endpoint;
+    /// Deribit only: `endpoint` already split and validated, so nothing has to
+    /// parse it again. Empty host and port 0 for Kraken.
+    HostPort host_port = {};
     /// Names of the environment variables holding the credentials, never the
     /// credentials themselves.
     std::string api_key_env;
@@ -86,11 +90,6 @@ std::expected<FeedHandlerConfig, std::string> LoadConfigFile(const std::filesyst
 /// working directory. On any other argument the error is the usage line.
 std::expected<std::filesystem::path, std::string> ConfigPathFromArgs(int argc,
                                                                      const char* const* argv);
-
-struct HostPort {
-    std::string host;
-    std::uint16_t port = 0;
-};
 
 /// Splits and validates a Deribit-style `host:port` endpoint: a hostname of
 /// letters, digits, `-` and `.`, and a port in 1..65535.
