@@ -288,6 +288,7 @@ add_library(feed_handler STATIC
   src/feed_handler/journal_writer.cpp
   src/feed_handler/logging.cpp
   src/feed_handler/message_sink.cpp
+  src/feed_handler/selection.cpp
   src/feed_handler/deribit/deribit_fix_client.cpp
   src/feed_handler/deribit/deribit_fix_session.cpp
   src/feed_handler/fix/fix_message.cpp
@@ -334,6 +335,7 @@ if(BUILD_TESTING)
     src/feed_handler/tests/journal_test.cpp
     src/feed_handler/tests/kraken_rest_client_test.cpp
     src/feed_handler/tests/kraken_ws_client_test.cpp
+    src/feed_handler/tests/selection_test.cpp
     src/feed_handler/tests/staleness_watchdog_test.cpp
   )
   target_link_libraries(feed_handler_tests PRIVATE feed_handler)
