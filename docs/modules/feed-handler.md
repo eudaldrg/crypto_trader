@@ -126,3 +126,29 @@ SOH-delimited FIX field (Deribit). Loosening it means adding escaping first.
   because the nonce source and HTTP client under it are single-threaded.
 - **Every log line past config load carries `[<id>]`**, which is how connections
   in one process are told apart.
+
+## Adding an exchange
+
+Everything exchange-specific is one enumerator, one data row and one small class;
+nothing else names an exchange:
+
+1. `config::Exchange` gains an enumerator, added to `kAllExchanges` and to the
+   switch in `TraitsOf` (the compiler checks the switch). The name, the
+   `--exchange` flag, the usage line and the config error text all follow.
+2. `<exchange>/<exchange>_endpoints.h` defines an `ExchangeTraits` row: the name,
+   the feed, the symbol cap, whether a testnet exists, how an endpoint is
+   validated and which defaults have actually been connected to. The config
+   validator reads the row; a test checks each row against its own rules.
+3. A client with `Start()`, `RequestStop()`, `Join()` and `Fatal()` that journals
+   through a `CaptureSession`. Its timed waits go through `StopSignal`
+   (`stop_signal.h`), which owns the wakeup that ends them on a stop or a fatal
+   error.
+4. `<exchange>/<exchange>_capture.{h,cpp}`: a class deriving from
+   `ClientCapture<Client>` that says how to build the client and what its
+   `Summary()` reports, and a `Make<Exchange>Capture` factory. `ClientCapture`
+   owns the shared teardown contract.
+5. One `case` in `CaptureSet::Build`, plus a step in `StartAll` only if the
+   exchange needs something done before its connections start.
+
+Credentials need nothing: a config entry names its variables and
+`ResolveCredentials` reads them for any exchange.
