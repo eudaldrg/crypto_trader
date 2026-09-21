@@ -4,8 +4,9 @@ aliases: [capture, run capture, record, journal a session]
 
 # Running a capture
 
-How to record a live session to a journal with the two feed-handler binaries,
-and how to check one without ever printing what is in it.
+How to record a live session to a journal with the `feed_handler` binary (with
+order books optionally running alongside), and how to check one without ever
+printing what is in it.
 
 ## Run
 
@@ -37,6 +38,18 @@ exchange under such a launcher, pass `--exchange` as well: the flag does not
 restrict credentials, the launcher's environment does, but without it the
 process would ask for the other exchange's variables and refuse to start.
 
+## Order books (optional)
+
+`order_books = true` in the config also builds live books from the same frames, on
+one extra thread; the default is off and the journals are identical either way. To
+turn it on, the config also needs each Kraken connection's `depth` (default 10) and
+each Deribit connection's `price_decimals` and `quantity_decimals`, or the process
+refuses to start with exit code 2 naming what is missing. Books never fail a capture:
+a Kraken symbol that the `AssetPairs` lookup does not know is captured without
+books, and the log says `order books off for this connection, capture continues
+without them`. Look for `order books on` per connection to confirm they are running.
+Keys and behavior are in `docs/modules/feed-handler.md`.
+
 ## Where it goes
 
 Journals go to the config's `journal_dir`, state (Kraken's nonce mark) to
@@ -56,11 +69,19 @@ grep -a -o '"type":"snapshot"' <file> | wc -l          # Kraken: one per symbol 
 grep -a -o '55=BTC-PERPETUAL' <file> | wc -l           # Deribit: records mentioning a symbol
 ```
 
-The run's own log is the first check: Kraken prints `subscribed to level3 SYM
+The run's own log is the first check. At exit it prints one summary line per
+connection (`captured N messages across N connect(s), N journal records, ...`) and,
+with books on, one `books:` line per connection. A healthy books line has `0 dropped`,
+`0 parse errors`, `0 apply errors` and `integrity issues: none`; anything else means a
+book desynced, and it stays so until that connection reconnects. A journal failure
+(`journal failed: ...`) ends the capture with exit code 1. Kraken prints `subscribed to level3 SYM
 (k/N)` per symbol and Deribit `received a MarketDataSnapshotFullRefresh for
 SYM`. A symbol missing from those lines is a partial capture that no error
-reports. `kraken_journal_dump` (`docs/modules/order-book.md`) replays a Kraken
-journal through the real book and reports checksum mismatches.
+reports. `journal_replay` (`docs/modules/order-book.md`) replays a journal, of either exchange,
+through the real books and reports counts and integrity issues, so a capture can be
+checked after the fact whether or not books ran live; it takes the instrument's
+decimals as flags. `kraken_journal_dump` replays one Kraken symbol and reports
+checksum mismatches.
 
 ## Sizing
 

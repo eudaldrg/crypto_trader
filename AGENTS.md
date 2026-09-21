@@ -25,11 +25,16 @@ complete to the same depth: `src/feed_handler/fix/` (generic hand-rolled
 FIX.4.4 builder/parser/framer) and `src/feed_handler/deribit/` (session
 mechanics plus a raw-POSIX-socket client on its own thread), which logs on to
 Deribit's FIX testnet, subscribes to the configured instruments and journals
-into the configured `journal_dir`. A golden
+into the configured `journal_dir`. Each connection journals on its own
+thread behind an SPSC ring, so no connection thread touches the disk
+(`decisions/0004`). A golden
 (deliberately simple, `std::map`-based) order book also exists in
-`src/order_book/` — L1/L2/L3 granularity, no matching yet (see
-`decisions/0006`) — but it is not yet wired to the feed
-handler's journal/`MessageSink` output (issue #14); that integration, the fast
+`src/order_book/` (L1/L2/L3 granularity, no matching yet, see
+`decisions/0006`), and `src/book_adapter/` wires it to both exchanges' feeds:
+live in the capture binary behind `order_books = true` (default off), on one
+book thread fed by a ring per connection, and offline through the
+`journal_replay` tool, which replays a captured journal through the same adapter
+for profiling (`decisions/0008`, `docs/modules/order-book.md`). The fast
 exchange-specific books, the matching engine, and strategy code all remain
 unwritten. `decisions/` holds the locked-in ADRs; the rest of the design is
 intentionally unspecified and will be worked out in future sessions — don't
@@ -80,7 +85,9 @@ format. See `exchanges/README.md` for the index.
   versioned, one file per exchange+connect_id — not per symbol);
   the threading model (epoll-per-thread-group is the end-goal, but
   IXWebSocket owning its own fd/thread keeps Kraken a standalone exception
-  until it's replaced) and where the future SPSC fan-in seam goes; and the
+  until it's replaced) and the journal thread behind a bounded SPSC ring (ring
+  overflow or a write failure is fatal, `Close()` is a barrier), plus what
+  `connect_id` (formerly "incarnation") means; and the
   per-exchange snapshot/recovery/gap-handling recap (detailed wire facts
   live in `exchanges/`, not here); and the TOML config format plus the initial
   capture scope (5-10 symbols per exchange, with measured byte rates).
@@ -103,11 +110,20 @@ format. See `exchanges/README.md` for the index.
   Deribit `book.raw` replay (`src/order_book/tests/`) that caught and fixed
   a wire-shape assumption this ADR's first draft got wrong, and a Kraken
   `level3` checksum verified against Kraken's own documented worked
-  example, not guessed from the field's existence alone.
+  example, not guessed from the field's existence alone. It also records why
+  FIX-fed L2 has its own sequence-free policy instead of a synthesized
+  `change_id`.
 - `decisions/0007-fuzzing.md` — libFuzzer coverage-guided fuzzing, piloted on
   the FIX `Framer` + `ParseMessage` pipeline (`ENABLE_FUZZER`,
   `src/feed_handler/fix/fuzz/`); why it is a raw `add_executable` and not part
   of the pre-push gate; Kraken `level3` and the journal reader are deferred.
+- `decisions/0008-book-adapter-and-event-rings.md`: why the book adapter is
+  its own library (`src/book_adapter/`) that `order_book` and `feed_handler` do
+  not depend on; one single-threaded adapter driven inline by journal replay and
+  behind a per-connection ring by the live book thread; the drop and desync
+  policy (never block, never fail a capture, stay desynced until the next
+  `connect_id`); stale-on-disconnect semantics; `order_books` default off with
+  its `depth`/decimals keys; order-id interning deferred; and the follow-ups.
 
 ## Commands
 

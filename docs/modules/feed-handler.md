@@ -1,16 +1,17 @@
 ---
-aliases: [feed handler, feed-handler, capture, config, connections]
-sources: [src/feed_handler/**, config/**]
-decisions: [decisions/0001-feed-source-selection.md, decisions/0004-feed-handler-architecture.md]
+aliases: [feed handler, feed-handler, capture, config, connections, journal thread, order_books]
+sources: [src/feed_handler/**, config/**, src/book_adapter/book_service.*, src/book_adapter/book_wiring.*, src/book_adapter/ring_sink.h]
+decisions: [decisions/0001-feed-source-selection.md, decisions/0004-feed-handler-architecture.md, decisions/0008-book-adapter-and-event-rings.md]
 ---
 
 # Feed handler
 
 The capture side of the pipeline: one `feed_handler` binary connects to every
 configured exchange, subscribes to the configured symbols, and journals every
-inbound wire message verbatim. Which connections to open is a TOML file passed
-with `--config`; the design rationale is in `decisions/0004`, and this is what
-the file means and what to watch for.
+inbound wire message verbatim, and, with `order_books = true`, also feeds them into
+live order books. Which connections to open is a TOML file passed with
+`--config`; the design rationale is in `decisions/0004` (and `decisions/0008` for
+the books), and this is what the file means and what to watch for.
 
 ## One connection, one socket, one journal
 
@@ -42,8 +43,8 @@ capturing nothing.
 | Code | Meaning |
 |---|---|
 | 0 | clean shutdown after SIGINT/SIGTERM |
-| 1 | a connection went fatal (a journal file could not be opened or written) |
-| 2 | startup error: bad arguments, config, selection or credentials |
+| 1 | a connection went fatal (a journal file could not be opened or written, or the journal ring overflowed) |
+| 2 | startup error: bad arguments, config, selection or credentials, or `order_books` on with a Deribit connection that has no decimals |
 
 A second SIGINT/SIGTERM during shutdown exits immediately with 130, so a slow
 multi-connection shutdown never swallows a second Ctrl-C.
@@ -66,7 +67,10 @@ simply run after the Kraken connections start because it takes the same request
 mutex as their token fetches.
 
 Shutdown: a stop is requested on every connection first and only then are they
-joined, so N connections wind down together instead of one after another.
+joined, so N connections wind down together instead of one after another. Joining
+a connection also closes its journal, which waits for the journal thread to drain
+the file. Only after every connection is joined do the books stop (below), so
+nothing is still producing while their rings drain.
 
 The journal file is `<id>-<connect_id>-<UTC timestamp>.journal`. The id is in
 the name because two connections to one exchange would otherwise both write
@@ -93,6 +97,85 @@ book must reset.
   the UTC timestamp.
 - It is not journal rotation. A file is never rotated for size or age; a new
   file happens only because a new connection was established.
+- Sinks are told both ends: `OnConnect(connect_id, reason)` once the new file is
+  usable and `OnDisconnect(connect_id)` once per connect, after its file is closed
+  (`decisions/0004`). A book goes stale on the disconnect, not at the next connect.
+
+## Threads and the journal
+
+A connection's own thread (IXWebSocket's for Kraken, the client's for Deribit) does
+no disk I/O and no parsing. In a running capture there are three kinds of thread:
+
+| Thread | Count | Does |
+|---|---|---|
+| connection | one per `[[connections]]` entry | receives, stamps each frame once, copies it into the journal ring (and into the book ring when books are on) and returns |
+| journal | one per connection | drains that connection's journal ring into its file |
+| book | one for the process, only if `order_books` and at least one connection got books | polls every connection's book ring round-robin, parses and applies |
+
+- **A full journal ring or a failed write is fatal**, through a fatal handler each
+  client registers on its `CaptureSession`: it logs `journal failed: <reason>` and
+  stops every connection, exit code 1. The ring is 65,536 events by default
+  (`CaptureSession::Config::journal_ring_events`; no TOML key), sized for seconds
+  of traffic. A journal write error is therefore reported asynchronously, by the
+  handler, and not by the send path.
+- **Closing a file is a barrier**: when a connection is joined or its socket is
+  lost, the file is complete and readable once that returns.
+- **Opening a file is synchronous.** A journal directory that cannot be created, or
+  a header that cannot be written, fails the connect immediately and is fatal.
+- The connection thread makes one heap allocation and one payload copy per frame
+  per ring. That is accepted for now; `journal_replay` (`docs/modules/order-book.md`)
+  is how to measure it.
+- A test that needs a ring to overflow leaves the consumer unstarted
+  (`Config::journal_start = false`) rather than racing it; see
+  `docs/tasks/testing.md`.
+
+## Order books
+
+`order_books = true` (top level, default `false`) runs the golden books off the live
+captures. It is off by default because a capture tool's job is journaling.
+
+- **Wiring.** The `feed_handler` library does not depend on the book library. The
+  capture binary links both and, through `CaptureConnection::AddSink` and the
+  `BeforeStart` callback of `CaptureSet::StartAll`, gives every connection a ring and
+  a sink (`src/book_adapter/book_wiring.cpp`). The callback runs just before each
+  connection starts, which is when a Kraken connection's scale is known (after the
+  `AssetPairs` lookup) and `AddSink` is still legal.
+- **Kraken** builds its books with the connection's `depth` and the scale from the
+  lookup: the finest decimals among its symbols. A symbol the lookup does not know
+  is logged (`order books off for this connection, capture continues without
+  them`) and that connection is captured without books; it is never a startup
+  error and never a reason to stop.
+- **Deribit** needs both `price_decimals` and `quantity_decimals` on the connection
+  when `order_books` is on, or the process refuses to start (exit 2, naming the
+  connection and the missing keys).
+- The book thread starts after every connection has its ring, i.e. after
+  `StartAll` returns. A Deribit connection starts before the `AssetPairs` lookup
+  (up to about 30 s), so its ring buffers meanwhile; it is far from full at that
+  rate.
+- **Books never fail a capture.** They cannot latch fatal or change the exit code. A
+  full book ring drops the frame, counts it and desyncs that connection's books
+  until its next `connect_id`; a parse or apply error is counted and desyncs.
+  `decisions/0008` has the policy.
+- The ring is 65,536 events per connection (`BookService::Config::ring_events`, no
+  config key yet).
+- The books are only inspectable once the book thread has stopped; there is no
+  live query surface yet.
+
+### Summary lines
+
+At exit, after the connections are joined and the books drained, the log has one
+line per connection from the capture and, with books on, one from the books:
+
+```
+[kraken-btc-usd] captured N messages across N connect(s), N journal records, N watchdog-forced reconnect(s)
+[kraken-btc-usd] books: N frames, N snapshots, N updates, N dropped, N parse errors, N apply errors, integrity issues: none, N book(s) at exit
+```
+
+The Deribit capture line also counts snapshots, incrementals and connection
+attempts. On the books line, `dropped` is frames the ring refused, and anything other
+than `none` in `integrity issues` (`gap`, `checksum_mismatch`, `crossed_book`,
+`unknown_order`, `unknown_level`) means a book desynced. A healthy run has `0`
+dropped, `0` parse and apply errors and `none`.
 
 ## Schema
 
@@ -114,7 +197,10 @@ binaries used to hardcode) and a test parses it, so it cannot rot.
 | `price_decimals`, `quantity_decimals` | Deribit connection, optional | integer 0 to 15: decimal places of the integers a book works in, applied to every symbol on the connection, so use the finest decimals among its symbols. Required once `order_books` is on. Rejected on a Kraken connection, whose scale comes from the `AssetPairs` lookup |
 
 `depth` and the decimals are parsed and validated here; what reads them to build
-books is the order-book wiring, not the config layer.
+books is `src/book_adapter/book_wiring.cpp`, not the config layer. Kraken's `10`,
+`100` and `1000` are as documented by Kraken; only `10` has been run live
+(`exchanges/kraken.md`). `depth` is always sent, so the default `10` is not
+implicit.
 
 Validation is strict and reports the entry it failed on: unknown keys are
 rejected (a `symbol` for `symbols` typo would otherwise capture nothing while

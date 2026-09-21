@@ -108,19 +108,27 @@ just not reachable for every connection in v1, for one specific reason:
   IXWebSocket with the hand-rolled RFC6455 client: doing so hands the fd
   back and lets Kraken connections join the same epoll-group model as
   everything else, instead of remaining a permanent special case.
-- **v1 concretely**: one Kraken connection on IXWebSocket's own thread,
+- **v1 concretely (superseded 2026-09-21, see "Journal thread and connect_id"
+  below)**: a connection's own thread (IXWebSocket's for Kraken, the client's
+  for Deribit) does no disk I/O and no parsing. It stamps a frame, copies it
+  into a bounded SPSC ring per consumer and returns; a journal thread writes
+  the file, and a book thread (`decisions/0008`) builds the books. What this
+  bullet said before, kept because the reasoning behind it is what the
+  replacement had to beat: *one Kraken connection on IXWebSocket's own thread,
   calling `on_frame` synchronously into its own journal writer. No
   synchronization is needed yet regardless of grouping model, because each
-  connection — grouped on a shared epoll thread or standalone on a
-  library-owned one — writes to its own journal file; there is no shared
-  mutable state between connections until the fan-in seam below is reached.
+  connection writes to its own journal file; there is no shared mutable state
+  between connections until the fan-in seam below is reached.*
 - The fan-in seam is unchanged by any of this: the day something needs input
   from more than one connection's thread (a merged sequencer, or an order
   book pinned to its own dedicated core reading from several feeds), that
   consumer gets fed via a moodycamel SPSC ring per producer thread
   (`decisions/0002`) — a push-from-many-threads / pull-from-one-consumer
   pattern layered on top, not a redesign of the epoll-group threads
-  themselves.
+  themselves. **It is now built** in that shape: one ring per connection per
+  consumer (the journal's, and the book thread's in `decisions/0008`), one
+  consumer thread polling its rings. The epoll-group end-goal above is
+  untouched.
 
 ### Journal format v1: raw bytes, not a unified schema
 
@@ -174,18 +182,25 @@ tag=value bytes:
   once multiple exchange threads feed one journal — today it is trivially
   "write order" per connection, but adding it now avoids retrofitting a
   global ordering scheme onto an already-running journal format later.
-- **Backpressure policy**: the journal write happens synchronously on the
-  connection's own thread (see threading model above), so a slow disk stalls
-  that connection's reads. v1 accepts this rather than dropping messages —
-  a buffered (1 MiB userspace buffer), non-per-record-fsync'd `ofstream`
-  should keep up at Kraken single-symbol message rates as implemented. File
-  preallocation (`fallocate`) is **not** implemented in v1, despite earlier
-  drafts of this ADR describing it as part of the policy — deferred
-  deliberately until there are real throughput measurements to justify it,
-  same as everything else in this bullet. This is a real risk if message
-  volume grows (a stalled read can make Kraken treat the client as a slow
-  consumer and drop it) and should be revisited with actual measurements
-  once there's traffic to measure, not assumed away.
+- **Backpressure policy (superseded 2026-09-21).** The journal is written on
+  its own thread behind a bounded SPSC ring, so a slow disk no longer stalls the
+  connection's reads. A full ring or a failed write is fatal to the capture; it
+  never blocks the socket and never drops a frame. The reasoning and the
+  mechanism are in "Journal thread and connect_id" below. The original bullet is
+  kept, since its risk statement is what the change answered:
+
+  > the journal write happens synchronously on the connection's own thread (see
+  > threading model above), so a slow disk stalls that connection's reads. v1
+  > accepts this rather than dropping messages: a buffered (1 MiB userspace
+  > buffer), non-per-record-fsync'd `ofstream` should keep up at Kraken
+  > single-symbol message rates as implemented. File preallocation (`fallocate`)
+  > is **not** implemented in v1 [...] deferred deliberately until there are real
+  > throughput measurements to justify it. This is a real risk if message volume
+  > grows (a stalled read can make Kraken treat the client as a slow consumer and
+  > drop it) and should be revisited with actual measurements once there's
+  > traffic to measure, not assumed away.
+
+  `fallocate` is still not implemented, for the same reason as before.
 
 ### Per-exchange snapshot/recovery/gap handling
 
@@ -195,9 +210,11 @@ tag=value bytes:
   `decisions/0001`). On disconnect, reconnect and resubscribe with
   `snapshot: true` again; the fresh snapshot is the recovery mechanism, not
   a replay-from-sequence-number request (Kraken doesn't offer one). The
-  per-message `checksum` field is **not validated at this stage** — it's
-  only computable over a reconstructed book, which doesn't exist until the
-  order book lands. This is a deliberate deferral, not an oversight. Token
+  per-message `checksum` field was **not validated at this stage**, since it's
+  only computable over a reconstructed book, which didn't exist until the
+  order book landed. That was a deliberate deferral, not an oversight; the
+  golden book now verifies it (`decisions/0006`) and the book adapter runs that
+  check on every message (`decisions/0008`). Token
   refresh, nonce, and reconnect-rate-limit specifics for Kraken are tracked
   in `exchanges/kraken.md`, not here.
 - **Staleness watchdog, independent of transport defaults**: a half-open TCP
@@ -549,9 +566,11 @@ What now exists:
   once it is actually usable, since every caller treats a failed
   `begin_connect` as fatal to capture.
 - This is all the fan-out there is, on purpose: same thread, same call, no
-  queue. The cross-thread fan-in seam above is unchanged and still future work.
-  It will change what a sink does inside `on_frame`, not this call — which is
-  the whole point of the frame-ownership contract.
+  queue. The cross-thread fan-in seam above was future work when this was
+  written and has since been built the way it predicted: it changed what a sink
+  does inside `on_frame` (copy the frame into a ring), not this call, which is
+  the whole point of the frame-ownership contract. The journal writer stopped
+  being called inline too, see below.
 - **`capture_frame` gains `frame_source source`** — an enum naming the wire
   shape (`kraken_json`, `deribit_fix`, `unknown`), not just the exchange,
   because what a sink has to decide is which parser the payload goes to. It is
@@ -704,6 +723,98 @@ control plane, a handful of calls per process, so it does not conflict with
 ADR 0006's compile-time-polymorphism preference, which is about the per-message
 path.
 
+### Journal thread and connect_id (2026-09-21)
+
+Written against what shipped (`docs/investigations/2026-09-21-issue-14-architecture.md`
+has the discussion that led here). Where this contradicts the journal-write and
+threading text above, this is what the code does.
+
+**The journal is written on its own thread.** With the writer called first on
+the connection thread, the `write()` a full 1 MiB buffer triggers sat in front of
+every book update, which is the risk the backpressure bullet above named. A
+`CaptureSession` now has a `JournalMode`:
+
+- `kInline`, the default: the old behavior, on the connection thread. Kept
+  because it is deterministic, which is what unit tests want.
+- `kThreaded`, what `ClientCapture` always builds: the connection thread stamps a
+  frame once (the one `CaptureStamper`, so capture sequence and timestamp are
+  fixed at stamp time), copies the payload into a bounded SPSC ring
+  (`spsc_ring.h`, moodycamel `readerwriterqueue`) and returns. A `JournalThread`
+  drains the ring and runs an unchanged `JournalWriter`, so the bytes on disk are
+  exactly what inline mode writes and the committed fixtures still read. The
+  connection thread never touches the disk after the file is open.
+
+The choices worth recording:
+
+- **A full journal ring, or a failed write, is fatal to the capture.** The
+  journal is the source of truth, so it neither blocks the socket (Kraken drops
+  slow consumers) nor drops a frame. The push that finds the ring full latches a
+  sticky error and calls the session's fatal handler, once; a write failure does
+  the same from the journal thread. `Config::journal_ring_events` defaults to
+  `1 << 16` events, sized for seconds of traffic at the measured rates (Kraken
+  108,573 and Deribit 43,606 messages per hour); it has no TOML key.
+- **Failure is asynchronous, so the clients register a fatal handler.**
+  `OnWireMessage`'s return value can no longer be the one place a write failure
+  is noticed. Both clients call `CaptureSession::SetFatalHandler` with a function
+  that latches their `StopSignal`, which is how "any connection's fatal error
+  stops every connection" still works. They expect a threaded session: an inline
+  session no longer latches fatal on a write failure, and only reports it through
+  the return value. What the return value still carries is "no journal file
+  open" and an already-latched failure.
+- **Control events are in-band and never dropped.** A new file (with its stamped
+  connect marker) and a disconnect go through the ring's unbounded `PushControl`,
+  so a full ring cannot lose the event that finishes a file, and they stay
+  ordered with the frames around them.
+- **`Close()` is a barrier.** In threaded mode it returns only after the journal
+  thread has written everything queued, flushed and closed the file, so the file
+  is complete and readable on return, and the sinks' `OnDisconnect` keeps its
+  "after the file is closed" guarantee. `ClientCapture::Join` joins the client
+  and then closes the session, so no fatal can still arrive afterwards. That
+  order matters: the fatal handler points at the client, and a session that still
+  has an open journal when its client is destroyed could deliver a fatal to it.
+- **The file open and header write stay synchronous in `BeginConnect`.** They are
+  rare and off the hot path, and it keeps an unusable journal directory or an
+  unwritable header an immediate, fatal error for the caller. Only the marker
+  record and everything after it go through the ring.
+- **Test seam.** `Config::journal_start = false` leaves the journal thread
+  unstarted so nothing drains the ring and an overflow is certain, on any build
+  and under any sanitizer, without racing the consumer. `Disconnect()` starts an
+  unstarted thread first so the barrier cannot hang. How to use it without
+  exhausting memory is in `docs/tasks/testing.md`.
+- **A per-frame heap allocation on the producer is accepted for v1.** Copying a
+  payload into a `std::vector` allocates on the connection thread. The replay
+  driver (`decisions/0008`) is what measures it; the fix, if it matters, is a
+  preallocated slot pool, not done ahead of a number.
+
+**`connect_id` (formerly "incarnation").** It numbers the established
+connections of one `[[connections]]` entry: 1 for the first the entry
+establishes, plus one for every reconnect. `BeginConnect` bumps it, so it goes up
+per connection and per journal file, and not per rotation (a file is never
+rotated for size or age, and when rotation exists, #5, it must not stale a book).
+It is per session, not global, and restarts at 1 each process run; it is a
+relaxed atomic because a connection's `Summary()` reads it from another thread
+while the client thread is inside `BeginConnect`. It names the concept the
+journal's connect marker record announces (`RecordType::kConnect`, numeric value
+unchanged, so v1 files read as before).
+
+**Sinks are told both ends of a connect.** `MessageSink` gains `OnDisconnect(
+connect_id)` next to `OnConnect`, with a no-op default. `CaptureSession::Close()`
+is the one place a connect ends, so it is the one place `OnDisconnect` comes from:
+once per announced `connect_id`, after the file is closed, and before the next
+`OnConnect` when `BeginConnect` closes the previous connect. A connect that
+failed to start was never announced, so it is never disconnected. This is what
+lets a stateful sink such as a book go stale as soon as its feed drops rather
+than at the next successful connect. Kraken reaches `Close()` from IXWebSocket's
+`Close` event (its `Error` event is only raised for failed connection attempts,
+so no socket loss skips it); Deribit closes on every exit of its read loop.
+
+**Two more seams for a consumer that lives in another library.**
+`CaptureConnection::AddSink` registers an extra sink on a connection's session,
+and `CaptureSet::StartAll` takes an optional `BeforeStart` callback, called just
+before each connection's `Start()`. The feed handler library depends on nothing
+downstream of it; `decisions/0008` says what plugs into these and why the
+callback exists.
+
 ## Consequences
 
 - Kraken-first, Deribit-second implementation order is intentional: it
@@ -715,10 +826,11 @@ path.
   book exists to validate against.
 - Matching and self-match prevention are out of scope for LiveTrading/Replay
   order books entirely; only the Simulation-mode fake exchange matches.
-- This ADR does not yet cover: the order book itself, strategy/order-entry
-  hookup, or the concrete SPSC queue placement for multithreading — each is
-  a future ADR once there's a concrete design to lock in rather than
-  speculate about.
+- This ADR does not cover: the order book itself (`decisions/0006`), the
+  book adapter and the ring that feeds it (`decisions/0008`), or strategy and
+  order-entry hookup, which is still a future ADR once there's a concrete design
+  to lock in rather than speculate about. The journal's own SPSC ring is
+  covered here, in "Journal thread and connect_id".
 - **Replay resync is intentionally underspecified here.** Reconstructing
   "the same order the strategies originally saw" needs a manifest ordering
   per-`connect_id` files (directory listing order isn't a safe substitute) and an
