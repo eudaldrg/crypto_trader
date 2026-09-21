@@ -231,7 +231,16 @@ FetchContent_Declare(
   GIT_TAG v3.4.0
   SYSTEM
 )
-FetchContent_MakeAvailable(ixwebsocket simdjson nlohmann_json tomlplusplus)
+# moodycamel readerwriterqueue: the bounded SPSC rings that carry frames from a
+# connection thread to the journal and book threads (decisions/0002,
+# src/feed_handler/spsc_ring.h). Header-only.
+FetchContent_Declare(
+  readerwriterqueue
+  GIT_REPOSITORY https://github.com/cameron314/readerwriterqueue.git
+  GIT_TAG v1.0.7
+  SYSTEM
+)
+FetchContent_MakeAvailable(ixwebsocket simdjson nlohmann_json tomlplusplus readerwriterqueue)
 
 # GoogleTest: TDD for feed-parsing/journal/order-book logic, per decisions/0002.
 option(BUILD_TESTING "Build test targets" ON)
@@ -307,6 +316,8 @@ target_link_libraries(feed_handler
   PRIVATE ixwebsocket::ixwebsocket simdjson::simdjson tomlplusplus::tomlplusplus
           OpenSSL::Crypto ZLIB::ZLIB
 )
+# spsc_ring.h includes the moodycamel header, so consumers of feed_handler need it.
+target_link_libraries(feed_handler PUBLIC readerwriterqueue)
 
 # The capture binary (decisions/0004): every configured connection, across
 # exchanges, from one process. Which ones is the --config file; credentials come
@@ -339,6 +350,7 @@ if(BUILD_TESTING)
     src/feed_handler/tests/kraken_ws_client_test.cpp
     src/feed_handler/tests/runner_test.cpp
     src/feed_handler/tests/selection_test.cpp
+    src/feed_handler/tests/spsc_ring_test.cpp
     src/feed_handler/tests/staleness_watchdog_test.cpp
     src/feed_handler/tests/stop_signal_test.cpp
   )
