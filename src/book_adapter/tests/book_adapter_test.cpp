@@ -392,11 +392,13 @@ TEST(BookAdapter, FramesThatCarryNoBookDataAreOnlyCounted) {
 
 TEST(BookAdapter, FramesOfASourceWithNoBookAreCountedAsUnsupported) {
     BookAdapter adapter;
+    // kUnknown is the one source the adapter has no book for: a journal does not
+    // record it, so a caller that never said what the connection carries gets it.
     const ConnectionHandle conn = adapter.AddConnection(
-        "fix", BookSettings{.source = feed_handler::FrameSource::kDeribitFix, .scale = kScale});
+        "unknown", BookSettings{.source = feed_handler::FrameSource::kUnknown, .scale = kScale});
     adapter.OnConnect(conn, 1, "test");
 
-    adapter.OnFrame(conn, FrameOf("8=FIX.4.4|35=W|"));
+    adapter.OnFrame(conn, FrameOf("some payload"));
 
     EXPECT_EQ(adapter.Stats(conn).frames, 1U);
     EXPECT_EQ(adapter.Stats(conn).frames_unsupported, 1U);

@@ -429,6 +429,7 @@ target_link_libraries(kraken_journal_dump PRIVATE order_book_kraken_wire feed_ha
 # order_book (decisions/0006 keeps that library free of feed_handler).
 add_library(book_adapter STATIC
   src/book_adapter/book_adapter.cpp
+  src/book_adapter/deribit_fix_book_wire.cpp
   src/book_adapter/journal_replay.cpp
 )
 target_link_libraries(book_adapter PUBLIC order_book_kraken_wire feed_handler)
@@ -436,6 +437,7 @@ target_link_libraries(book_adapter PUBLIC order_book_kraken_wire feed_handler)
 if(BUILD_TESTING)
   add_project_test(book_adapter_tests
     src/book_adapter/tests/book_adapter_test.cpp
+    src/book_adapter/tests/deribit_fix_book_test.cpp
     src/book_adapter/tests/journal_replay_test.cpp
   )
   target_link_libraries(book_adapter_tests PRIVATE book_adapter)

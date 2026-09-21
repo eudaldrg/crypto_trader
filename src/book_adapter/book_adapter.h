@@ -32,12 +32,14 @@
 #include <vector>
 
 #include "book_adapter/book_settings.h"
+#include "book_adapter/deribit_fix_book_wire.h"
 #include "feed_handler/feed_event.h"
 #include "feed_handler/logging.h"
 #include "feed_handler/message_sink.h"
 #include "order_book/book_view.h"
 #include "order_book/engine.h"
 #include "order_book/kraken_l3_policy.h"
+#include "order_book/l2_policy.h"
 #include "order_book/l3_policy.h"
 #include "order_book/types.h"
 
@@ -55,7 +57,9 @@ std::string_view ToString(order_book::IntegrityIssue issue);
 /// (a reconnect does not reset it).
 ///
 /// `snapshots` and `updates` count every snapshot / update entry the parser
-/// produced, so a message whose data[] holds two symbols counts twice. Of the
+/// produced, so a Kraken message whose data[] holds two symbols counts twice. A
+/// Deribit FIX message is for one symbol: each 35=W is a snapshot and each 35=X
+/// is one update (a batch), whatever the number of entries it carries. Of the
 /// updates, some are not applied: `updates_before_snapshot` (no book for that
 /// symbol yet) and `updates_while_desynced` (the book is not Ready). The rest
 /// were applied.
@@ -95,6 +99,24 @@ struct ConnectionStats {
         }
         return total;
     }
+};
+
+/// The listener every adapter book hands its engine: counts an integrity issue
+/// by kind and logs it, and ignores everything else. Never throws.
+class BookListener {
+  public:
+    BookListener(const std::string& symbol, ConnectionStats& stats,
+                 const feed_handler::TaggedLog& log)
+        : symbol_(&symbol), stats_(&stats), log_(&log) {}
+
+    void OnTopOfBookChanged(order_book::Side /*side*/,
+                            std::optional<order_book::BookEntry> /*best*/) {}
+    void OnIntegrityCheckFailed(order_book::IntegrityIssue issue);
+
+  private:
+    const std::string* symbol_;
+    ConnectionStats* stats_;
+    const feed_handler::TaggedLog* log_;
 };
 
 /// One symbol's Kraken level3 book plus the adapter's own desync flag. The
@@ -150,26 +172,63 @@ class KrakenBook {
     }
 
   private:
-    // Counts and logs an integrity issue the engine reports. Never throws.
-    class Listener {
-      public:
-        Listener(const std::string& symbol, ConnectionStats& stats,
-                 const feed_handler::TaggedLog& log)
-            : symbol_(&symbol), stats_(&stats), log_(&log) {}
-
-        void OnTopOfBookChanged(order_book::Side /*side*/,
-                                std::optional<order_book::BookEntry> /*best*/) {}
-        void OnIntegrityCheckFailed(order_book::IntegrityIssue issue);
-
-      private:
-        const std::string* symbol_;
-        ConnectionStats* stats_;
-        const feed_handler::TaggedLog* log_;
-    };
-
     std::string symbol_;
-    Listener listener_;
-    order_book::OrderBook<order_book::KrakenL3Policy, Listener> book_;
+    BookListener listener_;
+    order_book::OrderBook<order_book::KrakenL3Policy, BookListener> book_;
+    bool desynced_ = false;
+};
+
+/// One symbol's Deribit FIX book: an L2 book with no change_id
+/// (UnsequencedL2Policy) plus the adapter's own desync flag, for the same reason
+/// KrakenBook has one. Not copyable or movable: the engine points at the
+/// listener inside this object.
+class DeribitBook {
+  public:
+    DeribitBook(std::string symbol, ConnectionStats& stats, const feed_handler::TaggedLog& log);
+    DeribitBook(const DeribitBook&) = delete;
+    DeribitBook& operator=(const DeribitBook&) = delete;
+    DeribitBook(DeribitBook&&) = delete;
+    DeribitBook& operator=(DeribitBook&&) = delete;
+    ~DeribitBook() = default;
+
+    [[nodiscard]] const std::string& Symbol() const {
+        return symbol_;
+    }
+
+    [[nodiscard]] order_book::Readiness GetReadiness() const {
+        return desynced_ ? order_book::Readiness::kDesynced : book_.GetReadiness();
+    }
+
+    [[nodiscard]] bool IsReady() const {
+        return GetReadiness() == order_book::Readiness::kReady;
+    }
+
+    [[nodiscard]] std::optional<order_book::BookEntry> Best(order_book::Side side) const {
+        return book_.Best(side);
+    }
+
+    /// The underlying policy, for queries.
+    [[nodiscard]] const order_book::UnsequencedL2Policy& Policy() const {
+        return book_.Policy();
+    }
+
+    /// Replaces the book's state; clears a desync the adapter had set. An
+    /// integrity failure is counted and logged through the listener.
+    void ApplySnapshot(const order_book::UnsequencedL2Snapshot& snapshot);
+
+    /// Applies one message's updates as a unit. A defined no-op unless Ready.
+    void ApplyBatch(std::span<const order_book::L2Update> updates);
+
+    /// The adapter no longer trusts this book (a dropped frame, a malformed
+    /// message, an apply failure). Stays desynced until the next ApplySnapshot.
+    void MarkDesynced() {
+        desynced_ = true;
+    }
+
+  private:
+    std::string symbol_;
+    BookListener listener_;
+    order_book::OrderBook<order_book::UnsequencedL2Policy, BookListener> book_;
     bool desynced_ = false;
 };
 
@@ -230,12 +289,16 @@ class BookAdapter {
     }
     /// How many symbols have a book on this connection.
     [[nodiscard]] std::size_t BookCount(ConnectionHandle handle) const {
-        return At(handle).books.size();
+        return At(handle).books.size() + At(handle).deribit_books.size();
     }
     /// The Kraken book for `symbol` on this connection, or nullptr before that
     /// symbol's first snapshot (and after a connect, until the next one).
     [[nodiscard]] const KrakenBook* FindKrakenBook(ConnectionHandle handle,
                                                    std::string_view symbol) const;
+    /// The Deribit FIX book for `symbol` on this connection, or nullptr before
+    /// that symbol's first 35=W (and after a connect, until the next one).
+    [[nodiscard]] const DeribitBook* FindDeribitBook(ConnectionHandle handle,
+                                                     std::string_view symbol) const;
 
   private:
     struct SymbolHash {
@@ -260,12 +323,19 @@ class BookAdapter {
         bool drop_logged = false;
         std::unordered_map<std::string, std::unique_ptr<KrakenBook>, SymbolHash, std::equal_to<>>
             books;
+        std::unordered_map<std::string, std::unique_ptr<DeribitBook>, SymbolHash, std::equal_to<>>
+            deribit_books;
     };
 
     [[nodiscard]] Connection& At(ConnectionHandle handle);
     [[nodiscard]] const Connection& At(ConnectionHandle handle) const;
 
     void OnKrakenFrame(Connection& conn, const feed_handler::CaptureFrame& frame);
+    void OnDeribitFixFrame(Connection& conn, const feed_handler::CaptureFrame& frame);
+    void OnDeribitParseError(Connection& conn, const DeribitFixParseError& error);
+    static void ApplyDeribitMessage(Connection& conn, const DeribitFixBookMessage& message);
+    static void ApplyDeribitSnapshot(Connection& conn, const DeribitFixBookMessage& message);
+    static void ApplyDeribitUpdate(Connection& conn, const DeribitFixBookMessage& message);
     void MarkAllDesynced(Connection& conn);
 
     Config config_;
