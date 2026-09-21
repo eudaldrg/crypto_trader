@@ -423,6 +423,25 @@ add_project_executable(kraken_journal_dump
 )
 target_link_libraries(kraken_journal_dump PRIVATE order_book_kraken_wire feed_handler)
 
+#### Book adapter (docs/investigations/2026-09-21-issue-14-architecture.md) ####
+# Frames in, books out: dispatches a connection's frames to per-symbol books. It
+# sits above both order_book and feed_handler, which is why it is not part of
+# order_book (decisions/0006 keeps that library free of feed_handler).
+add_library(book_adapter STATIC
+  src/book_adapter/book_adapter.cpp
+)
+target_link_libraries(book_adapter PUBLIC order_book_kraken_wire feed_handler)
+
+if(BUILD_TESTING)
+  add_project_test(book_adapter_tests
+    src/book_adapter/tests/book_adapter_test.cpp
+  )
+  target_link_libraries(book_adapter_tests PRIVATE book_adapter)
+  target_compile_definitions(book_adapter_tests PRIVATE
+    TEST_DATA_DIR="${ORDER_BOOK_TEST_DATA_DIR}"
+  )
+endif()
+
 # libFuzzer pilot (decisions/0007). A raw add_executable, not
 # add_project_executable: -fsanitize=fuzzer supplies its own main, so its
 # flags stay on this one target. fix_message.cpp is compiled in directly
