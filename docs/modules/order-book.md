@@ -36,7 +36,7 @@ library hardcodes them.
 
 ## Fixtures and tools
 
-The replay tests run against two real captured sessions, stored compressed in
+The replay tests run against three real captured sessions, stored compressed in
 `src/order_book/tests/data/capture_fixtures.tar.xz` and unpacked into
 `build/<preset>/order_book_test_data/` when CMake configures.
 
@@ -47,11 +47,26 @@ The replay tests run against two real captured sessions, stored compressed in
 - Deribit `book.BTC-PERPETUAL.raw`: captured with
   `experiments/deribit_ws_book_probe.py`, which does not write its auth
   handshake into the output.
+- Deribit FIX `BTC-PERPETUAL` (`deribit_fix_capture.journal`, 266 KB): the first
+  snapshot and 800 incrementals of a real `deribit_feed_handler` capture, cut
+  with `journal_slice` and replayed by `deribit_fix_replay_test.cpp` in
+  `src/book_adapter/tests/` (price decimals 1, quantity decimals 0). Unlike the
+  other two, this journal does hold a credential-shaped record: Deribit's
+  inbound Logon (`35=A`) carries `RawData(96)` and `Password(554)`.
+  `journal_slice` drops it, and the test asserts the slice has no `35=A`, `96=`
+  or `554=`.
 
 To replace a fixture, capture again, confirm the file holds no credentials
 without printing its contents, update the exact message counts asserted in the
 replay tests, and repack with
 `tar --sort=name --owner=0 --group=0 --numeric-owner --mtime=... -cJf capture_fixtures.tar.xz <files>`.
+
+To cut a new FIX slice from a full capture, run
+`journal_slice [--max-incrementals N] <input> <output>`. It copies the journal
+byte for byte up to the Nth `35=X`, skips every `35=A`, refuses to write a slice
+that still holds a Logon, `96=` or `554=`, and prints only counts, including the
+raw `35=W` and `35=X` counts the replay test asserts. Never print the input or
+the slice; check them by counting matches (`grep -a -o -P '\x0196=' f | wc -l`).
 
 `kraken_journal_dump` replays a Kraken journal through the real `KrakenL3Policy`
 and writes one JSON frame per message; `kraken_journal_viewer.py` steps through
