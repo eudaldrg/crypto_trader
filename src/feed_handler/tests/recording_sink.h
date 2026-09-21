@@ -3,7 +3,7 @@
 // Shared by the CaptureSession tests and by both exchange clients' tests,
 // because "what does a frame look like by the time a downstream sink gets it"
 // is the same question in all three, and the answer (the frame identity, the
-// incarnation notification) is exactly the seam the order book will plug into.
+// connect notification) is exactly the seam the order book will plug into.
 //
 // Thread safe on purpose: the client tests register one of these with a
 // CaptureSession that a client's own connection thread then drives, so the
@@ -23,9 +23,9 @@
 
 namespace feed_handler::testing {
 
-/// One incarnation notification, as seen by a sink.
-struct RecordedIncarnation {
-    std::uint64_t incarnation = 0;
+/// One connect notification, as seen by a sink.
+struct RecordedConnect {
+    std::uint64_t connect_id = 0;
     std::string reason;
 };
 
@@ -60,10 +60,10 @@ class RecordingSink final : public MessageSink {
         });
     }
 
-    void OnIncarnation(std::uint64_t incarnation, std::string_view reason) override {
+    void OnConnect(std::uint64_t connect_id, std::string_view reason) override {
         const std::lock_guard<std::mutex> lock(mutex_);
-        incarnations_.push_back(RecordedIncarnation{
-            .incarnation = incarnation,
+        connects_.push_back(RecordedConnect{
+            .connect_id = connect_id,
             .reason = std::string(reason),
         });
     }
@@ -73,9 +73,9 @@ class RecordingSink final : public MessageSink {
         return frames_;
     }
 
-    std::vector<RecordedIncarnation> Incarnations() const {
+    std::vector<RecordedConnect> Connects() const {
         const std::lock_guard<std::mutex> lock(mutex_);
-        return incarnations_;
+        return connects_;
     }
 
     std::size_t FrameCount() const {
@@ -86,7 +86,7 @@ class RecordingSink final : public MessageSink {
   private:
     mutable std::mutex mutex_;
     std::vector<RecordedFrame> frames_;
-    std::vector<RecordedIncarnation> incarnations_;
+    std::vector<RecordedConnect> connects_;
 };
 
 }  // namespace feed_handler::testing

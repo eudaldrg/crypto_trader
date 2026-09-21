@@ -6,7 +6,7 @@
 
 namespace feed_handler {
 
-/// "BTC/USD,ETH/USD": the list as journaled in an incarnation marker.
+/// "BTC/USD,ETH/USD": the list as journaled in an connect marker.
 inline std::string JoinSymbols(std::span<const std::string> symbols) {
     std::string joined;
     for (const std::string& symbol : symbols) {

@@ -189,7 +189,7 @@ WsClient::WsClient(RestClient& rest, Credentials creds, CaptureSession& session,
                 HandleMessage(message->str);
                 break;
             case ix::WebSocketMessageType::Close:
-                // Flush and close the incarnation's file here rather than
+                // Flush and close the connect's file here rather than
                 // waiting for the next connect: the reconnect may take a
                 // while, and a closed file is a complete, readable one.
                 watchdog_.Disarm();
@@ -299,7 +299,7 @@ void WsClient::HandleOpen() {
         return;
     }
 
-    const auto path = session_.BeginIncarnation(
+    const auto path = session_.BeginConnect(
         "kraken level3 " + JoinSymbols(cfg_.symbols) + " connected to " + cfg_.url, kWireSource);
     if (!path) {
         // Staying connected while unable to capture would silently throw away
@@ -310,7 +310,7 @@ void WsClient::HandleOpen() {
     }
 
     consecutive_setup_failures_ = 0;
-    log_.Info("incarnation " + std::to_string(session_.Incarnation()) + " started, journaling to " +
+    log_.Info("connect_id " + std::to_string(session_.ConnectId()) + " started, journaling to " +
               path->string());
 }
 
@@ -324,9 +324,9 @@ void WsClient::HandleMessage(const std::string& payload) {
     if (!session_.OnWireMessage(BytesOf(payload), kWireSource)) {
         const std::string_view reason = session_.Error();
         if (reason.empty()) {
-            // No open incarnation yet -- a message that arrived between the
+            // No open connect yet -- a message that arrived between the
             // socket opening and handle_open() finishing. Loud, but the next
-            // incarnation fixes it, so it is not a reason to end the process.
+            // connect fixes it, so it is not a reason to end the process.
             log_.Error("dropped a message: no journal file open");
         } else {
             // A sticky writer error (a full disk, say) never heals: every later

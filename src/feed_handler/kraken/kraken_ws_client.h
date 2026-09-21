@@ -4,7 +4,7 @@
 // library owns the fd and does not expose it, so it cannot join an epoll
 // group), journals every inbound message synchronously on that thread, and
 // treats every (re)connect identically: fresh token, fresh subscribe, fresh
-// snapshot, new journal incarnation.
+// snapshot, new journal file and connect_id.
 //
 // Reconnect/backoff is IXWebSocket's automatic reconnection rather than a
 // hand-rolled loop -- the library already implements exponential backoff with
@@ -43,7 +43,7 @@ namespace feed_handler::kraken {
 /// knows first-hand what shape the bytes it just received are in. A session
 /// configured by the binary that owns it could be handed the wrong answer and
 /// nothing would notice until an order book parsed JSON as tag=value.
-inline constexpr FrameSource kWireSource = FrameSource::kRakenJson;
+inline constexpr FrameSource kWireSource = FrameSource::kKrakenJson;
 
 /// The bits of an inbound message this client cares about. Book content is
 /// deliberately not parsed: v1 journals raw bytes and the order book that

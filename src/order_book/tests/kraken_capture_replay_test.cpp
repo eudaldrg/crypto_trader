@@ -58,7 +58,7 @@ using KrakenBook = OrderBook<KrakenL3Policy, RecordingListener>;
 // real kraken_feed_handler binary -- not a Python probe -- via its native
 // v1 journal format) through the Kraken L3 book, verifying every
 // message's checksum along the way, including the snapshot's. 6496 wire
-// messages, 6497 journal records (the extra one is the kConnectionIncarnation
+// messages, 6497 journal records (the extra one is the kConnect
 // marker), zero forced reconnects at capture time; 6362 of them are level3
 // messages that carry a checksum (1 snapshot + 6361 updates).
 TEST(KrakenCaptureReplay, RealSessionAppliesWithNoIntegrityIssues) {
