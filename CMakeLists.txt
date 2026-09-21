@@ -438,6 +438,7 @@ if(BUILD_TESTING)
   add_project_test(book_adapter_tests
     src/book_adapter/tests/book_adapter_test.cpp
     src/book_adapter/tests/deribit_fix_book_test.cpp
+    src/book_adapter/tests/deribit_fix_replay_test.cpp
     src/book_adapter/tests/journal_replay_test.cpp
   )
   target_link_libraries(book_adapter_tests PRIVATE book_adapter)
@@ -452,6 +453,13 @@ add_project_executable(journal_replay
   src/book_adapter/tools/journal_replay.cpp
 )
 target_link_libraries(journal_replay PRIVATE book_adapter)
+
+# Cuts a small, Logon-free slice out of a real capture for use as a test
+# fixture. Prints counts only, never payload bytes (AGENTS.md).
+add_project_executable(journal_slice
+  src/book_adapter/tools/journal_slice.cpp
+)
+target_link_libraries(journal_slice PRIVATE feed_handler)
 
 # libFuzzer pilot (decisions/0007). A raw add_executable, not
 # add_project_executable: -fsanitize=fuzzer supplies its own main, so its
