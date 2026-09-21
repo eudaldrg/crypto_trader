@@ -301,6 +301,7 @@ add_library(feed_handler STATIC
   src/feed_handler/credentials.cpp
   src/feed_handler/journal_format.cpp
   src/feed_handler/journal_reader.cpp
+  src/feed_handler/journal_thread.cpp
   src/feed_handler/journal_writer.cpp
   src/feed_handler/logging.cpp
   src/feed_handler/message_sink.cpp
@@ -351,6 +352,7 @@ if(BUILD_TESTING)
     src/feed_handler/tests/feed_handler_config_test.cpp
     src/feed_handler/tests/fix_message_test.cpp
     src/feed_handler/tests/journal_test.cpp
+    src/feed_handler/tests/journal_thread_test.cpp
     src/feed_handler/tests/kraken_rest_client_test.cpp
     src/feed_handler/tests/kraken_ws_client_test.cpp
     src/feed_handler/tests/runner_test.cpp
