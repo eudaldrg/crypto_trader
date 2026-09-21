@@ -51,7 +51,7 @@ the auth handshake, so it should not sit in the checkout at all
 Never `cat`, `head` or `strings` a journal. Count instead:
 
 ```bash
-ls -la <journal_dir>                                  # one file per connection incarnation
+ls -la <journal_dir>                                  # one file per connect_id (per connection)
 grep -a -o '"type":"snapshot"' <file> | wc -l          # Kraken: one per symbol per connection
 grep -a -o '55=BTC-PERPETUAL' <file> | wc -l           # Deribit: records mentioning a symbol
 ```
