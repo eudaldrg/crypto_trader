@@ -135,6 +135,11 @@ constexpr int kHeartbeatDeadlineMs = 4'000;
 constexpr std::uint64_t kStuckBackoffMs = 10'000;
 constexpr int kPromptStopMs = 1'000;
 constexpr int kStopRaceAttempts = 20;
+/// The journal-overflow test: a two-event ring behind an unstarted journal thread
+/// overflows within a handful of frames, and the bound only keeps a wrong build
+/// from looping. Heartbeats are about a hundred bytes each.
+constexpr std::size_t kTinyJournalRing = 2;
+constexpr std::uint64_t kOverflowFrameBound = 500;
 
 /// The sockaddr_in -> sockaddr cast every BSD-socket call needs, in one place.
 /// reinterpret_cast rather than the std::bit_cast used elsewhere in this
@@ -744,6 +749,68 @@ TEST_F(DeribitFixLoopback, StampsEveryCapturedFrameWithItsOwnWireShape) {
     EXPECT_NE(connects[0].reason.find("deribit fix"), std::string::npos);
 
     client.Stop();
+}
+
+TEST_F(DeribitFixLoopback, JournalsThroughTheThreadedJournalAndLeavesACompleteFile) {
+    // The production configuration: the client's thread stamps and queues, the
+    // journal thread writes. Closing the session is a barrier, so once the client
+    // has stopped (its thread closes the session on the way out) the file is
+    // complete on disk, and nothing was reported fatal along the way.
+    CaptureSession capture({.directory = dir_,
+                            .exchange = "deribit",
+                            .journal_mode = feed_handler::JournalMode::kThreaded});
+    FixClient client(TestConfig(), capture, LoopbackConfig());
+    client.Start();
+
+    Peer exchange = server_.AcceptOne(kStepTimeoutMs);
+    ASSERT_TRUE(exchange.Connected()) << "the client never connected";
+    ASSERT_TRUE(CompleteHandshake(exchange));
+
+    client.Stop();
+    // The connect marker and the accepted Logon.
+    EXPECT_TRUE(ExpectClosedJournal(dir_, 1, 2));
+    EXPECT_FALSE(client.Fatal());
+}
+
+TEST_F(DeribitFixLoopback, ALatchedJournalFailureEndsTheCaptureAsFatal) {
+    // A journal that cannot keep up is fatal to the capture, and it is the
+    // session's fatal handler that tells the client, since OnWireMessage() no
+    // longer carries write failures. The journal thread is left unstarted, so the
+    // two-event ring overflows for certain on any build: no consumer is racing it.
+    // Nothing here needs a handshake: the client journals a message before it
+    // looks at it, and the failure is what is under test.
+    CaptureSession capture({.directory = dir_,
+                            .exchange = "deribit",
+                            .journal_mode = feed_handler::JournalMode::kThreaded,
+                            .journal_ring_events = kTinyJournalRing,
+                            .journal_start = false});
+    FixClient client(TestConfig(), capture, LoopbackConfig());
+    client.Start();
+
+    Peer exchange = server_.AcceptOne(kStepTimeoutMs);
+    ASSERT_TRUE(exchange.Connected()) << "the client never connected";
+    std::string raw;
+    ASSERT_TRUE(ExpectNext(exchange, msg_type::kLogon, raw));
+
+    // In-sequence Heartbeats: harmless to the session, so only the journal can
+    // end this. The loop is bounded and stops as soon as the client has failed or
+    // hung up on us (the failure ends its connection).
+    std::uint64_t sequence = 1;
+    while (!client.Fatal() && sequence <= kOverflowFrameBound &&
+           exchange.Send(Inbound(msg_type::kHeartbeat, sequence))) {
+        ++sequence;
+    }
+
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(kStepTimeoutMs);
+    while (!client.Fatal() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    EXPECT_TRUE(client.Fatal()) << "the journal ring never overflowed";
+    EXPECT_LT(sequence, kOverflowFrameBound);
+
+    client.Stop();
+    EXPECT_TRUE(client.Fatal());
 }
 
 TEST_F(DeribitFixLoopback, ClosesTheJournalWhenAGapDropsTheConnection) {

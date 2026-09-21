@@ -2,9 +2,10 @@
 //
 // Per decisions/0004 this connection runs on IXWebSocket's own thread (the
 // library owns the fd and does not expose it, so it cannot join an epoll
-// group), journals every inbound message synchronously on that thread, and
-// treats every (re)connect identically: fresh token, fresh subscribe, fresh
-// snapshot, new journal file and connect_id.
+// group), hands every inbound message to a threaded CaptureSession (the journal
+// is written by its own thread, never this one), and treats every (re)connect
+// identically: fresh token, fresh subscribe, fresh snapshot, new journal file
+// and connect_id.
 //
 // Reconnect/backoff is IXWebSocket's automatic reconnection rather than a
 // hand-rolled loop -- the library already implements exponential backoff with
@@ -126,6 +127,12 @@ class WsClient {
     /// owns the nonce high-water mark that keeps signed calls strictly
     /// increasing (exchanges/kraken.md), so a per-reconnect instance would
     /// reintroduce the nonce collision it exists to prevent.
+    ///
+    /// `session` should be a JournalMode::kThreaded one, and the client takes
+    /// over its fatal handler (CaptureSession::SetFatalHandler): a journal write
+    /// failure is only ever reported through it, so an inline session that fails
+    /// is not noticed. The session must be closed before this client is
+    /// destroyed if it is still open then (ClientCapture::Join does).
     WsClient(RestClient& rest, Credentials creds, CaptureSession& session, WsClientConfig cfg = {});
 
     WsClient(const WsClient&) = delete;
@@ -171,9 +178,11 @@ class WsClient {
     /// notification is testable without a live socket.
     void HandleClose(std::uint16_t code, const std::string& reason);
 
-    /// True when capture cannot continue: a journal file could not be opened,
-    /// or a write into an open one failed. The owning process should shut down
-    /// rather than stay connected while dropping data on the floor.
+    /// True when capture cannot continue: a journal file could not be opened, or
+    /// the journal reported a failure (a write that failed, a ring that
+    /// overflowed) through the fatal handler this client registers on its
+    /// session. The owning process should shut down rather than stay connected
+    /// while dropping data on the floor.
     bool Fatal() const {
         return stop_signal_.Fatal();
     }
@@ -187,6 +196,8 @@ class WsClient {
     }
 
   private:
+    /// The session's fatal handler: logs the reason and latches the fatal.
+    void OnJournalFatal(std::string_view reason);
     void HandleOpen();
     void RunWatchdog();
     /// Closes the current connection so IXWebSocket's automatic reconnection

@@ -84,6 +84,13 @@ constexpr std::uint64_t kLongWatchdogPollMs = 10'000;
 constexpr int kPromptStopMs = 2'000;
 constexpr int kStopRaceAttempts = 10;
 
+/// The overflow test's bounds: a two-event ring behind a journal thread that is
+/// not running overflows within a handful of frames, and the loop gives up long
+/// before a wrong build could make it expensive. Small payloads, so a hundred
+/// times this is still a few kilobytes.
+constexpr std::size_t kTinyJournalRing = 2;
+constexpr std::size_t kOverflowLoopBound = 1'000;
+
 /// Nothing listens on port 1, so IXWebSocket's connect is refused at once and
 /// no Open event -- hence no signed REST token call -- can ever happen.
 constexpr std::string_view kUnreachableUrl = "ws://127.0.0.1:1";
@@ -226,26 +233,65 @@ TEST_F(KrakenCapture, StampsEveryCapturedFrameWithItsOwnWireShape) {
     EXPECT_FALSE(client.Fatal());
 }
 
-TEST_F(KrakenCapture, TreatsAFailedJournalWriteAsFatalToTheProcess) {
+TEST_F(KrakenCapture, TreatsAJournalRingOverflowAsFatalToTheProcess) {
     // The bug this covers: before, a failed journal write was logged and
     // nothing else, so after a full disk the main loop's `!client.fatal()`
     // stayed true forever and the process looked healthy while capturing
-    // nothing. Deribit's journal_message already ended the session here.
-    CaptureSession session({.directory = dir_, .exchange = "kraken"});
+    // nothing. The journal now runs on its own thread, so the failure arrives
+    // through the session's fatal handler, not through a return value.
+    //
+    // The journal thread is left unstarted, so nothing drains the two-event ring
+    // and it overflows for certain on any build, instead of depending on a slow
+    // consumer.
+    CaptureSession session({.directory = dir_,
+                            .exchange = "kraken",
+                            .journal_mode = feed_handler::JournalMode::kThreaded,
+                            .journal_ring_events = kTinyJournalRing,
+                            .journal_start = false});
     ASSERT_TRUE(session.BeginConnect("connected", FrameSource::kKrakenJson).has_value());
-
-    // Latches the writer's sticky error the way a full disk would: the record
-    // is refused and the file is unreliable from that point on. Every later
-    // write into this session now fails the same way, which is the property
-    // that makes a journal failure worth ending the process over.
-    const std::string oversized(feed_handler::journal::kMaxPayloadBytes + 1U, 'x');
-    ASSERT_FALSE(session.OnWireMessage(BytesOf(oversized), FrameSource::kKrakenJson));
-    ASSERT_FALSE(session.Error().empty());
 
     WsClient client(rest_, TestCredentials(), session);
     ASSERT_FALSE(client.Fatal());
+    std::size_t sent = 0;
+    while (!client.Fatal() && sent < kOverflowLoopBound) {
+        client.HandleMessage(std::string(kUpdate));
+        ++sent;
+    }
+    ASSERT_LT(sent, kOverflowLoopBound) << "the journal ring never overflowed";
+    EXPECT_TRUE(client.Fatal());
+    EXPECT_NE(session.Error().find("overflow"), std::string_view::npos) << session.Error();
+
+    // Once fatal, later messages are still counted and do not undo it. Closing
+    // starts the journal thread, so the barrier completes and the session is
+    // idle before the client that its handler points at goes away.
     client.HandleMessage(std::string(kHeartbeat));
     EXPECT_TRUE(client.Fatal());
+    session.Close();
+}
+
+TEST_F(KrakenCapture, TreatsAFailedJournalWriteOnTheJournalThreadAsFatal) {
+    // The other way a journal fails: the write itself, which happens on the
+    // journal thread, so the latch is set from a thread the client does not own.
+    // A payload over the format's limit is refused by the writer, the way a full
+    // disk is: the record is not written and the file is unreliable from then on.
+    // Close() is a barrier, so the failure has been reported by the time it
+    // returns and nothing here waits on a clock.
+    CaptureSession session({.directory = dir_,
+                            .exchange = "kraken",
+                            .journal_mode = feed_handler::JournalMode::kThreaded});
+    ASSERT_TRUE(session.BeginConnect("connected", FrameSource::kKrakenJson).has_value());
+
+    WsClient client(rest_, TestCredentials(), session);
+    ASSERT_FALSE(client.Fatal());
+    {
+        const std::string oversized(feed_handler::journal::kMaxPayloadBytes + 1U, 'x');
+        // Accepted by the ring: it is the writer that refuses it.
+        ASSERT_TRUE(session.OnWireMessage(BytesOf(oversized), FrameSource::kKrakenJson));
+    }
+    session.Close();
+
+    EXPECT_TRUE(client.Fatal());
+    EXPECT_FALSE(session.Error().empty());
 }
 
 TEST_F(KrakenCapture, DoesNotEndTheProcessOverAMessageThatArrivedBeforeTheFirstConnect) {
@@ -253,7 +299,9 @@ TEST_F(KrakenCapture, DoesNotEndTheProcessOverAMessageThatArrivedBeforeTheFirstC
     // message arriving before handle_open() has opened a file is loud but
     // recoverable -- the next connect captures normally -- so it must not
     // be confused with a journal that has failed.
-    CaptureSession session({.directory = dir_, .exchange = "kraken"});
+    CaptureSession session({.directory = dir_,
+                            .exchange = "kraken",
+                            .journal_mode = feed_handler::JournalMode::kThreaded});
 
     WsClient client(rest_, TestCredentials(), session);
     client.HandleMessage(std::string(kHeartbeat));

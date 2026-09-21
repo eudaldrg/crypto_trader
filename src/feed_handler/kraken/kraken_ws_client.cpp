@@ -180,6 +180,10 @@ WsClient::WsClient(RestClient& rest, Credentials creds, CaptureSession& session,
     ws_->setMaxWaitBetweenReconnectionRetries(cfg_.max_reconnect_wait_ms);
     ws_->setPingInterval(cfg_.ping_interval_seconds);
 
+    // Before the socket can deliver anything: the journal thread reports a write
+    // failure, and the connection thread a ring overflow, through this.
+    session_.SetFatalHandler([this](std::string_view reason) { OnJournalFatal(reason); });
+
     ws_->setOnMessageCallback([this](const ix::WebSocketMessagePtr& message) {
         switch (message->type) {
             case ix::WebSocketMessageType::Open:
@@ -220,6 +224,8 @@ WsClient::WsClient(RestClient& rest, Credentials creds, CaptureSession& session,
 
 WsClient::~WsClient() {
     Stop();
+    // The handler points at this object; the session outlives it.
+    session_.SetFatalHandler({});
 }
 
 void WsClient::Start() {
@@ -316,6 +322,13 @@ void WsClient::HandleOpen() {
               path->string());
 }
 
+void WsClient::OnJournalFatal(std::string_view reason) {
+    // Any thread: the journal thread for a failed write, the WebSocket thread for
+    // a ring overflow. Both the log and the latch are safe from there.
+    log_.Error("journal failed: " + std::string(reason));
+    stop_signal_.LatchFatal();
+}
+
 void WsClient::HandleClose(std::uint16_t code, const std::string& reason) {
     // Flush and close the connect's file here rather than waiting for the next
     // connect: the reconnect may take a while, and a closed file is a complete,
@@ -342,15 +355,13 @@ void WsClient::HandleMessage(const std::string& payload) {
             // socket opening and handle_open() finishing. Loud, but the next
             // connect fixes it, so it is not a reason to end the process.
             log_.Error("dropped a message: no journal file open");
-        } else {
-            // A sticky writer error (a full disk, say) never heals: every later
-            // message would be dropped just as silently. Same rule as a journal
-            // file that cannot be opened at all, and as Deribit's
-            // journal_message -- capturing nothing while looking healthy is the
-            // one outcome this process must not have.
-            log_.Error("journal write failed: " + std::string(reason));
-            stop_signal_.LatchFatal();
         }
+        // Otherwise the journal has failed (a full disk, a ring overflow), which
+        // never heals. It is not decided here: the session already reported it
+        // through the fatal handler registered in the constructor
+        // (OnJournalFatal), which is what latches the fatal and logs the reason.
+        // The journal is on its own thread, so this return value can no longer be
+        // the one place a write failure is noticed.
     }
 
     const MessageClassification classified = ClassifyMessage(payload);
