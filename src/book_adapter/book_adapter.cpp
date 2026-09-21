@@ -45,17 +45,17 @@ std::string_view ToString(order_book::IntegrityIssue issue) {
     return "unknown";
 }
 
+void BookListener::OnIntegrityCheckFailed(order_book::IntegrityIssue issue) {
+    ++stats_->issues[static_cast<std::size_t>(issue)];
+    log_->Warn("book " + *symbol_ + ": integrity issue " + std::string(ToString(issue)) +
+               ", book desynced until its next snapshot");
+}
+
 KrakenBook::KrakenBook(std::string symbol, std::size_t depth, ConnectionStats& stats,
                        const feed_handler::TaggedLog& log)
     : symbol_(std::move(symbol)),
       listener_(symbol_, stats, log),
       book_(listener_, order_book::KrakenL3Policy(depth)) {}
-
-void KrakenBook::Listener::OnIntegrityCheckFailed(order_book::IntegrityIssue issue) {
-    ++stats_->issues[static_cast<std::size_t>(issue)];
-    log_->Warn("book " + *symbol_ + ": integrity issue " + std::string(ToString(issue)) +
-               ", book desynced until its next snapshot");
-}
 
 void KrakenBook::ApplySnapshot(const order_book::L3Snapshot& snapshot,
                                const order_book::ChecksumMeta& meta) {
@@ -66,6 +66,19 @@ void KrakenBook::ApplySnapshot(const order_book::L3Snapshot& snapshot,
 void KrakenBook::ApplyBatch(std::span<const order_book::KrakenL3Update> updates,
                             const order_book::ChecksumMeta& meta) {
     book_.ApplyBatch(updates, meta);
+}
+
+DeribitBook::DeribitBook(std::string symbol, ConnectionStats& stats,
+                         const feed_handler::TaggedLog& log)
+    : symbol_(std::move(symbol)), listener_(symbol_, stats, log), book_(listener_) {}
+
+void DeribitBook::ApplySnapshot(const order_book::UnsequencedL2Snapshot& snapshot) {
+    desynced_ = false;
+    book_.ApplySnapshot(snapshot);
+}
+
+void DeribitBook::ApplyBatch(std::span<const order_book::L2Update> updates) {
+    book_.ApplyBatch(updates);
 }
 
 ConnectionHandle BookAdapter::AddConnection(std::string name, const BookSettings& settings) {
@@ -90,12 +103,20 @@ const KrakenBook* BookAdapter::FindKrakenBook(ConnectionHandle handle,
     return found == conn.books.end() ? nullptr : found->second.get();
 }
 
+const DeribitBook* BookAdapter::FindDeribitBook(ConnectionHandle handle,
+                                                std::string_view symbol) const {
+    const Connection& conn = At(handle);
+    const auto found = conn.deribit_books.find(symbol);
+    return found == conn.deribit_books.end() ? nullptr : found->second.get();
+}
+
 void BookAdapter::OnConnect(ConnectionHandle handle, std::uint64_t connect_id,
                             std::string_view reason) {
     Connection& conn = At(handle);
     // The engine cannot be reset in place, so a connection's books are erased
     // and rebuilt lazily from the snapshots the new connection sends.
     conn.books.clear();
+    conn.deribit_books.clear();
     conn.connect_id = connect_id;
     conn.stale = false;
     conn.drop_logged = false;
@@ -156,6 +177,8 @@ void BookAdapter::OnFrame(ConnectionHandle handle, const feed_handler::CaptureFr
             OnKrakenFrame(conn, frame);
             return;
         case feed_handler::FrameSource::kDeribitFix:
+            OnDeribitFixFrame(conn, frame);
+            return;
         case feed_handler::FrameSource::kUnknown:
             ++conn.stats.frames_unsupported;
             return;
@@ -164,6 +187,9 @@ void BookAdapter::OnFrame(ConnectionHandle handle, const feed_handler::CaptureFr
 
 void BookAdapter::MarkAllDesynced(Connection& conn) {
     for (auto& [symbol, book] : conn.books) {
+        book->MarkDesynced();
+    }
+    for (auto& [symbol, book] : conn.deribit_books) {
         book->MarkDesynced();
     }
 }
@@ -242,6 +268,96 @@ void BookAdapter::OnKrakenFrame(Connection& conn, const feed_handler::CaptureFra
     }
     if (timed) {
         stats.apply_ns += feed_handler::MonotonicNowNs() - apply_start;
+    }
+}
+
+void BookAdapter::OnDeribitFixFrame(Connection& conn, const feed_handler::CaptureFrame& frame) {
+    ConnectionStats& stats = conn.stats;
+    const bool timed = config_.measure_timing;
+    const std::uint64_t parse_start = timed ? feed_handler::MonotonicNowNs() : 0;
+
+    const auto parsed = ParseDeribitFixMessage(frame.payload, conn.settings.scale);
+    const std::uint64_t apply_start = timed ? feed_handler::MonotonicNowNs() : 0;
+    if (timed) {
+        stats.parse_ns += apply_start - parse_start;
+    }
+
+    if (!parsed) {
+        OnDeribitParseError(conn, parsed.error());
+        return;
+    }
+    ApplyDeribitMessage(conn, *parsed);
+    if (timed) {
+        stats.apply_ns += feed_handler::MonotonicNowNs() - apply_start;
+    }
+}
+
+void BookAdapter::OnDeribitParseError(Connection& conn, const DeribitFixParseError& error) {
+    ConnectionStats& stats = conn.stats;
+    ++stats.parse_errors;
+    if (stats.parse_errors <= kMaxLoggedErrors) {
+        std::string text = "unusable FIX message: " + error.what;
+        if (stats.parse_errors == kMaxLoggedErrors) {
+            text += " (further errors of this kind are counted, not logged)";
+        }
+        conn.log.Error(text);
+    }
+    // Without the symbol, the message may have been for any of the books. With
+    // it, only that one has missed something.
+    if (error.symbol.empty()) {
+        MarkAllDesynced(conn);
+        return;
+    }
+    const auto known = conn.deribit_books.find(error.symbol);
+    if (known != conn.deribit_books.end()) {
+        known->second->MarkDesynced();
+    }
+}
+
+void BookAdapter::ApplyDeribitMessage(Connection& conn, const DeribitFixBookMessage& message) {
+    if (message.kind == FixBookMessageKind::kIgnored) {
+        return;
+    }
+    try {
+        if (message.kind == FixBookMessageKind::kSnapshot) {
+            ApplyDeribitSnapshot(conn, message);
+        } else {
+            ApplyDeribitUpdate(conn, message);
+        }
+    } catch (const std::exception& error) {
+        ConnectionStats& stats = conn.stats;
+        ++stats.apply_errors;
+        if (stats.apply_errors <= kMaxLoggedErrors) {
+            conn.log.Error(ErrorText("book failed to apply a message", error, stats.apply_errors));
+        }
+        const auto broken = conn.deribit_books.find(message.symbol);
+        if (broken != conn.deribit_books.end()) {
+            broken->second->MarkDesynced();
+        }
+    }
+}
+
+void BookAdapter::ApplyDeribitSnapshot(Connection& conn, const DeribitFixBookMessage& message) {
+    ++conn.stats.snapshots;
+    auto found = conn.deribit_books.find(message.symbol);
+    if (found == conn.deribit_books.end()) {
+        found = conn.deribit_books
+                    .emplace(message.symbol,
+                             std::make_unique<DeribitBook>(message.symbol, conn.stats, conn.log))
+                    .first;
+    }
+    found->second->ApplySnapshot(message.snapshot);
+}
+
+void BookAdapter::ApplyDeribitUpdate(Connection& conn, const DeribitFixBookMessage& message) {
+    ++conn.stats.updates;
+    const auto found = conn.deribit_books.find(message.symbol);
+    if (found == conn.deribit_books.end()) {
+        ++conn.stats.updates_before_snapshot;
+    } else if (!found->second->IsReady()) {
+        ++conn.stats.updates_while_desynced;
+    } else {
+        found->second->ApplyBatch(std::span<const order_book::L2Update>(message.updates));
     }
 }
 
