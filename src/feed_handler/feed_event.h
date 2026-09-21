@@ -53,16 +53,22 @@ struct DisconnectEvent {
 
 using FeedEvent = std::variant<FrameEvent, ConnectEvent, DisconnectEvent>;
 
-/// Copies `frame` into an owned event. This is the one place a frame's payload
-/// is copied on its way to another thread; a per-frame heap allocation on the
-/// connection thread, accepted for v1 and measured by the replay driver.
-inline FeedEvent MakeFrameEvent(const CaptureFrame& frame) {
+/// Copies `frame` into an owned FrameEvent. This is the one place a frame's
+/// payload is copied on its way to another thread; a per-frame heap allocation
+/// on the connection thread, accepted for v1 and measured by the replay driver.
+/// A ring with its own event type (the journal's) calls this directly.
+inline FrameEvent CopyFrame(const CaptureFrame& frame) {
     return FrameEvent{
         .capture_sequence = frame.capture_sequence,
         .monotonic_ns = frame.monotonic_ns,
         .source = frame.source,
         .payload = std::vector<std::byte>(frame.payload.begin(), frame.payload.end()),
     };
+}
+
+/// CopyFrame as a FeedEvent, for the rings that carry the sink-shaped events.
+inline FeedEvent MakeFrameEvent(const CaptureFrame& frame) {
+    return CopyFrame(frame);
 }
 
 }  // namespace feed_handler

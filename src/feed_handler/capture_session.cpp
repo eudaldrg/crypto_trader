@@ -6,6 +6,7 @@
 #include <ctime>
 #include <stdexcept>
 #include <system_error>
+#include <utility>
 
 namespace feed_handler {
 namespace {
@@ -34,6 +35,36 @@ std::string JournalFileName(std::string_view prefix, std::uint64_t connect_id,
            ".journal";
 }
 
+CaptureSession::CaptureSession(Config cfg) : cfg_(std::move(cfg)) {
+    if (cfg_.journal_mode == JournalMode::kThreaded) {
+        journal_ = std::make_unique<JournalThread>(JournalThread::Config{
+            .ring_events = cfg_.journal_ring_events,
+            .on_fatal = [this](std::string_view reason) { NotifyFatal(reason); },
+            .start = cfg_.journal_start,
+        });
+    }
+}
+
+CaptureSession::~CaptureSession() = default;
+
+void CaptureSession::SetFatalHandler(FatalHandler handler) {
+    const std::lock_guard<std::mutex> lock(fatal_mutex_);
+    fatal_handler_ = std::move(handler);
+}
+
+void CaptureSession::NotifyFatal(std::string_view reason) {
+    FatalHandler handler;
+    {
+        // Copied out so the handler runs without the lock: it is free to call back
+        // into SetFatalHandler, and a slow one must not hold up the other thread.
+        const std::lock_guard<std::mutex> lock(fatal_mutex_);
+        handler = fatal_handler_;
+    }
+    if (handler) {
+        handler(reason);
+    }
+}
+
 std::expected<std::filesystem::path, std::string> CaptureSession::BeginConnect(
     std::string_view reason, FrameSource source) {
     Close();
@@ -41,6 +72,13 @@ std::expected<std::filesystem::path, std::string> CaptureSession::BeginConnect(
     // Capture sequence numbers are per-connect (journal_writer.h), so the
     // stamper restarts with the file rather than carrying over.
     stamper_ = CaptureStamper{};
+
+    if (journal_ != nullptr && journal_->Failed()) {
+        // The journal thread is done for good once it failed, so a file opened now
+        // would never be written. Same outcome as a marker that cannot be written
+        // inline: the caller treats it as fatal to capture.
+        return std::unexpected("journal failed: " + std::string(journal_->Error()));
+    }
 
     std::error_code ec;
     std::filesystem::create_directories(cfg_.directory, ec);
@@ -53,11 +91,12 @@ std::expected<std::filesystem::path, std::string> CaptureSession::BeginConnect(
         cfg_.directory /
         JournalFileName(cfg_.file_prefix.empty() ? cfg_.exchange : cfg_.file_prefix, connect_id_,
                         RealtimeNowNs());
+    std::unique_ptr<JournalWriter> writer;
     try {
-        writer_ = std::make_unique<JournalWriter>(path, JournalWriter::Config{
-                                                            .exchange = cfg_.exchange,
-                                                            .connect_id = connect_id_,
-                                                        });
+        writer = std::make_unique<JournalWriter>(path, JournalWriter::Config{
+                                                           .exchange = cfg_.exchange,
+                                                           .connect_id = connect_id_,
+                                                       });
     } catch (const std::runtime_error& error) {
         return std::unexpected(std::string(error.what()));
     }
@@ -70,9 +109,19 @@ std::expected<std::filesystem::path, std::string> CaptureSession::BeginConnect(
     // out. A sink-interface version would need a second sequence source, which
     // is precisely what the single stamper exists to prevent. The other sinks
     // get the notification form below, which needs neither.
-    writer_->WriteConnectMarker(stamper_.Stamp(BytesOf(reason), source));
-    if (!writer_->Good()) {
-        return std::unexpected("cannot write connect marker: " + writer_->Error());
+    const CaptureFrame marker = stamper_.Stamp(BytesOf(reason), source);
+    if (journal_ != nullptr) {
+        // Stamped here, on the connection thread, so the marker takes its place in
+        // the same capture sequence as inline mode; written by the journal thread,
+        // which now owns the file.
+        journal_->Connect(std::move(writer), marker);
+        journal_open_ = true;
+    } else {
+        writer_ = std::move(writer);
+        writer_->WriteConnectMarker(marker);
+        if (!writer_->Good()) {
+            return std::unexpected("cannot write connect marker: " + writer_->Error());
+        }
     }
 
     // Only once the connect is actually usable: every caller treats a
@@ -86,7 +135,7 @@ std::expected<std::filesystem::path, std::string> CaptureSession::BeginConnect(
 }
 
 bool CaptureSession::OnWireMessage(std::span<const std::byte> payload, FrameSource source) {
-    if (writer_ == nullptr) {
+    if (journal_ != nullptr ? !journal_open_ : writer_ == nullptr) {
         return false;
     }
     const CaptureFrame frame = stamper_.Stamp(payload, source);
@@ -96,8 +145,13 @@ bool CaptureSession::OnWireMessage(std::span<const std::byte> payload, FrameSour
     // written. The extra sinks still see a frame whose journal write failed,
     // though: what failed is the disk, not the data, and an order book silently
     // missing a message would be a second fault on top of the first.
-    writer_->OnFrame(frame);
-    const bool journaled = writer_->Good();
+    bool journaled = false;
+    if (journal_ != nullptr) {
+        journaled = journal_->Push(frame);
+    } else {
+        writer_->OnFrame(frame);
+        journaled = writer_->Good();
+    }
     for (MessageSink* sink : sinks_) {
         sink->OnFrame(frame);
     }
@@ -109,6 +163,13 @@ void CaptureSession::Close() {
         closed_records_ += writer_->RecordsWritten();
         writer_->Flush();
         writer_.reset();
+        current_path_.clear();
+    }
+    if (journal_open_) {
+        // The barrier: nothing below runs until the journal thread has written
+        // everything queued for this file and closed it.
+        closed_records_ += journal_->Disconnect();
+        journal_open_ = false;
         current_path_.clear();
     }
     if (!announced_) {
