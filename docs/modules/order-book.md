@@ -24,6 +24,7 @@ virtual dispatch.
 |---|---|---|
 | `L1Policy` | best price/quantity per side | |
 | `L2Policy` | Deribit `book`: `[new/change/delete, price, qty]` per level | `change_id`/`prev_change_id` gap detection |
+| `UnsequencedL2Policy` | Deribit FIX market data, normalized to the same `L2Update`s | no `change_id`, so no gap check; unknown-level and crossed-book checks kept; own snapshot type (`decisions/0006`) |
 | `L3Policy` | generic add/modify/delete by `order_id` | exchange-agnostic; optional `max_depth` |
 | `KrakenL3Policy` | Kraken `level3` | wraps `L3Policy`; adds checksum verification and Add ordering by timestamp; `subscribed_depth` has no default |
 

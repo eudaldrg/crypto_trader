@@ -67,7 +67,13 @@ class OrderBook {
     // snapshot's own checksum (Kraken) or malformed state (a crossed book)
     // get reported and reflected in readiness_, exactly like an ordinary
     // batch, instead of being applied unconditionally and unchecked.
+    //
+    // Constrained on the policy accepting exactly this snapshot and meta, so
+    // handing a sequenced policy no meta (or an unsequenced one a meta) is
+    // rejected at the call site instead of deep inside the policy.
     template <typename Snapshot, typename... MessageMeta>
+        requires requires(GranularityPolicy& policy, const Snapshot& snapshot,
+                          const MessageMeta&... meta) { policy.ApplySnapshot(snapshot, meta...); }
     void ApplySnapshot(const Snapshot& snapshot, const MessageMeta&... meta) {
         const auto change_set = policy_.ApplySnapshot(snapshot, meta...);
         readiness_ = Readiness::kReady;
@@ -80,6 +86,7 @@ class OrderBook {
     // there is nothing valid to apply before a snapshot has established a
     // baseline.
     template <typename Update>
+        requires requires(GranularityPolicy& policy, const Update& update) { policy.Apply(update); }
     void Apply(const Update& update) {
         if (readiness_ != Readiness::kReady) {
             return;
@@ -99,6 +106,8 @@ class OrderBook {
     // L2 passes its ChangeIdMeta, an exchange-specific L3 policy passes its
     // checksum, and the generic L3 book has nothing to validate and passes none.
     template <typename Update, typename... MessageMeta>
+        requires requires(GranularityPolicy& policy, std::span<const Update> updates,
+                          const MessageMeta&... meta) { policy.ApplyBatch(updates, meta...); }
     void ApplyBatch(std::span<const Update> updates, const MessageMeta&... meta) {
         if (readiness_ != Readiness::kReady) {
             return;
