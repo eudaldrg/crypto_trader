@@ -225,7 +225,8 @@ class DrivenKrakenCapture final
                   session,
                   feed_handler::kraken::WsClientConfig{.url = config.connections[0].endpoint,
                                                        .id = config.connections[0].id,
-                                                       .symbols = config.connections[0].symbols});
+                                                       .symbols = config.connections[0].symbols,
+                                                       .depth = config.connections[0].depth});
           }) {}
 
     using ClientCapture::GetClient;

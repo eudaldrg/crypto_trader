@@ -22,7 +22,8 @@ class KrakenCapture final : public ClientCapture<WsClient> {
                               session,
                               WsClientConfig{.url = connection.endpoint,
                                              .id = connection.id,
-                                             .symbols = connection.symbols});
+                                             .symbols = connection.symbols,
+                                             .depth = connection.depth});
           }) {}
 
     std::string Summary() const override {

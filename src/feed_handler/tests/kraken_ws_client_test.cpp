@@ -110,16 +110,27 @@ feed_handler::kraken::Credentials TestCredentials() {
 
 TEST(KrakenSubscribeMessage, MatchesTheShapeKrakenDocuments) {
     const std::vector<std::string> symbols = {"BTC/USD"};
-    const std::string message = BuildSubscribeMessage(symbols, "fake-token-not-a-credential");
+    const std::string message = BuildSubscribeMessage(symbols, 10, "fake-token-not-a-credential");
     EXPECT_EQ(message, R"({"method":"subscribe","params":{"channel":"level3","symbol":["BTC/USD"],)"
-                       R"("snapshot":true,"token":"fake-token-not-a-credential"}})");
+                       R"("depth":10,"snapshot":true,"token":"fake-token-not-a-credential"}})");
+}
+
+TEST(KrakenSubscribeMessage, SendsTheConfiguredDepthExplicitly) {
+    // Never left to Kraken's default: the depth a book is built for and the depth
+    // subscribed are the same number only if the subscribe states it.
+    const std::vector<std::string> symbols = {"BTC/USD"};
+    for (const int depth : {10, 100, 1000}) {
+        const std::string message = BuildSubscribeMessage(symbols, depth, "fake-token");
+        EXPECT_NE(message.find("\"depth\":" + std::to_string(depth) + ","), std::string::npos)
+            << message;
+    }
 }
 
 TEST(KrakenSubscribeMessage, AsksForASnapshotBecauseThatIsTheRecoveryMechanism) {
     // exchanges/kraken.md: there is no resume-from-sequence-number request, so
     // every (re)subscribe has to ask for a fresh snapshot.
     const std::vector<std::string> symbols = {"BTC/USD"};
-    const std::string message = BuildSubscribeMessage(symbols, "fake-token");
+    const std::string message = BuildSubscribeMessage(symbols, 10, "fake-token");
     EXPECT_NE(message.find(R"("snapshot":true)"), std::string::npos);
     // WS v2 spells bitcoin BTC, not REST's XBT.
     EXPECT_NE(message.find(R"("BTC/USD")"), std::string::npos);
@@ -129,9 +140,10 @@ TEST(KrakenSubscribeMessage, ListsEverySymbolInOneSubscribeInConfigOrder) {
     // One socket, one subscribe: Kraken's `symbol` param is documented as an
     // array, so several symbols cost one message rather than one each.
     const std::vector<std::string> symbols = {"BTC/USD", "ETH/USD", "SOL/EUR"};
-    EXPECT_EQ(BuildSubscribeMessage(symbols, "fake-token"),
+    EXPECT_EQ(BuildSubscribeMessage(symbols, 100, "fake-token"),
               R"({"method":"subscribe","params":{"channel":"level3",)"
-              R"("symbol":["BTC/USD","ETH/USD","SOL/EUR"],"snapshot":true,"token":"fake-token"}})");
+              R"("symbol":["BTC/USD","ETH/USD","SOL/EUR"],"depth":100,"snapshot":true,)"
+              R"("token":"fake-token"}})");
 }
 
 TEST(KrakenMessageClassification, RecognizesASuccessfulSubscribeAck) {
