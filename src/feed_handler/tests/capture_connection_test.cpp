@@ -32,6 +32,7 @@
 #include <system_error>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include "feed_handler/capture_session.h"
 #include "feed_handler/client_capture.h"
@@ -45,6 +46,7 @@
 #include "feed_handler/kraken/kraken_rest_client.h"
 #include "feed_handler/kraken/kraken_ws_client.h"
 #include "feed_handler/runner.h"
+#include "feed_handler/tests/recording_sink.h"
 #include "feed_handler/tests/test_support.h"
 
 namespace {
@@ -364,6 +366,29 @@ TEST_F(CaptureConnections,
     const auto path = JournalFor(journal_dir_, "kraken-a", 1);
     ASSERT_FALSE(path.empty());
     EXPECT_EQ(CountRecords(path), kUpdates + 1U);  // the frames and the connect marker
+}
+
+TEST_F(CaptureConnections, ASinkAddedThroughTheConnectionSeesItsConnectFramesAndDisconnect) {
+    DrivenKrakenCapture connection(config_, rest_);
+    feed_handler::testing::RecordingSink sink;
+    // Through the CaptureConnection interface, which is all a caller outside the
+    // capture library (the order books) has.
+    static_cast<CaptureConnection&>(connection).AddSink(sink);
+
+    ASSERT_TRUE(
+        connection.JournalSession().BeginConnect("driven", FrameSource::kKrakenJson).has_value());
+    for (std::size_t index = 0; index < kUpdates; ++index) {
+        connection.GetClient().HandleMessage(std::string(kUpdate));
+    }
+    connection.Join();
+
+    EXPECT_EQ(sink.Connects().size(), 1U);
+    EXPECT_EQ(sink.FrameCount(), kUpdates);
+    EXPECT_EQ(sink.Disconnects(), (std::vector<std::uint64_t>{1}));
+    const std::vector<std::string> events = sink.Events();
+    ASSERT_EQ(events.size(), kUpdates + 2U);
+    EXPECT_EQ(events.front(), "connect 1");
+    EXPECT_EQ(events.back(), "disconnect 1");
 }
 
 TEST_F(CaptureConnections, AKrakenJournalFailureOnTheJournalThreadEndsInTheRunnersFatalResult) {

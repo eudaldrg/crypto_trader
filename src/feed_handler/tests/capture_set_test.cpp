@@ -6,13 +6,17 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cstddef>
 #include <filesystem>
 #include <string>
 #include <vector>
 
+#include "feed_handler/capture_connection.h"
 #include "feed_handler/config/feed_handler_config.h"
 #include "feed_handler/credentials.h"
+#include "feed_handler/kraken/kraken_rest_client.h"
 #include "feed_handler/runner.h"
+#include "feed_handler/tests/recording_sink.h"
 #include "feed_handler/tests/test_support.h"
 
 namespace {
@@ -113,6 +117,32 @@ TEST_F(CaptureSetTest, ADeribitOnlySetStartsRunsAndStopsWithoutHanging) {
         set->Connections(),
         {.poll = std::chrono::milliseconds{10}, .should_stop = [&polls] { return ++polls > 3; }});
     EXPECT_FALSE(result.Fatal());
+}
+
+TEST_F(CaptureSetTest,
+       StartAllOffersEveryConnectionToTheHookInOrderAndWithoutARestClientForDeribit) {
+    auto set = CaptureSet::Build(config_, Pick({1, 2}));
+    ASSERT_TRUE(set.has_value()) << set.error();
+
+    std::vector<std::string> offered;
+    std::size_t with_rest = 0;
+    set->StartAll([&](feed_handler::CaptureConnection& connection,
+                      const feed_handler::config::Connection& entry,
+                      const feed_handler::kraken::RestClient* rest) {
+        offered.emplace_back(connection.Id());
+        EXPECT_EQ(entry.id, connection.Id());
+        with_rest += rest != nullptr ? 1U : 0U;
+        // The point of the hook: a sink can still be added, the connection has not
+        // started.
+        feed_handler::testing::RecordingSink sink;
+        connection.AddSink(sink);
+    });
+    int polls = 0;
+    feed_handler::Run(set->Connections(), {.poll = std::chrono::milliseconds{10},
+                                           .should_stop = [&polls] { return ++polls > 3; }});
+
+    EXPECT_EQ(offered, (std::vector<std::string>{"deribit-a", "deribit-b"}));
+    EXPECT_EQ(with_rest, 0U);
 }
 
 }  // namespace

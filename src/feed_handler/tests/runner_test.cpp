@@ -33,6 +33,7 @@ class FakeConnection final : public CaptureConnection {
     std::string_view Id() const override {
         return id_;
     }
+    void AddSink(feed_handler::MessageSink& /*sink*/) override {}
     void Start() override {
         calls_.push_back(id_ + ":Start");
     }

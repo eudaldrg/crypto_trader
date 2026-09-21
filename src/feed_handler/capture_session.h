@@ -10,6 +10,7 @@
 // untestable without a live socket.
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <expected>
 #include <filesystem>
@@ -51,7 +52,8 @@ enum class JournalMode : std::uint8_t {
 /// plus any additional registered sinks. Not thread safe: it belongs to the
 /// connection's own thread and every sink registered with it is called on that
 /// same thread. The exceptions are what a journal thread reports back
-/// (SetFatalHandler, Error(), RecordsWritten()), which are safe from any thread.
+/// (SetFatalHandler, Error(), RecordsWritten()) and ConnectId(), which are safe from
+/// any thread.
 ///
 /// The journal writer is deliberately not one of the registered sinks: it is
 /// the always-present one that makes capture durable, it is the only sink
@@ -156,8 +158,10 @@ class CaptureSession {
     /// socket is lost.
     void Close();
 
+    /// Safe from any thread: a connection's Summary() reads it while the client
+    /// thread may be inside BeginConnect().
     std::uint64_t ConnectId() const {
-        return connect_id_;
+        return connect_id_.load(std::memory_order_relaxed);
     }
 
     /// Records written into the current file, including its connect
@@ -202,7 +206,7 @@ class CaptureSession {
     std::vector<MessageSink*> sinks_;
     std::filesystem::path current_path_;
     CaptureStamper stamper_;
-    std::uint64_t connect_id_ = 0;
+    std::atomic<std::uint64_t> connect_id_{0};
     /// True from the moment the sinks were told OnConnect(connect_id_) until
     /// OnDisconnect(connect_id_) has been delivered. Not the same as
     /// `writer_ != nullptr`: a BeginConnect that fails after opening the file

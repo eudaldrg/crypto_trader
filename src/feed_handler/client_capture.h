@@ -40,6 +40,10 @@ class ClientCapture : public CaptureConnection {
         return id_;
     }
 
+    void AddSink(MessageSink& sink) override {
+        session_.AddSink(sink);
+    }
+
     void Start() override {
         client_.Start();
     }
