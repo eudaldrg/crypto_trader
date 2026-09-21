@@ -52,6 +52,7 @@ class RecordingSink final : public MessageSink {
   public:
     void OnFrame(const CaptureFrame& frame) override {
         const std::lock_guard<std::mutex> lock(mutex_);
+        events_.push_back("frame " + std::to_string(frame.capture_sequence));
         frames_.push_back(RecordedFrame{
             .payload = CopyOf(frame.payload),
             .capture_sequence = frame.capture_sequence,
@@ -62,6 +63,7 @@ class RecordingSink final : public MessageSink {
 
     void OnConnect(std::uint64_t connect_id, std::string_view reason) override {
         const std::lock_guard<std::mutex> lock(mutex_);
+        events_.push_back("connect " + std::to_string(connect_id));
         connects_.push_back(RecordedConnect{
             .connect_id = connect_id,
             .reason = std::string(reason),
@@ -73,9 +75,29 @@ class RecordingSink final : public MessageSink {
         return frames_;
     }
 
+    void OnDisconnect(std::uint64_t connect_id) override {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        events_.push_back("disconnect " + std::to_string(connect_id));
+        disconnects_.push_back(connect_id);
+    }
+
     std::vector<RecordedConnect> Connects() const {
         const std::lock_guard<std::mutex> lock(mutex_);
         return connects_;
+    }
+
+    /// The connect_id of every disconnect, in delivery order.
+    std::vector<std::uint64_t> Disconnects() const {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return disconnects_;
+    }
+
+    /// Every event in delivery order across the three kinds ("connect 1",
+    /// "frame 2", "disconnect 1"), for tests about ordering between them, which
+    /// the per-kind accessors cannot express.
+    std::vector<std::string> Events() const {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return events_;
     }
 
     std::size_t FrameCount() const {
@@ -87,6 +109,8 @@ class RecordingSink final : public MessageSink {
     mutable std::mutex mutex_;
     std::vector<RecordedFrame> frames_;
     std::vector<RecordedConnect> connects_;
+    std::vector<std::uint64_t> disconnects_;
+    std::vector<std::string> events_;
 };
 
 }  // namespace feed_handler::testing

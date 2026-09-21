@@ -189,15 +189,17 @@ WsClient::WsClient(RestClient& rest, Credentials creds, CaptureSession& session,
                 HandleMessage(message->str);
                 break;
             case ix::WebSocketMessageType::Close:
-                // Flush and close the connect's file here rather than
-                // waiting for the next connect: the reconnect may take a
-                // while, and a closed file is a complete, readable one.
-                watchdog_.Disarm();
-                session_.Close();
-                log_.Warn("websocket closed (code " + std::to_string(message->closeInfo.code) +
-                          "): " + message->closeInfo.reason);
+                HandleClose(message->closeInfo.code, message->closeInfo.reason);
                 break;
             case ix::WebSocketMessageType::Error:
+                // Not a socket loss: IXWebSocket raises Error only for a failed
+                // connection attempt (handshake or refused connect), before any
+                // Open, so no connect is open here and there is nothing to
+                // close or announce. A socket that was up is always reported
+                // as Close, which is where the disconnect comes from. Closing
+                // the session here would be wrong, not just redundant: were an
+                // Error ever raised on a live socket, it would end the journal
+                // while frames kept arriving.
                 watchdog_.Disarm();
                 log_.Error("websocket error: " + message->errorInfo.reason + " (retry " +
                            std::to_string(message->errorInfo.retries) + ")");
@@ -312,6 +314,18 @@ void WsClient::HandleOpen() {
     consecutive_setup_failures_ = 0;
     log_.Info("connect_id " + std::to_string(session_.ConnectId()) + " started, journaling to " +
               path->string());
+}
+
+void WsClient::HandleClose(std::uint16_t code, const std::string& reason) {
+    // Flush and close the connect's file here rather than waiting for the next
+    // connect: the reconnect may take a while, and a closed file is a complete,
+    // readable one. Closing the session is also what tells its sinks the
+    // connection is gone, so a book goes stale now, not at the next connect.
+    // A no-op when nothing is open, e.g. the socket closed before HandleOpen
+    // got as far as BeginConnect.
+    watchdog_.Disarm();
+    session_.Close();
+    log_.Warn("websocket closed (code " + std::to_string(code) + "): " + reason);
 }
 
 void WsClient::HandleMessage(const std::string& payload) {

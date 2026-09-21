@@ -161,6 +161,16 @@ class WsClient {
     /// not a send path: nothing outbound goes through here.
     void HandleMessage(const std::string& payload);
 
+    /// Handles the socket closing: flushes and closes the connect's file and
+    /// tells the session's sinks the connection is gone. Normally called by
+    /// IXWebSocket's callback on its own thread, whichever way the socket was
+    /// lost (peer close, transport failure, this client's own ForceReconnect or
+    /// shutdown): the library reports every one of them as a Close event.
+    ///
+    /// Public for the same reason as HandleMessage(): the disconnect
+    /// notification is testable without a live socket.
+    void HandleClose(std::uint16_t code, const std::string& reason);
+
     /// True when capture cannot continue: a journal file could not be opened,
     /// or a write into an open one failed. The owning process should shut down
     /// rather than stay connected while dropping data on the floor.

@@ -28,6 +28,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -41,6 +42,7 @@
 #include <system_error>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include "feed_handler/capture_session.h"
 #include "feed_handler/journal_reader.h"
@@ -414,6 +416,29 @@ std::filesystem::path JournalOf(const std::filesystem::path& directory, std::uin
            << last_problem << ")";
 }
 
+/// Waits until `sink` has been told about exactly `expected` disconnects, in
+/// that order. Polled because the notification is delivered on the client's own
+/// connection thread, when its socket is lost.
+::testing::AssertionResult ExpectDisconnects(const feed_handler::testing::RecordingSink& sink,
+                                             const std::vector<std::uint64_t>& expected) {
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(kStepTimeoutMs);
+    while (sink.Disconnects().size() < expected.size() &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    if (sink.Disconnects() == expected) {
+        return ::testing::AssertionSuccess();
+    }
+    return ::testing::AssertionFailure() << "the sink saw " << sink.Disconnects().size()
+                                         << " disconnect(s), expected " << expected.size();
+}
+
+/// Index of `event` in `events`, or events.size() when absent.
+std::size_t IndexOf(const std::vector<std::string>& events, std::string_view event) {
+    return static_cast<std::size_t>(std::ranges::find(events, event) - events.begin());
+}
+
 }  // namespace
 
 // Tests at namespace scope, after the anonymous namespace closes: cppcheck
@@ -772,6 +797,81 @@ TEST_F(DeribitFixLoopback, ClosesTheJournalWhenTheStalenessWatchdogFires) {
     EXPECT_GE(client.ForcedReconnects(), 1U);
 
     client.Stop();
+}
+
+TEST_F(DeribitFixLoopback, DisconnectsTheSinkWhenAGapDropsTheConnection) {
+    // The book behind a sink must go stale when the feed drops, not at the next
+    // successful connect. A gap leaves the loop through the "reconnect" return,
+    // and the listener is closed so no next connect can be what delivers it.
+    CaptureSession capture({.directory = dir_, .exchange = "deribit"});
+    feed_handler::testing::RecordingSink sink;
+    capture.AddSink(sink);
+    FixClient client(TestConfig(), capture, LoopbackConfig());
+    client.Start();
+
+    Peer first = server_.AcceptOne(kStepTimeoutMs);
+    ASSERT_TRUE(first.Connected()) << "the client never connected";
+    ASSERT_TRUE(CompleteHandshake(first));
+    EXPECT_TRUE(sink.Disconnects().empty());
+
+    server_.StopListening();
+    ASSERT_TRUE(first.Send(Inbound(msg_type::kMarketDataIncrementalRefresh, 5)));
+    EXPECT_TRUE(ExpectDisconnects(sink, {1}));
+
+    client.Stop();
+    // Stopping while no connect is open delivers nothing more.
+    EXPECT_EQ(sink.Disconnects().size(), 1U);
+}
+
+TEST_F(DeribitFixLoopback, DisconnectsTheSinkWhenTheStalenessWatchdogFires) {
+    CaptureSession capture({.directory = dir_, .exchange = "deribit"});
+    feed_handler::testing::RecordingSink sink;
+    capture.AddSink(sink);
+    FixClientConfig cfg = LoopbackConfig();
+    cfg.staleness_timeout_ns = 200ULL * 1'000'000ULL;
+    FixClient client(TestConfig(), capture, cfg);
+    client.Start();
+
+    Peer exchange = server_.AcceptOne(kStepTimeoutMs);
+    ASSERT_TRUE(exchange.Connected()) << "the client never connected";
+    ASSERT_TRUE(CompleteHandshake(exchange));
+    server_.StopListening();
+
+    // Silence: the watchdog is the only thing that can end this connection.
+    EXPECT_TRUE(ExpectDisconnects(sink, {1}));
+    EXPECT_GE(client.ForcedReconnects(), 1U);
+
+    client.Stop();
+}
+
+TEST_F(DeribitFixLoopback, DisconnectsTheSinkBeforeTheNextConnectAndOnceMoreOnShutdown) {
+    CaptureSession capture({.directory = dir_, .exchange = "deribit"});
+    feed_handler::testing::RecordingSink sink;
+    capture.AddSink(sink);
+    FixClient client(TestConfig(), capture, LoopbackConfig());
+    client.Start();
+
+    Peer first = server_.AcceptOne(kStepTimeoutMs);
+    ASSERT_TRUE(first.Connected()) << "the client never connected";
+    ASSERT_TRUE(CompleteHandshake(first));
+    ASSERT_TRUE(first.Send(Inbound(msg_type::kMarketDataIncrementalRefresh, 5)));
+
+    // The client sends its second Logon only after journaling that connect's
+    // marker and announcing it, so by the time it is read the sink has seen
+    // both connects.
+    Peer second = server_.AcceptOne(kStepTimeoutMs);
+    ASSERT_TRUE(second.Connected()) << "the client did not reconnect after the gap";
+    std::string raw;
+    ASSERT_TRUE(ExpectNext(second, msg_type::kLogon, raw));
+
+    const auto events = sink.Events();
+    EXPECT_LT(IndexOf(events, "connect 1"), IndexOf(events, "disconnect 1"));
+    EXPECT_LT(IndexOf(events, "disconnect 1"), IndexOf(events, "connect 2"));
+    EXPECT_EQ(IndexOf(events, "disconnect 2"), events.size());
+
+    // Shutdown ends connect 2 through the same teardown, exactly once.
+    client.Stop();
+    EXPECT_EQ(sink.Disconnects(), (std::vector<std::uint64_t>{1, 2}));
 }
 
 TEST_F(DeribitFixLoopback, SendsItsScheduledHeartbeatWhileInboundDataKeepsFlowing) {

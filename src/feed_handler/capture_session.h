@@ -90,7 +90,13 @@ class CaptureSession {
     /// never about what another sink did with the frame.
     bool OnWireMessage(std::span<const std::byte> payload, FrameSource source);
 
-    /// Flushes and closes the current file. Safe to call twice.
+    /// Flushes and closes the current file and, if a connect was open, tells
+    /// every registered sink via message_sink::OnDisconnect() once the file is
+    /// complete. Safe to call twice: the second call finds nothing open and
+    /// delivers nothing. This is the one place a connect ends, so it is also the
+    /// only place OnDisconnect comes from: BeginConnect() reaches it through
+    /// Close() (so the previous connect's OnDisconnect precedes the next
+    /// OnConnect) and each client calls it whenever its socket is lost.
     void Close();
 
     std::uint64_t ConnectId() const {
@@ -126,6 +132,12 @@ class CaptureSession {
     std::filesystem::path current_path_;
     CaptureStamper stamper_;
     std::uint64_t connect_id_ = 0;
+    /// True from the moment the sinks were told OnConnect(connect_id_) until
+    /// OnDisconnect(connect_id_) has been delivered. Not the same as
+    /// `writer_ != nullptr`: a BeginConnect that fails after opening the file
+    /// (the marker write) leaves a writer but never announced the connect, so
+    /// closing it must not announce a disconnect for it.
+    bool announced_ = false;
     std::uint64_t closed_records_ = 0;
 };
 

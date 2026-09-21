@@ -90,6 +90,18 @@ class MessageSink {
     /// have no state to reset, hence a no-op default rather than a second pure
     /// virtual every implementation would have to write out.
     virtual void OnConnect(std::uint64_t /*connect_id*/, std::string_view /*reason*/) {}
+
+    /// Called when the connection `connect_id` ends: "the feed dropped, what you
+    /// hold is now stale until the next OnConnect". This is what lets an order
+    /// book stop trusting its state the moment the socket is lost rather than
+    /// at the next successful reconnect, which can be a full backoff away.
+    ///
+    /// Exactly once per connect_id that OnConnect announced, on the same thread
+    /// as the frames, after the last frame of that connection and before the
+    /// next OnConnect. Never called for a connection that was not announced (a
+    /// failed start, or a session that never connected). No-op default for the
+    /// same reason as OnConnect.
+    virtual void OnDisconnect(std::uint64_t /*connect_id*/) {}
 };
 
 /// Nanoseconds since an unspecified monotonic epoch (CLOCK_MONOTONIC).
