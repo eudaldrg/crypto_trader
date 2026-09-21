@@ -429,18 +429,27 @@ target_link_libraries(kraken_journal_dump PRIVATE order_book_kraken_wire feed_ha
 # order_book (decisions/0006 keeps that library free of feed_handler).
 add_library(book_adapter STATIC
   src/book_adapter/book_adapter.cpp
+  src/book_adapter/journal_replay.cpp
 )
 target_link_libraries(book_adapter PUBLIC order_book_kraken_wire feed_handler)
 
 if(BUILD_TESTING)
   add_project_test(book_adapter_tests
     src/book_adapter/tests/book_adapter_test.cpp
+    src/book_adapter/tests/journal_replay_test.cpp
   )
   target_link_libraries(book_adapter_tests PRIVATE book_adapter)
   target_compile_definitions(book_adapter_tests PRIVATE
     TEST_DATA_DIR="${ORDER_BOOK_TEST_DATA_DIR}"
   )
 endif()
+
+# Replays journals through the adapter inline and prints counts plus parse and
+# apply wall time: the profiling harness for the book code.
+add_project_executable(journal_replay
+  src/book_adapter/tools/journal_replay.cpp
+)
+target_link_libraries(journal_replay PRIVATE book_adapter)
 
 # libFuzzer pilot (decisions/0007). A raw add_executable, not
 # add_project_executable: -fsanitize=fuzzer supplies its own main, so its
