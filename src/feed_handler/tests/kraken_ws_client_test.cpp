@@ -262,6 +262,44 @@ TEST_F(KrakenCapture, DoesNotEndTheProcessOverAMessageThatArrivedBeforeTheFirstC
     EXPECT_EQ(session.TotalRecordsWritten(), 0U);
 }
 
+TEST_F(KrakenCapture, DisconnectsTheSinkWhenTheSocketCloses) {
+    // Every way a Kraken socket is lost -- peer close, transport failure, the
+    // watchdog's ForceReconnect, shutdown -- reaches HandleClose() as
+    // IXWebSocket's Close event, so this is the one path to prove.
+    CaptureSession session({.directory = dir_, .exchange = "kraken"});
+    RecordingSink sink;
+    session.AddSink(sink);
+    ASSERT_TRUE(session.BeginConnect("connected", FrameSource::kKrakenJson).has_value());
+
+    WsClient client(rest_, TestCredentials(), session);
+    client.HandleMessage(std::string(kUpdate));
+    EXPECT_TRUE(sink.Disconnects().empty());
+
+    client.HandleClose(1006, "abnormal closure");
+    EXPECT_EQ(sink.Disconnects(), (std::vector<std::uint64_t>{1}));
+    const auto events = sink.Events();
+    ASSERT_EQ(events.size(), 3U);
+    EXPECT_EQ(events[2], "disconnect 1");
+
+    // A second Close for the same connect (the library reporting the shutdown
+    // after the watchdog already closed it) must not announce it again.
+    client.HandleClose(1000, "normal closure");
+    EXPECT_EQ(sink.Disconnects().size(), 1U);
+}
+
+TEST_F(KrakenCapture, DoesNotDisconnectTheSinkForASocketThatNeverGotAConnect) {
+    // A Close before HandleOpen reached BeginConnect (token fetch failed, say):
+    // the sink was never told about a connect, so it is not told about its end.
+    CaptureSession session({.directory = dir_, .exchange = "kraken"});
+    RecordingSink sink;
+    session.AddSink(sink);
+
+    WsClient client(rest_, TestCredentials(), session);
+    client.HandleClose(1006, "abnormal closure");
+    EXPECT_TRUE(sink.Disconnects().empty());
+    EXPECT_TRUE(sink.Events().empty());
+}
+
 TEST_F(KrakenCapture, RequestStopReturnsWithoutJoiningAndJoinThenCompletes) {
     feed_handler::kraken::WsClientConfig cfg;
     cfg.url = std::string(kUnreachableUrl);

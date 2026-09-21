@@ -15,6 +15,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "feed_handler/journal_reader.h"
 #include "feed_handler/message_sink.h"
@@ -278,6 +279,121 @@ TEST_F(CaptureSessionDir, DoesNotAnnounceAConnectThatFailedToStart) {
 
     EXPECT_FALSE(session.BeginConnect("connected", kSource).has_value());
     EXPECT_TRUE(sink.Connects().empty());
+}
+
+TEST_F(CaptureSessionDir, DisconnectFollowsTheFramesAndPrecedesTheNextConnect) {
+    // The ordering a book relies on: connect, its frames, disconnect, and only
+    // then the next connect. The reconnect goes through BeginConnect, which has
+    // to end the previous connect first.
+    CaptureSession session({.directory = dir_, .exchange = "kraken"});
+    RecordingSink sink;
+    session.AddSink(sink);
+
+    ASSERT_TRUE(session.BeginConnect("connected", kSource).has_value());
+    EXPECT_TRUE(session.OnWireMessage(BytesOf(kSnapshot), kSource));
+    EXPECT_TRUE(session.OnWireMessage(BytesOf(kUpdate), kSource));
+    ASSERT_TRUE(session.BeginConnect("staleness watchdog", kSource).has_value());
+    EXPECT_TRUE(session.OnWireMessage(BytesOf(kSnapshot), kSource));
+    session.Close();
+
+    // Frame numbers are capture sequences: the marker took 1, the wire
+    // messages follow, and the count restarts with the new connect.
+    const std::vector<std::string> expected = {
+        "connect 1", "frame 2", "frame 3", "disconnect 1", "connect 2", "frame 2", "disconnect 2"};
+    EXPECT_EQ(sink.Events(), expected);
+    EXPECT_EQ(sink.Disconnects(), (std::vector<std::uint64_t>{1, 2}));
+}
+
+TEST_F(CaptureSessionDir, DisconnectIsDeliveredOncePerConnect) {
+    CaptureSession session({.directory = dir_, .exchange = "kraken"});
+    RecordingSink sink;
+    session.AddSink(sink);
+
+    ASSERT_TRUE(session.BeginConnect("connected", kSource).has_value());
+    session.Close();
+    session.Close();
+    EXPECT_EQ(sink.Disconnects(), (std::vector<std::uint64_t>{1}));
+
+    // A connect ended by an explicit Close is not ended again by the next
+    // BeginConnect, which closes "the previous one" as its first step.
+    ASSERT_TRUE(session.BeginConnect("reconnected", kSource).has_value());
+    EXPECT_EQ(sink.Disconnects(), (std::vector<std::uint64_t>{1}));
+    session.Close();
+    EXPECT_EQ(sink.Disconnects(), (std::vector<std::uint64_t>{1, 2}));
+    const std::vector<std::string> expected = {"connect 1", "disconnect 1", "connect 2",
+                                               "disconnect 2"};
+    EXPECT_EQ(sink.Events(), expected);
+}
+
+TEST_F(CaptureSessionDir, DisconnectIsNotDeliveredForASessionThatNeverConnected) {
+    CaptureSession session({.directory = dir_, .exchange = "kraken"});
+    RecordingSink sink;
+    session.AddSink(sink);
+
+    session.Close();
+    EXPECT_TRUE(sink.Disconnects().empty());
+    EXPECT_TRUE(sink.Events().empty());
+}
+
+TEST_F(CaptureSessionDir, DisconnectIsNotDeliveredForAConnectThatFailedToStart) {
+    // No OnConnect went out for it, so no OnDisconnect may either.
+    std::filesystem::create_directories(dir_);
+    const std::filesystem::path blocker = dir_ / "not-a-dir";
+    { std::ofstream file(blocker); }
+
+    CaptureSession session({.directory = blocker / "journal", .exchange = "kraken"});
+    RecordingSink sink;
+    session.AddSink(sink);
+
+    EXPECT_FALSE(session.BeginConnect("connected", kSource).has_value());
+    session.Close();
+    EXPECT_FALSE(session.BeginConnect("connected again", kSource).has_value());
+    EXPECT_TRUE(sink.Events().empty());
+}
+
+TEST_F(CaptureSessionDir, DisconnectReachesEverySinkAfterTheJournalIsComplete) {
+    // Reading the journal from inside the callback is what a sink that reacts
+    // to a disconnect (by flushing, say) would do: the file has to be closed and
+    // readable by then.
+    class JournalCheckingSink final : public feed_handler::MessageSink {
+      public:
+        explicit JournalCheckingSink(const std::filesystem::path& path) : path_(path) {}
+        void OnFrame(const feed_handler::CaptureFrame& /*frame*/) override {}
+        void OnDisconnect(std::uint64_t /*connect_id*/) override {
+            auto reader = JournalReader::Open(path_);
+            complete_ = reader.has_value();
+            while (reader.has_value() && reader->Next().has_value()) {
+                ++records_;
+            }
+            complete_ = complete_ && !reader->StoppedEarly();
+        }
+        bool Complete() const {
+            return complete_;
+        }
+        std::uint64_t Records() const {
+            return records_;
+        }
+
+      private:
+        std::filesystem::path path_;
+        bool complete_ = false;
+        std::uint64_t records_ = 0;
+    };
+
+    CaptureSession session({.directory = dir_, .exchange = "kraken"});
+    RecordingSink recording;
+    session.AddSink(recording);
+
+    const auto path = session.BeginConnect("connected", kSource);
+    ASSERT_TRUE(path.has_value()) << path.error();
+    JournalCheckingSink checking(*path);
+    session.AddSink(checking);
+    EXPECT_TRUE(session.OnWireMessage(BytesOf(kSnapshot), kSource));
+    session.Close();
+
+    EXPECT_TRUE(checking.Complete());
+    EXPECT_EQ(checking.Records(), 2U);  // the marker and the frame
+    EXPECT_EQ(recording.Disconnects(), (std::vector<std::uint64_t>{1}));
 }
 
 TEST(CaptureSessionNaming, MakesExchangeAndConnectIdObviousFromTheFileName) {

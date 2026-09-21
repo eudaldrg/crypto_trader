@@ -78,6 +78,7 @@ std::expected<std::filesystem::path, std::string> CaptureSession::BeginConnect(
     // Only once the connect is actually usable: every caller treats a
     // failure above as fatal to capture, and telling a sink to reset its state
     // for a connect that never starts would be worse than not telling it.
+    announced_ = true;
     for (MessageSink* sink : sinks_) {
         sink->OnConnect(connect_id_, reason);
     }
@@ -104,13 +105,22 @@ bool CaptureSession::OnWireMessage(std::span<const std::byte> payload, FrameSour
 }
 
 void CaptureSession::Close() {
-    if (writer_ == nullptr) {
+    if (writer_ != nullptr) {
+        closed_records_ += writer_->RecordsWritten();
+        writer_->Flush();
+        writer_.reset();
+        current_path_.clear();
+    }
+    if (!announced_) {
         return;
     }
-    closed_records_ += writer_->RecordsWritten();
-    writer_->Flush();
-    writer_.reset();
-    current_path_.clear();
+    // Cleared before the sinks run, so a sink that calls back into this session
+    // cannot be handed the same disconnect twice. After the file is closed, so a
+    // sink that reacts to the disconnect sees a complete journal.
+    announced_ = false;
+    for (MessageSink* sink : sinks_) {
+        sink->OnDisconnect(connect_id_);
+    }
 }
 
 }  // namespace feed_handler
