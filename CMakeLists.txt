@@ -430,6 +430,8 @@ target_link_libraries(book_adapter PUBLIC order_book_kraken_wire feed_handler)
 if(BUILD_TESTING)
   add_project_test(book_adapter_tests
     src/book_adapter/tests/book_adapter_test.cpp
+    src/book_adapter/tests/book_service_concurrency_test.cpp
+    src/book_adapter/tests/book_service_overflow_test.cpp
     src/book_adapter/tests/book_service_test.cpp
     src/book_adapter/tests/book_wiring_test.cpp
     src/book_adapter/tests/deribit_fix_book_test.cpp
