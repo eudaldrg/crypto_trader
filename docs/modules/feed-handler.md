@@ -68,7 +68,7 @@ mutex as their token fetches.
 Shutdown: a stop is requested on every connection first and only then are they
 joined, so N connections wind down together instead of one after another.
 
-The journal file is `<id>-<incarnation>-<UTC timestamp>.journal`. The id is in
+The journal file is `<id>-<connect_id>-<UTC timestamp>.journal`. The id is in
 the name because two connections to one exchange would otherwise both write
 `kraken-000001-...` and the second would truncate the first when started in the
 same second. The exchange tag inside the file header is still `kraken` or
@@ -76,6 +76,23 @@ same second. The exchange tag inside the file header is still `kraken` or
 
 A journal holds every symbol its connection subscribed to, interleaved in
 arrival order. Anything reading one for a single symbol has to filter.
+
+### What `connect_id` is
+
+`connect_id` numbers the established connections of one `[[connections]]` entry.
+It is 1 for the first connection the entry establishes and goes up by one on
+every reconnect (a staleness timeout, a dropped socket, a sequence gap). Each
+`connect_id` is its own journal file, and the file starts with a connect marker
+record, so a reader and every sink learn that a fresh snapshot follows and any
+book must reset.
+
+- It is per connection, not global: two entries each have their own count, and
+  both can be on `connect_id` 1 at once (the `<id>` in the file name is what
+  tells their files apart).
+- It restarts at 1 on every process run, which is why the file name also carries
+  the UTC timestamp.
+- It is not journal rotation. A file is never rotated for size or age; a new
+  file happens only because a new connection was established.
 
 ## Schema
 

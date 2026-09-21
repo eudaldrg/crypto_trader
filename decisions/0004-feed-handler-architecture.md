@@ -129,10 +129,12 @@ the exchange's own wire encoding verbatim — no re-encoding step, since
 Kraken already arrives as JSON text and Deribit FIX already arrives as
 tag=value bytes:
 
-- **One append-only file per (exchange, connection-incarnation) — not per
-  symbol.** A single Kraken WS connection interleaves every subscribed
-  symbol on one TCP stream in true arrival order; splitting by symbol at
-  capture time would mean parsing before journaling (contradicting
+- **One append-only file per (exchange, `connect_id`) — not per
+  symbol.** (`connect_id` is one established connection to an exchange, bumped
+  on every reconnect; it was formerly called "incarnation", so older commits
+  and notes that use that word mean the same thing.) A single Kraken WS
+  connection interleaves every subscribed symbol on one TCP stream in true
+  arrival order; splitting by symbol at capture time would mean parsing before journaling (contradicting
   raw-as-received) and would destroy the one true arrival order the capture
   sequence number below exists to preserve. Symbol filtering is a read-time
   index concern, not a file-layout concern.
@@ -155,9 +157,9 @@ tag=value bytes:
   short of the bad record. A reader treats the first invalid record as
   end-of-valid-data, not an error to propagate.
 - **Capture timestamp is both monotonic and wall-clock**: a wall-clock
-  anchor (`CLOCK_REALTIME`) recorded once per file/incarnation, plus a
+  anchor (`CLOCK_REALTIME`) recorded once per file/`connect_id`, plus a
   monotonic (`CLOCK_MONOTONIC`) reading per record for ordering/latency
-  deltas within that incarnation. Monotonic-only can't be correlated across
+  deltas within that `connect_id`. Monotonic-only can't be correlated across
   a restart or against exchange-side timestamps, so it can't stand alone.
   Known limitation for v1: with IXWebSocket owning the socket, the
   timestamp is taken when our callback receives the frame, not at the
@@ -166,7 +168,7 @@ tag=value bytes:
   realistically reachable once the hand-rolled WS client
   (`decisions/0002`) replaces IXWebSocket.
 - A **reconnect is an explicit record**, not something inferred later from
-  message content — it marks "new connection incarnation, fresh snapshot
+  message content — it marks "new `connect_id`, fresh snapshot
   follows," so anything reading the journal never has to guess.
 - The capture sequence number is the seam Replay-mode determinism will need
   once multiple exchange threads feed one journal — today it is trivially
@@ -203,7 +205,7 @@ tag=value bytes:
   is off by default, so relying on it would be relying on an off-by-default
   setting nobody deliberately turned on. v1 needs an application-level
   timer: no message (including heartbeats) within N seconds forces a
-  reconnect (new connection incarnation), regardless of what the transport
+  reconnect (new `connect_id`), regardless of what the transport
   library does or doesn't do on its own.
 - **Deribit (FIX)**: two independent sequencing layers — FIX session-level
   `MsgSeqNum` (transport reliability) and MD-level
@@ -231,7 +233,7 @@ offset, shared by writer and reader). The choices worth recording here:
 - 64-byte file header: magic `CTJOURNL`, `uint16` format version, header
   size, the `CLOCK_REALTIME`/`CLOCK_MONOTONIC` anchor *pair* (sampled
   together, so per-record monotonic readings convert to wall clock), a
-  16-byte exchange tag, the incarnation ordinal, and a CRC-32 over the
+  16-byte exchange tag, the `connect_id` ordinal, and a CRC-32 over the
   header itself. All integers little-endian, written shift-by-shift rather
   than by struct punning.
 - 24-byte record header (type, payload length, capture sequence, monotonic
@@ -241,7 +243,7 @@ offset, shared by writer and reader). The choices worth recording here:
   already a transitive dependency via IXWebSocket's `USE_ZLIB` so it cost no
   new dependency.
 - The reconnect marker is a distinct `record_type`
-  (`connection_incarnation`), payload = a free-form reason string. It is
+  (`connect`), payload = a free-form reason string. It is
   written through the same stamped-frame path as wire data, so it takes its
   place in the same capture sequence rather than sitting outside the
   ordering.
@@ -298,11 +300,11 @@ binary. The choices worth recording:
 - **Failing to open a journal file is fatal to the process**, unlike a
   failed connection. Staying connected while unable to capture would
   silently discard the data the process exists to collect.
-- Incarnation bookkeeping lives in `capture_session` rather than in the
+- `connect_id` bookkeeping lives in `capture_session` rather than in the
   WebSocket callback, so the rotation logic (new file, incremented
-  incarnation, marker record, reset sequence numbering) is testable without a
-  socket. Files are named `<exchange>-<incarnation>-<UTC timestamp>.journal`:
-  the incarnation is what the format cares about, the timestamp keeps
+  `connect_id`, marker record, reset sequence numbering) is testable without a
+  socket. Files are named `<exchange>-<connect_id>-<UTC timestamp>.journal`:
+  the `connect_id` is what the format cares about, the timestamp keeps
   separate process runs (which all start counting at 1) from colliding.
 
 ### Kraken nonce persistence: as implemented (2026-09-16)
@@ -514,7 +516,7 @@ What the earlier text claimed and the code did not do:
   register a second sink at all. A second sink was not "a later addition", it
   was impossible.
 - The one event a second sink cannot be correct without — a reconnect — was not
-  on the interface either. `write_incarnation_marker` was a `journal_writer`
+  on the interface either. `write_connect_marker` was a `journal_writer`
   method, so an order book had no way to learn that it must reset.
 - A frame carried no identity: nothing on a `capture_frame` said which exchange
   or wire encoding produced it, so a sink fed by both clients would have had to
@@ -522,30 +524,30 @@ What the earlier text claimed and the code did not do:
 
 What now exists:
 
-- **`message_sink` gains `on_incarnation(incarnation, reason)`** alongside the
+- **`message_sink` gains `on_connect(connect_id, reason)`** alongside the
   pure-virtual `on_frame`, with a no-op default body. Most sinks have no state
   to reset; an order book has nothing but.
-- **The incarnation marker record and the incarnation notification stay two
-  different things.** `journal_writer` keeps `write_incarnation_marker(frame)`
+- **The connect marker record and the connect notification stay two
+  different things.** `journal_writer` keeps `write_connect_marker(frame)`
   as its own concrete method, called directly by `capture_session`, and does
-  *not* override `on_incarnation`. The marker is a *record*: it needs a stamped
-  frame so it takes its place in this incarnation's capture sequence, and the
+  *not* override `on_connect`. The marker is a *record*: it needs a stamped
+  frame so it takes its place in this `connect_id`'s capture sequence, and the
   session's single `capture_stamper` is the only thing entitled to hand out a
-  sequence number. Routing it through `on_incarnation` instead would mean the
+  sequence number. Routing it through `on_connect` instead would mean the
   writer stamping its own frames from a second sequence source, which is
   exactly what a single stamper exists to prevent. The notification form needs
   no sequence number at all, so the two do not collapse into one call.
 - **`capture_session::add_sink(message_sink&)` registers additional non-owning
   sinks** (a small `std::vector<message_sink*>`), which receive both `on_frame`
-  and `on_incarnation`. The journal writer is deliberately not one of them: it
+  and `on_connect`. The journal writer is deliberately not one of them: it
   is the always-present sink that makes capture durable, it is the only one
   whose failure `on_wire_message` reports, and it always goes first — the same
   "journal first, classify second" discipline both clients already follow, one
   level down, so nothing a downstream sink does can decide whether a record is
   written. Extra sinks *do* still see a frame whose journal write failed: what
-  failed is the disk, not the data. Sinks are told about an incarnation only
+  failed is the disk, not the data. Sinks are told about a `connect_id` only
   once it is actually usable, since every caller treats a failed
-  `begin_incarnation` as fatal to capture.
+  `begin_connect` as fatal to capture.
 - This is all the fan-out there is, on purpose: same thread, same call, no
   queue. The cross-thread fan-in seam above is unchanged and still future work.
   It will change what a sink does inside `on_frame`, not this call — which is
@@ -553,13 +555,13 @@ What now exists:
 - **`capture_frame` gains `frame_source source`** — an enum naming the wire
   shape (`kraken_json`, `deribit_fix`, `unknown`), not just the exchange,
   because what a sink has to decide is which parser the payload goes to. It is
-  supplied by the *client*, at the `on_wire_message`/`begin_incarnation` call
+  supplied by the *client*, at the `on_wire_message`/`begin_connect` call
   site, rather than configured on `capture_session`: the client is the only
   thing that knows first-hand what it just received, whereas a session
   configured by the binary that owns it could be handed the wrong answer and
   nothing would notice until an order book parsed JSON as tag=value.
 - **`frame_source` is not in the journal format and needs no version bump.** A
-  journal file is one per (exchange, connection-incarnation) and its header
+  journal file is one per (exchange, `connect_id`) and its header
   already carries the exchange tag, so a replay source recovers this once per
   file rather than once per record.
 
@@ -570,7 +572,7 @@ Two capture bugs fixed with it, both on the path an order book would sit on:
   `while (... && !client.fatal())` loop in `kraken_feed_handler` never noticed
   and the process ran "healthy" while capturing nothing — the exact outcome the
   "failing to open a journal file is fatal" rule exists to prevent, arrived at
-  from the other direction. A message arriving *before* the first incarnation
+  from the other direction. A message arriving *before* the first `connect_id`
   is deliberately still not fatal: that one is recoverable on the next connect.
   Kraken's `wait_for_stop` predicate now includes `fatal()` too; the fatal
   paths were already calling `notify_all()` on that condition variable, but a
@@ -581,7 +583,7 @@ Two capture bugs fixed with it, both on the path an order book would sit on:
   dozen, and the next one added would have been missed). Previously *no* path
   closed it: a gap, a peer Logout, framing loss, a `recv()` error and a
   staleness reconnect all left the file open with up to a full 1 MiB write
-  buffer unflushed until the next successful connection's `begin_incarnation`
+  buffer unflushed until the next successful connection's `begin_connect`
   closed it — up to `max_reconnect_wait_ms` (30s) later, or never if the
   exchange stayed down. Kraken already did the equivalent on its `Close` event,
   for the reason its comment gives: a closed file is a complete, readable one.
@@ -591,7 +593,7 @@ Testing notes worth keeping:
 - The Deribit loopback harness gained the ability to stop listening mid-test.
   That is what makes "the journal was closed" observable at all: with the
   listener still up, the client reconnects immediately and the *next*
-  `begin_incarnation` closes the previous file regardless, so the test would
+  `begin_connect` closes the previous file regardless, so the test would
   pass either way. With nothing to reconnect to, the only thing that can have
   closed the file is the path under test. "Closed" is asserted as "reads back
   from disk in full, at clean EOF" rather than as a counter, since records sit
@@ -612,7 +614,7 @@ their own exchange. TOML over YAML/JSON/XML because its array-of-tables is
 exactly "a list of connection entries", its scalars are unambiguous, and it
 allows comments; `toml++` is header-only and comes in through `FetchContent`
 like GoogleTest. One entry is one socket and one journal, which keeps this ADR's
-"one file per (exchange, connection-incarnation), not per symbol" rule intact
+"one file per (exchange, `connect_id`), not per symbol" rule intact
 and makes a second Deribit instrument or a shard past Kraken's 200 symbols a
 config edit. Credentials are named by environment variable, never stored (the
 schema and its validation are in `docs/modules/feed-handler.md`).
@@ -719,7 +721,7 @@ path.
   speculate about.
 - **Replay resync is intentionally underspecified here.** Reconstructing
   "the same order the strategies originally saw" needs a manifest ordering
-  incarnation files (directory listing order isn't a safe substitute) and an
+  per-`connect_id` files (directory listing order isn't a safe substitute) and an
   explicit pacing contract (as-fast-as-possible vs. reproducing recorded
   inter-arrival gaps) — both are real design questions for the Replay-mode
   ADR when that mode is actually built, not resolved by this one.

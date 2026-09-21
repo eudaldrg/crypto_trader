@@ -77,7 +77,7 @@ format. See `exchanges/README.md` for the index.
   (LiveTrading/Replay/Simulation) and the `MessageSink` interface (with its
   frame-ownership contract) that keeps strategy-facing code identical across
   them; the v1 journal format (raw wire bytes + capture metadata, framed and
-  versioned, one file per exchange+connection-incarnation — not per symbol);
+  versioned, one file per exchange+connect_id — not per symbol);
   the threading model (epoll-per-thread-group is the end-goal, but
   IXWebSocket owning its own fd/thread keeps Kraken a standalone exception
   until it's replaced) and where the future SPSC fan-in seam goes; and the
