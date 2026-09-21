@@ -207,10 +207,16 @@ FixClient::FixClient(SessionConfig session_cfg, CaptureSession& capture, FixClie
       log_(cfg_.id),
       capture_(capture),
       session_(std::move(session_cfg)),
-      watchdog_(cfg_.staleness_timeout_ns) {}
+      watchdog_(cfg_.staleness_timeout_ns) {
+    // Before the thread can journal anything: the journal thread reports a write
+    // failure, and this client's thread a ring overflow, through this.
+    capture_.SetFatalHandler([this](std::string_view reason) { OnJournalFatal(reason); });
+}
 
 FixClient::~FixClient() {
     Stop();
+    // The handler points at this object; the session outlives it.
+    capture_.SetFatalHandler({});
 }
 
 void FixClient::Start() {
@@ -457,14 +463,24 @@ bool FixClient::JournalMessage(std::string_view raw) {
     if (capture_.OnWireMessage(BytesOf(raw), kWireSource)) {
         return true;
     }
-    const std::string_view reason = capture_.Error();
-    if (reason.empty()) {
+    if (capture_.Error().empty()) {
+        // No open connect, so nothing to write into. The next connect fixes it.
         log_.Error("dropped a message: no journal file open");
-        return false;
     }
-    log_.Error("journal write failed: " + std::string(reason));
-    stop_signal_.LatchFatal();
+    // Otherwise the journal has failed (a full disk, a ring overflow), which
+    // never heals. It is not decided here: the session already reported it
+    // through the fatal handler registered in the constructor (OnJournalFatal),
+    // which latches the fatal and logs the reason. The journal is on its own
+    // thread, so this return value can no longer be the one place a write
+    // failure is noticed. Either way the session is no longer usable.
     return false;
+}
+
+void FixClient::OnJournalFatal(std::string_view reason) {
+    // Any thread: the journal thread for a failed write, this client's thread for
+    // a ring overflow. Both the log and the latch are safe from there.
+    log_.Error("journal failed: " + std::string(reason));
+    stop_signal_.LatchFatal();
 }
 
 bool FixClient::SendHeartbeatIfDue(int fd) {
