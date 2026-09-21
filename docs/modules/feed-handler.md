@@ -102,6 +102,7 @@ binaries used to hardcode) and a test parses it, so it cannot rot.
 | Key | Where | Meaning |
 |---|---|---|
 | `journal_dir`, `state_dir` | top level, optional | default `journal`, `state`, relative to the working directory |
+| `order_books` | top level, optional | boolean, default `false`: run order books off the live captures. Off so a capture tool keeps only journaling until books have run for a while |
 | `id` | connection | lowercase letters, digits, `_`, `-`, at most 48; names the journal files |
 | `exchange` | connection | `kraken` or `deribit` |
 | `env` | connection | `prod` or `testnet` (Kraken: `prod` only), required so a connection never silently picks one |
@@ -109,6 +110,11 @@ binaries used to hardcode) and a test parses it, so it cannot rot.
 | `symbols` | connection | non-empty, no duplicates, characters `A-Za-z0-9_-./` only |
 | `endpoint` | connection, optional | Kraken: a `ws(s)://` URL. Deribit: `host:port` |
 | `api_key_env`, `api_secret_env` | connection | the NAMES of environment variables, never the credentials |
+| `depth` | Kraken connection, optional | level3 subscribe depth: `10` (default), `100` or `1000`. Always sent explicitly on the subscribe, so the depth a book is built for and the depth subscribed cannot drift. Rejected on a Deribit connection |
+| `price_decimals`, `quantity_decimals` | Deribit connection, optional | integer 0 to 15: decimal places of the integers a book works in, applied to every symbol on the connection, so use the finest decimals among its symbols. Required once `order_books` is on. Rejected on a Kraken connection, whose scale comes from the `AssetPairs` lookup |
+
+`depth` and the decimals are parsed and validated here; what reads them to build
+books is the order-book wiring, not the config layer.
 
 Validation is strict and reports the entry it failed on: unknown keys are
 rejected (a `symbol` for `symbols` typo would otherwise capture nothing while

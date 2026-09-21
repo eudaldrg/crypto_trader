@@ -134,11 +134,12 @@ MessageClassification ClassifyMessage(std::string_view json) {
     return {.kind = ClassifyChannel(channel, type), .detail = type};
 }
 
-std::string BuildSubscribeMessage(std::span<const std::string> symbols, std::string_view token) {
+std::string BuildSubscribeMessage(std::span<const std::string> symbols, int depth,
+                                  std::string_view token) {
     // Hand-built rather than via a JSON writer: the payload is fixed shape and
-    // every interpolated value is constrained (config-validated symbols and
-    // Kraken's own base64-ish token), so there is nothing here needing
-    // escaping.
+    // every interpolated value is constrained (config-validated symbols, an
+    // integer depth and Kraken's own base64-ish token), so there is nothing
+    // here needing escaping.
     std::string message;
     message.reserve(160 + token.size() + symbols.size() * 16);
     message += R"({"method":"subscribe","params":{"channel":"level3","symbol":[)";
@@ -147,7 +148,9 @@ std::string BuildSubscribeMessage(std::span<const std::string> symbols, std::str
         message += symbols[index];
         message += '"';
     }
-    message += R"(],"snapshot":true,"token":")";
+    message += R"(],"depth":)";
+    message += std::to_string(depth);
+    message += R"(,"snapshot":true,"token":")";
     message += token;
     message += R"("}})";
     return message;
@@ -299,7 +302,7 @@ void WsClient::HandleOpen() {
     // Outbound only: never stamped, never journaled. The token lives in the
     // message body, so journaling this would archive a live credential
     // (decisions/0004).
-    const auto sent = ws_->send(BuildSubscribeMessage(cfg_.symbols, token->token));
+    const auto sent = ws_->send(BuildSubscribeMessage(cfg_.symbols, cfg_.depth, token->token));
     if (!sent.success) {
         log_.Error("failed to send level3 subscribe");
         BackOffAfterSetupFailure();

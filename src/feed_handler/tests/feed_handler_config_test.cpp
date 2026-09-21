@@ -79,6 +79,67 @@ TEST(FeedHandlerConfig, ParsesBothExchangesAndAppliesDefaults) {
     EXPECT_EQ(deribit.endpoint, "fix-test.deribit.com:9881");
 }
 
+TEST(FeedHandlerConfig, BookSettingsDefaultWhenNotGiven) {
+    const auto config = ParseConfig(kKraken + kDeribit);
+    ASSERT_TRUE(config.has_value()) << config.error();
+    EXPECT_FALSE(config->order_books);
+    EXPECT_EQ(config->connections[0].depth, 10);
+    EXPECT_FALSE(config->connections[0].price_decimals.has_value());
+    EXPECT_FALSE(config->connections[0].quantity_decimals.has_value());
+    EXPECT_FALSE(config->connections[1].price_decimals.has_value());
+    EXPECT_FALSE(config->connections[1].quantity_decimals.has_value());
+}
+
+TEST(FeedHandlerConfig, ReadsDepthDecimalsAndOrderBooks) {
+    const auto config = ParseConfig("order_books = true\n" + kKraken + "depth = 100\n" + kDeribit +
+                                    "price_decimals = 1\nquantity_decimals = 0\n");
+    ASSERT_TRUE(config.has_value()) << config.error();
+    EXPECT_TRUE(config->order_books);
+    EXPECT_EQ(config->connections[0].depth, 100);
+    EXPECT_EQ(config->connections[1].price_decimals, 1);
+    EXPECT_EQ(config->connections[1].quantity_decimals, 0);
+}
+
+TEST(FeedHandlerConfig, OnlyTheDepthsKrakenDocumentsAreAccepted) {
+    for (const int depth : {10, 100, 1000}) {
+        const auto config = ParseConfig(kKraken + "depth = " + std::to_string(depth) + "\n");
+        ASSERT_TRUE(config.has_value()) << depth << ": " << config.error();
+        EXPECT_EQ(config->connections[0].depth, depth);
+    }
+    ExpectRejected(kKraken + "depth = 25\n", "'depth' must be one of 10, 100, 1000 (got 25)");
+    ExpectRejected(kKraken + "depth = 0\n", "'depth' must be one of");
+    ExpectRejected(kKraken + "depth = -10\n", "'depth' must be one of");
+    ExpectRejected(kKraken + "depth = 10.0\n", "'depth' must be an integer");
+    ExpectRejected(kKraken + "depth = \"10\"\n", "'depth' must be an integer");
+}
+
+TEST(FeedHandlerConfig, ExchangeSpecificBookKeysAreRejectedOnTheOtherExchange) {
+    ExpectRejected(kDeribit + "depth = 10\n", "'depth' is a kraken key");
+    ExpectRejected(kKraken + "price_decimals = 1\n", "'price_decimals' is a deribit key");
+    ExpectRejected(kKraken + "quantity_decimals = 8\n", "'quantity_decimals' is a deribit key");
+    // The message names the entry, like every other rule.
+    ExpectRejected(kDeribit + "depth = 10\n", "connections[0] (deribit-perp)");
+}
+
+TEST(FeedHandlerConfig, DecimalsMustBeSmallNonNegativeIntegers) {
+    EXPECT_TRUE(ParseConfig(kDeribit + "price_decimals = 0\nquantity_decimals = 15\n").has_value());
+    ExpectRejected(kDeribit + "price_decimals = -1\n",
+                   "'price_decimals' must be an integer from 0");
+    ExpectRejected(kDeribit + "quantity_decimals = 16\n",
+                   "'quantity_decimals' must be an integer from 0 to 15 (got 16)");
+    ExpectRejected(kDeribit + "price_decimals = 1.5\n", "'price_decimals' must be an integer");
+    ExpectRejected(kDeribit + "quantity_decimals = \"8\"\n",
+                   "'quantity_decimals' must be an integer");
+}
+
+TEST(FeedHandlerConfig, OrderBooksMustBeABoolean) {
+    ExpectRejected("order_books = 1\n" + kKraken, "'order_books' must be a boolean");
+    ExpectRejected("order_books = \"true\"\n" + kKraken, "'order_books' must be a boolean");
+    const auto off = ParseConfig("order_books = false\n" + kKraken);
+    ASSERT_TRUE(off.has_value()) << off.error();
+    EXPECT_FALSE(off->order_books);
+}
+
 TEST(FeedHandlerConfig, ReadsExplicitDirectoriesAndEndpoints) {
     const auto config = ParseConfig(R"(
 journal_dir = "/data/journals"
@@ -294,6 +355,11 @@ TEST(FeedHandlerConfig, TheCommittedDefaultConfigIsValid) {
     ASSERT_EQ(config->connections.size(), 2U);
     EXPECT_EQ(config->connections[0].exchange, Exchange::kKraken);
     EXPECT_EQ(config->connections[1].exchange, Exchange::kDeribit);
+    // The default config only journals: books stay off until asked for.
+    EXPECT_FALSE(config->order_books);
+    EXPECT_EQ(config->connections[0].depth, 10);
+    EXPECT_EQ(config->connections[1].price_decimals, 1);
+    EXPECT_EQ(config->connections[1].quantity_decimals, 0);
 }
 
 }  // namespace

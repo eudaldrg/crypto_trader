@@ -1,7 +1,9 @@
 #include "feed_handler/config/feed_handler_config.h"
 
 #include <algorithm>
+#include <array>
 #include <charconv>
+#include <cstdint>
 #include <fstream>
 #include <initializer_list>
 #include <optional>
@@ -91,6 +93,21 @@ std::expected<std::optional<std::string>, std::string> ReadString(const toml::ta
         return Error(where + ": '" + std::string(key) + "' must be a string");
     }
     return node->as_string()->get();
+}
+
+/// An integer key, absent when not given. toml++ reads `1.0` and `"10"` as a
+/// float and a string, so neither is silently truncated or parsed.
+std::expected<std::optional<std::int64_t>, std::string> ReadInteger(const toml::table& table,
+                                                                    std::string_view key,
+                                                                    const std::string& where) {
+    const toml::node* node = table.get(key);
+    if (node == nullptr) {
+        return std::nullopt;
+    }
+    if (!node->is_integer()) {
+        return Error(where + ": '" + std::string(key) + "' must be an integer");
+    }
+    return node->as_integer()->get();
 }
 
 std::expected<std::string, std::string> RequireString(const toml::table& table,
@@ -235,13 +252,69 @@ std::expected<std::string, std::string> RequireEnvName(const toml::table& table,
     return name;
 }
 
+/// `depth` on Kraken, `price_decimals` and `quantity_decimals` on Deribit. A key
+/// that belongs to the other exchange is an error rather than ignored: a Deribit
+/// entry with a `depth` would look configured while doing nothing.
+std::expected<void, std::string> ParseBookSettings(const toml::table& table, Connection& connection,
+                                                   const std::string& where) {
+    const bool is_kraken = connection.exchange == Exchange::kKraken;
+    const std::string_view name = ToString(connection.exchange);
+
+    const auto depth = ReadInteger(table, "depth", where);
+    if (!depth) {
+        return Error(depth.error());
+    }
+    if (depth->has_value()) {
+        if (!is_kraken) {
+            return Error(where + ": 'depth' is a kraken key; " + std::string(name) +
+                         " has no subscribed depth");
+        }
+        const auto supported = std::ranges::find(kraken::kSupportedDepths, **depth);
+        if (supported == kraken::kSupportedDepths.end()) {
+            std::string allowed;
+            for (const int value : kraken::kSupportedDepths) {
+                allowed += allowed.empty() ? "" : ", ";
+                allowed += std::to_string(value);
+            }
+            return Error(where + ": 'depth' must be one of " + allowed + " (got " +
+                         std::to_string(**depth) + ")");
+        }
+        connection.depth = *supported;
+    }
+
+    const std::array<std::pair<std::string_view, std::optional<int>*>, 2> decimals = {{
+        {"price_decimals", &connection.price_decimals},
+        {"quantity_decimals", &connection.quantity_decimals},
+    }};
+    for (const auto& [key, target] : decimals) {
+        const auto value = ReadInteger(table, key, where);
+        if (!value) {
+            return Error(value.error());
+        }
+        if (!value->has_value()) {
+            continue;
+        }
+        if (is_kraken) {
+            return Error(where + ": '" + std::string(key) +
+                         "' is a deribit key; kraken's scale comes from the AssetPairs lookup");
+        }
+        if (**value < 0 || **value > kMaxDecimals) {
+            return Error(where + ": '" + std::string(key) + "' must be an integer from 0 to " +
+                         std::to_string(kMaxDecimals) + " (got " + std::to_string(**value) + ")");
+        }
+        *target = static_cast<int>(**value);
+    }
+    return {};
+}
+
 std::expected<Connection, std::string> ParseConnection(const toml::table& table,
                                                        std::size_t index) {
     std::string where = Label(index, {});
-    if (auto ok = RejectUnknownKeys(table,
-                                    {"id", "exchange", "env", "feed", "symbols", "endpoint",
-                                     "api_key_env", "api_secret_env"},
-                                    where);
+    if (auto ok = RejectUnknownKeys(
+            table,
+            {"id", "exchange", "env", "feed", "symbols", "endpoint", "api_key_env",
+             "api_secret_env", "depth", "price_decimals", "quantity_decimals"},
+            where);
         !ok) {
         return Error(ok.error());
     }
@@ -293,6 +366,10 @@ std::expected<Connection, std::string> ParseConnection(const toml::table& table,
         return Error(symbols.error());
     }
     connection.symbols = std::move(*symbols);
+
+    if (auto settings = ParseBookSettings(table, connection, where); !settings) {
+        return Error(settings.error());
+    }
 
     if (auto resolved = ResolveEndpoint(table, connection, where); !resolved) {
         return Error(resolved.error());
@@ -414,7 +491,8 @@ std::expected<FeedHandlerConfig, std::string> ParseConfig(std::string_view toml_
                      std::string(error.description()));
     }
 
-    if (auto ok = RejectUnknownKeys(root, {"journal_dir", "state_dir", "connections"}, "config");
+    if (auto ok = RejectUnknownKeys(
+            root, {"journal_dir", "state_dir", "order_books", "connections"}, "config");
         !ok) {
         return Error(ok.error());
     }
@@ -430,6 +508,13 @@ std::expected<FeedHandlerConfig, std::string> ParseConfig(std::string_view toml_
         return Error(state_dir.error());
     }
     config.state_dir = std::move(*state_dir);
+
+    if (const toml::node* order_books = root.get("order_books"); order_books != nullptr) {
+        if (!order_books->is_boolean()) {
+            return Error("config: 'order_books' must be a boolean");
+        }
+        config.order_books = order_books->as_boolean()->get();
+    }
 
     const toml::node* node = root.get("connections");
     if (node == nullptr) {

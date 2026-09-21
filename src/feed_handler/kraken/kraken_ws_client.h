@@ -82,7 +82,10 @@ struct MessageClassification {
 /// Single pass over the top-level object; nothing inside `data` is touched.
 MessageClassification ClassifyMessage(std::string_view json);
 
-/// Builds the level3 subscribe payload for `symbols` (exchanges/kraken.md).
+/// Builds the level3 subscribe payload for `symbols` (exchanges/kraken.md). The
+/// `depth` is always sent, never left to Kraken's default, so it is the same
+/// number the connection's book is built for; it must be one of
+/// kSupportedDepths (the config layer validates it).
 ///
 /// The symbols are spliced in without JSON escaping, so they must already have
 /// passed the config layer's symbol check (feed_handler/config): no quote,
@@ -91,7 +94,8 @@ MessageClassification ClassifyMessage(std::string_view json);
 /// The result carries a live credential in-body: it must never be journaled
 /// or logged. JournalWriter has no outbound path at all, which is what keeps
 /// that structural rather than a rule to remember.
-std::string BuildSubscribeMessage(std::span<const std::string> symbols, std::string_view token);
+std::string BuildSubscribeMessage(std::span<const std::string> symbols, int depth,
+                                  std::string_view token);
 
 struct WsClientConfig {
     std::string url = std::string(kDefaultWsUrl);
@@ -101,6 +105,8 @@ struct WsClientConfig {
     /// WS v2 spells bitcoin "BTC", not REST's "XBT" (exchanges/kraken.md). All
     /// of them ride one subscribe on one socket, up to Kraken's cap of 200.
     std::vector<std::string> symbols = {"BTC/USD"};
+    /// The level3 subscribe depth, sent explicitly (kSupportedDepths).
+    int depth = kDefaultDepth;
     /// WebSocket-level ping. IXWebSocket defaults this to -1 (off), so it is
     /// set deliberately; it is the transport half of liveness detection, with
     /// the staleness watchdog below as the independent application half.
