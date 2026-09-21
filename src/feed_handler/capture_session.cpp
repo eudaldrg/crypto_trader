@@ -18,7 +18,7 @@ std::span<const std::byte> BytesOf(std::string_view text) {
 
 }  // namespace
 
-std::string JournalFileName(std::string_view prefix, std::uint64_t incarnation,
+std::string JournalFileName(std::string_view prefix, std::uint64_t connect_id,
                             std::uint64_t realtime_ns) {
     const auto seconds = static_cast<std::time_t>(realtime_ns / kNanosPerSecond);
     std::tm utc{};
@@ -28,17 +28,17 @@ std::string JournalFileName(std::string_view prefix, std::uint64_t incarnation,
 
     std::array<char, 24> ordinal{};
     std::snprintf(ordinal.data(), ordinal.size(), "%06llu",
-                  static_cast<unsigned long long>(incarnation));
+                  static_cast<unsigned long long>(connect_id));
 
     return std::string(prefix) + "-" + ordinal.data() + "-" + std::string(stamp.data(), length) +
            ".journal";
 }
 
-std::expected<std::filesystem::path, std::string> CaptureSession::BeginIncarnation(
+std::expected<std::filesystem::path, std::string> CaptureSession::BeginConnect(
     std::string_view reason, FrameSource source) {
     Close();
-    ++incarnation_;
-    // Capture sequence numbers are per-incarnation (journal_writer.h), so the
+    ++connect_id_;
+    // Capture sequence numbers are per-connect (journal_writer.h), so the
     // stamper restarts with the file rather than carrying over.
     stamper_ = CaptureStamper{};
 
@@ -51,12 +51,12 @@ std::expected<std::filesystem::path, std::string> CaptureSession::BeginIncarnati
 
     const std::filesystem::path path =
         cfg_.directory /
-        JournalFileName(cfg_.file_prefix.empty() ? cfg_.exchange : cfg_.file_prefix, incarnation_,
+        JournalFileName(cfg_.file_prefix.empty() ? cfg_.exchange : cfg_.file_prefix, connect_id_,
                         RealtimeNowNs());
     try {
         writer_ = std::make_unique<JournalWriter>(path, JournalWriter::Config{
                                                             .exchange = cfg_.exchange,
-                                                            .incarnation = incarnation_,
+                                                            .connect_id = connect_id_,
                                                         });
     } catch (const std::runtime_error& error) {
         return std::unexpected(std::string(error.what()));
@@ -64,22 +64,22 @@ std::expected<std::filesystem::path, std::string> CaptureSession::BeginIncarnati
 
     current_path_ = path;
     // The marker goes to the journal writer through its own concrete
-    // write_incarnation_marker(), not through the message_sink interface: it is
-    // a *record*, so it needs a stamped frame and a place in this incarnation's
+    // write_connect_marker(), not through the message_sink interface: it is
+    // a *record*, so it needs a stamped frame and a place in this connect's
     // capture sequence, and this stamper is the only thing that may hand those
     // out. A sink-interface version would need a second sequence source, which
     // is precisely what the single stamper exists to prevent. The other sinks
     // get the notification form below, which needs neither.
-    writer_->WriteIncarnationMarker(stamper_.Stamp(BytesOf(reason), source));
+    writer_->WriteConnectMarker(stamper_.Stamp(BytesOf(reason), source));
     if (!writer_->Good()) {
-        return std::unexpected("cannot write incarnation marker: " + writer_->Error());
+        return std::unexpected("cannot write connect marker: " + writer_->Error());
     }
 
-    // Only once the incarnation is actually usable: every caller treats a
+    // Only once the connect is actually usable: every caller treats a
     // failure above as fatal to capture, and telling a sink to reset its state
-    // for an incarnation that never starts would be worse than not telling it.
+    // for a connect that never starts would be worse than not telling it.
     for (MessageSink* sink : sinks_) {
-        sink->OnIncarnation(incarnation_, reason);
+        sink->OnConnect(connect_id_, reason);
     }
     return path;
 }

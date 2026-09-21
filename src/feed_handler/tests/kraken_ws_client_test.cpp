@@ -211,7 +211,7 @@ TEST_F(KrakenCapture, StampsEveryCapturedFrameWithItsOwnWireShape) {
     CaptureSession session({.directory = dir_, .exchange = "kraken"});
     RecordingSink sink;
     session.AddSink(sink);
-    ASSERT_TRUE(session.BeginIncarnation("test", FrameSource::kUnknown).has_value());
+    ASSERT_TRUE(session.BeginConnect("test", FrameSource::kUnknown).has_value());
 
     WsClient client(rest_, TestCredentials(), session);
     client.HandleMessage(std::string(kHeartbeat));
@@ -219,8 +219,8 @@ TEST_F(KrakenCapture, StampsEveryCapturedFrameWithItsOwnWireShape) {
 
     const auto frames = sink.Frames();
     ASSERT_EQ(frames.size(), 2U);
-    EXPECT_EQ(frames[0].source, FrameSource::kRakenJson);
-    EXPECT_EQ(frames[1].source, FrameSource::kRakenJson);
+    EXPECT_EQ(frames[0].source, FrameSource::kKrakenJson);
+    EXPECT_EQ(frames[1].source, FrameSource::kKrakenJson);
     EXPECT_EQ(frames[1].payload, kUpdate);
     EXPECT_EQ(client.MessagesReceived(), 2U);
     EXPECT_FALSE(client.Fatal());
@@ -232,14 +232,14 @@ TEST_F(KrakenCapture, TreatsAFailedJournalWriteAsFatalToTheProcess) {
     // stayed true forever and the process looked healthy while capturing
     // nothing. Deribit's journal_message already ended the session here.
     CaptureSession session({.directory = dir_, .exchange = "kraken"});
-    ASSERT_TRUE(session.BeginIncarnation("connected", FrameSource::kRakenJson).has_value());
+    ASSERT_TRUE(session.BeginConnect("connected", FrameSource::kKrakenJson).has_value());
 
     // Latches the writer's sticky error the way a full disk would: the record
     // is refused and the file is unreliable from that point on. Every later
     // write into this session now fails the same way, which is the property
     // that makes a journal failure worth ending the process over.
     const std::string oversized(feed_handler::journal::kMaxPayloadBytes + 1U, 'x');
-    ASSERT_FALSE(session.OnWireMessage(BytesOf(oversized), FrameSource::kRakenJson));
+    ASSERT_FALSE(session.OnWireMessage(BytesOf(oversized), FrameSource::kKrakenJson));
     ASSERT_FALSE(session.Error().empty());
 
     WsClient client(rest_, TestCredentials(), session);
@@ -248,10 +248,10 @@ TEST_F(KrakenCapture, TreatsAFailedJournalWriteAsFatalToTheProcess) {
     EXPECT_TRUE(client.Fatal());
 }
 
-TEST_F(KrakenCapture, DoesNotEndTheProcessOverAMessageThatArrivedBeforeTheFirstIncarnation) {
+TEST_F(KrakenCapture, DoesNotEndTheProcessOverAMessageThatArrivedBeforeTheFirstConnect) {
     // The other half of the same branch, and the reason it is a branch: a
     // message arriving before handle_open() has opened a file is loud but
-    // recoverable -- the next incarnation captures normally -- so it must not
+    // recoverable -- the next connect captures normally -- so it must not
     // be confused with a journal that has failed.
     CaptureSession session({.directory = dir_, .exchange = "kraken"});
 

@@ -89,7 +89,7 @@ TEST_F(CaptureConnections, NothingIsJournaledOrFatalBeforeStart) {
     const auto deribit = MakeDeribit();
     EXPECT_FALSE(kraken->Fatal());
     EXPECT_FALSE(deribit->Fatal());
-    // No session has begun an incarnation, so no directory or file exists yet.
+    // No session has begun a connect, so no directory or file exists yet.
     EXPECT_FALSE(std::filesystem::exists(journal_dir_));
 }
 
