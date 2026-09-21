@@ -274,6 +274,11 @@ function(add_project_test name)
   add_executable(${name} ${ARGN})
   target_link_libraries(${name} PRIVATE project_options project_warnings project_sanitizers
                                         GTest::gtest_main)
+  # Every discovered test runs under a cgroup memory cap (TEST_MEMORY_MAX, 4G by
+  # default), so a runaway test dies alone instead of taking the whole tmux
+  # session with it. scripts/with_memory_cap.sh has the why.
+  set_property(TARGET ${name} PROPERTY TEST_LAUNCHER
+                                       "${CMAKE_SOURCE_DIR}/scripts/with_memory_cap.sh")
   gtest_discover_tests(${name})
 endfunction()
 
