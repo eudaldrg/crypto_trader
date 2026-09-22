@@ -24,7 +24,9 @@
 
 #include "feed_handler/journal_thread.h"
 #include "feed_handler/journal_writer.h"
+#include "feed_handler/logging.h"
 #include "feed_handler/message_sink.h"
+#include "feed_handler/stop_signal.h"
 
 namespace feed_handler {
 
@@ -106,6 +108,14 @@ class CaptureSession {
     /// to call at any time, but a failure that happens before it is installed is
     /// not replayed to it: install it before the first BeginConnect().
     void SetFatalHandler(FatalHandler handler);
+
+    /// Wires this session's fatal handler to log the reason and latch
+    /// `stop_signal` fatal: every capture client does exactly this, so it is
+    /// one call instead of each hand-writing the same handler. `stop_signal`
+    /// and `log` must outlive this session, or the caller must clear the
+    /// handler with SetFatalHandler({}) first, the same lifetime rule as
+    /// passing a lambda directly.
+    void RouteFatalToStopSignal(StopSignal& stop_signal, const TaggedLog& log);
 
     /// Registers an additional sink to receive every frame this session
     /// captures, after the journal writer has taken it. NON-OWNING: `sink` must

@@ -185,7 +185,7 @@ WsClient::WsClient(RestClient& rest, Credentials creds, CaptureSession& session,
 
     // Before the socket can deliver anything: the journal thread reports a write
     // failure, and the connection thread a ring overflow, through this.
-    session_.SetFatalHandler([this](std::string_view reason) { OnJournalFatal(reason); });
+    session_.RouteFatalToStopSignal(stop_signal_, log_);
 
     ws_->setOnMessageCallback([this](const ix::WebSocketMessagePtr& message) {
         switch (message->type) {
@@ -325,13 +325,6 @@ void WsClient::HandleOpen() {
               path->string());
 }
 
-void WsClient::OnJournalFatal(std::string_view reason) {
-    // Any thread: the journal thread for a failed write, the WebSocket thread for
-    // a ring overflow. Both the log and the latch are safe from there.
-    log_.Error("journal failed: " + std::string(reason));
-    stop_signal_.LatchFatal();
-}
-
 void WsClient::HandleClose(std::uint16_t code, const std::string& reason) {
     // Flush and close the connect's file here rather than waiting for the next
     // connect: the reconnect may take a while, and a closed file is a complete,
@@ -361,10 +354,11 @@ void WsClient::HandleMessage(const std::string& payload) {
         }
         // Otherwise the journal has failed (a full disk, a ring overflow), which
         // never heals. It is not decided here: the session already reported it
-        // through the fatal handler registered in the constructor
-        // (OnJournalFatal), which is what latches the fatal and logs the reason.
-        // The journal is on its own thread, so this return value can no longer be
-        // the one place a write failure is noticed.
+        // through the fatal handler routed to stop_signal_ in the constructor
+        // (CaptureSession::RouteFatalToStopSignal), which is what latches the
+        // fatal and logs the reason. The journal is on its own thread, so this
+        // return value can no longer be the one place a write failure is
+        // noticed.
     }
 
     const MessageClassification classified = ClassifyMessage(payload);

@@ -210,7 +210,7 @@ FixClient::FixClient(SessionConfig session_cfg, CaptureSession& capture, FixClie
       watchdog_(cfg_.staleness_timeout_ns) {
     // Before the thread can journal anything: the journal thread reports a write
     // failure, and this client's thread a ring overflow, through this.
-    capture_.SetFatalHandler([this](std::string_view reason) { OnJournalFatal(reason); });
+    capture_.RouteFatalToStopSignal(stop_signal_, log_);
 }
 
 FixClient::~FixClient() {
@@ -469,18 +469,12 @@ bool FixClient::JournalMessage(std::string_view raw) {
     }
     // Otherwise the journal has failed (a full disk, a ring overflow), which
     // never heals. It is not decided here: the session already reported it
-    // through the fatal handler registered in the constructor (OnJournalFatal),
-    // which latches the fatal and logs the reason. The journal is on its own
-    // thread, so this return value can no longer be the one place a write
-    // failure is noticed. Either way the session is no longer usable.
+    // through the fatal handler routed to stop_signal_ in the constructor
+    // (CaptureSession::RouteFatalToStopSignal), which latches the fatal and
+    // logs the reason. The journal is on its own thread, so this return value
+    // can no longer be the one place a write failure is noticed. Either way
+    // the session is no longer usable.
     return false;
-}
-
-void FixClient::OnJournalFatal(std::string_view reason) {
-    // Any thread: the journal thread for a failed write, this client's thread for
-    // a ring overflow. Both the log and the latch are safe from there.
-    log_.Error("journal failed: " + std::string(reason));
-    stop_signal_.LatchFatal();
 }
 
 bool FixClient::SendHeartbeatIfDue(int fd) {

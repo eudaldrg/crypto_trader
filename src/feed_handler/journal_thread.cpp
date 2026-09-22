@@ -6,8 +6,8 @@
 namespace feed_handler {
 
 JournalThread::JournalThread(Config cfg)
-    : ring_(std::max<std::size_t>(cfg.ring_events, 1)),
-      capacity_(std::max<std::size_t>(cfg.ring_events, 1)),
+    : capacity_(std::max<std::size_t>(cfg.ring_events, 1)),
+      ring_(capacity_),
       on_fatal_(std::move(cfg.on_fatal)) {
     if (cfg.start) {
         Start();

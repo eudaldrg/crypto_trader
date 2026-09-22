@@ -38,6 +38,7 @@
 #include <utility>
 #include <vector>
 
+#include "book_adapter/tools/cli_flag_parsing.h"
 #include "feed_handler/journal_format.h"
 
 namespace {
@@ -110,16 +111,9 @@ std::string_view MsgType(std::string_view text) {
 }
 
 std::uint64_t ParseCount(const std::string& flag, const std::string& text) {
-    const std::string message = "invalid value for " + flag + ": " + text;
-    std::size_t consumed = 0;
-    std::uint64_t value = 0;
-    try {
-        value = std::stoull(text, &consumed);
-    } catch (const std::exception&) {
-        throw std::runtime_error(message);
-    }
-    if (consumed != text.size() || value == 0) {
-        throw std::runtime_error(message);
+    const std::uint64_t value = book_adapter::tools::ParseFlagValue<std::uint64_t>(flag, text);
+    if (value == 0) {
+        throw std::runtime_error("invalid value for " + flag + ": " + text);
     }
     return value;
 }

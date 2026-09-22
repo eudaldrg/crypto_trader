@@ -26,6 +26,7 @@
 #include <string>
 #include <vector>
 
+#include "book_adapter/tools/cli_flag_parsing.h"
 #include "order_book/instrument_scale.h"
 
 namespace {
@@ -47,23 +48,8 @@ struct Arguments {
     std::vector<std::filesystem::path> journals;
 };
 
-int ParseNumber(const std::string& flag, const std::string& text) {
-    const std::string message = "invalid value for " + flag + ": " + text;
-    std::size_t consumed = 0;
-    int value = 0;
-    try {
-        value = std::stoi(text, &consumed);
-    } catch (const std::exception&) {
-        throw std::runtime_error(message);
-    }
-    if (consumed != text.size()) {
-        throw std::runtime_error(message);
-    }
-    return value;
-}
-
 int ParseDecimals(const std::string& flag, const std::string& text) {
-    const int value = ParseNumber(flag, text);
+    const int value = book_adapter::tools::ParseFlagValue<int>(flag, text);
     if (value < 0 || value > kMaxDecimals) {
         throw std::runtime_error(flag + " must be between 0 and " + std::to_string(kMaxDecimals));
     }
@@ -86,7 +72,7 @@ Arguments ParseArguments(const std::vector<std::string>& args) {
             } else if (arg == "--quantity-decimals") {
                 parsed.quantity_decimals = ParseDecimals(arg, value);
             } else {
-                const int depth = ParseNumber(arg, value);
+                const int depth = book_adapter::tools::ParseFlagValue<int>(arg, value);
                 if (depth <= 0) {
                     throw std::runtime_error("--depth must be positive");
                 }

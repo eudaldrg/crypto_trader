@@ -202,8 +202,6 @@ class WsClient {
     }
 
   private:
-    /// The session's fatal handler: logs the reason and latches the fatal.
-    void OnJournalFatal(std::string_view reason);
     void HandleOpen();
     void RunWatchdog();
     /// Closes the current connection so IXWebSocket's automatic reconnection

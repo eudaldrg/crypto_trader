@@ -226,11 +226,9 @@ class FixClient {
     bool DrainFramedMessages(int fd);
     /// Journals one framed message verbatim, before any parsing. Returns false
     /// when it could not be journaled: no open connect, or a journal that has
-    /// failed (which the fatal handler has already latched, see OnJournalFatal).
+    /// failed (which the fatal handler has already latched, see
+    /// CaptureSession::RouteFatalToStopSignal in the constructor).
     bool JournalMessage(std::string_view raw);
-    /// The session's fatal handler: logs the reason and latches the fatal. Runs on
-    /// the journal thread or on this client's own, so it touches nothing else.
-    void OnJournalFatal(std::string_view reason);
     /// Sends the scheduled Heartbeat(35=0) if HeartBtInt seconds have passed
     /// since the last outbound byte. Returns false only when the send failed,
     /// which ends the connection. Driven from the top of the read loop rather
