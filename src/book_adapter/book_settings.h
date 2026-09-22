@@ -6,13 +6,17 @@
 
 #include <cstddef>
 
+#include "feed_handler/kraken/kraken_endpoints.h"
 #include "feed_handler/message_sink.h"
 #include "order_book/instrument_scale.h"
 
 namespace book_adapter {
 
 /// Kraken's level3 default depth, what a subscription that names none gets.
-inline constexpr std::size_t kDefaultKrakenDepth = 10;
+/// Same fact as feed_handler::kraken::kDefaultDepth, kept as one constant so
+/// the book's default and the subscription's default cannot drift apart.
+inline constexpr std::size_t kDefaultKrakenDepth =
+    static_cast<std::size_t>(feed_handler::kraken::kDefaultDepth);
 
 struct BookSettings {
     /// What shape the connection's frame payloads are in, so which parser and

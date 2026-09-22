@@ -26,9 +26,11 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "book_adapter/book_settings.h"
@@ -119,21 +121,33 @@ class BookListener {
     const feed_handler::TaggedLog* log_;
 };
 
-/// One symbol's Kraken level3 book plus the adapter's own desync flag. The
-/// engine cannot be told "you are stale" (it has no Reset(), and holds its
-/// listener by reference, so it is neither assignable nor movable), so a book
-/// the adapter knows to be untrustworthy is flagged here and reads as Desynced
-/// until its next snapshot. Not copyable or movable: the engine points at the
-/// listener inside this object.
-class KrakenBook {
+/// One symbol's book, for whichever granularity policy the connection uses
+/// (KrakenL3Policy, UnsequencedL2Policy, ...), plus the adapter's own desync
+/// flag. The engine cannot be told "you are stale" (it has no Reset(), and
+/// holds its listener by reference, so it is neither assignable nor
+/// movable), so a book the adapter knows to be untrustworthy is flagged here
+/// and reads as Desynced until its next snapshot. Not copyable or movable:
+/// the engine points at the listener inside this object.
+///
+/// ApplySnapshot/ApplyBatch are themselves templates, mirroring
+/// OrderBook::ApplySnapshot/ApplyBatch's variadic MessageMeta (engine.h): a
+/// Kraken book's caller passes a ChecksumMeta, an unsequenced L2 book's
+/// caller passes none, and the underlying engine's own `requires` clause is
+/// what rejects a mismatched call, so this wrapper does not need to repeat it.
+template <typename BookPolicy>
+class AdapterBook {
   public:
-    KrakenBook(std::string symbol, std::size_t depth, ConnectionStats& stats,
-               const feed_handler::TaggedLog& log);
-    KrakenBook(const KrakenBook&) = delete;
-    KrakenBook& operator=(const KrakenBook&) = delete;
-    KrakenBook(KrakenBook&&) = delete;
-    KrakenBook& operator=(KrakenBook&&) = delete;
-    ~KrakenBook() = default;
+    template <typename... PolicyArgs>
+    AdapterBook(std::string symbol, ConnectionStats& stats, const feed_handler::TaggedLog& log,
+                PolicyArgs&&... policy_args)
+        : symbol_(std::move(symbol)),
+          listener_(symbol_, stats, log),
+          book_(listener_, BookPolicy(std::forward<PolicyArgs>(policy_args)...)) {}
+    AdapterBook(const AdapterBook&) = delete;
+    AdapterBook& operator=(const AdapterBook&) = delete;
+    AdapterBook(AdapterBook&&) = delete;
+    AdapterBook& operator=(AdapterBook&&) = delete;
+    ~AdapterBook() = default;
 
     [[nodiscard]] const std::string& Symbol() const {
         return symbol_;
@@ -151,19 +165,25 @@ class KrakenBook {
         return book_.Best(side);
     }
 
-    /// The underlying policy, for queries (Policy().Book() is the L3 book).
-    [[nodiscard]] const order_book::KrakenL3Policy& Policy() const {
+    /// The underlying policy, for queries (a Kraken Policy().Book() is the L3
+    /// book).
+    [[nodiscard]] const BookPolicy& Policy() const {
         return book_.Policy();
     }
 
     /// Replaces the book's state; clears a desync the adapter had set. An
     /// integrity failure is counted and logged through the listener.
-    void ApplySnapshot(const order_book::L3Snapshot& snapshot,
-                       const order_book::ChecksumMeta& meta);
+    template <typename Snapshot, typename... Meta>
+    void ApplySnapshot(const Snapshot& snapshot, const Meta&... meta) {
+        desynced_ = false;
+        book_.ApplySnapshot(snapshot, meta...);
+    }
 
     /// Applies one message's updates as a unit. A defined no-op unless Ready.
-    void ApplyBatch(std::span<const order_book::KrakenL3Update> updates,
-                    const order_book::ChecksumMeta& meta);
+    template <typename Update, typename... Meta>
+    void ApplyBatch(std::span<const Update> updates, const Meta&... meta) {
+        book_.ApplyBatch(updates, meta...);
+    }
 
     /// The adapter no longer trusts this book (a dropped frame, a parse or
     /// apply failure). Stays desynced until the next ApplySnapshot.
@@ -174,63 +194,12 @@ class KrakenBook {
   private:
     std::string symbol_;
     BookListener listener_;
-    order_book::OrderBook<order_book::KrakenL3Policy, BookListener> book_;
+    order_book::OrderBook<BookPolicy, BookListener> book_;
     bool desynced_ = false;
 };
 
-/// One symbol's Deribit FIX book: an L2 book with no change_id
-/// (UnsequencedL2Policy) plus the adapter's own desync flag, for the same reason
-/// KrakenBook has one. Not copyable or movable: the engine points at the
-/// listener inside this object.
-class DeribitBook {
-  public:
-    DeribitBook(std::string symbol, ConnectionStats& stats, const feed_handler::TaggedLog& log);
-    DeribitBook(const DeribitBook&) = delete;
-    DeribitBook& operator=(const DeribitBook&) = delete;
-    DeribitBook(DeribitBook&&) = delete;
-    DeribitBook& operator=(DeribitBook&&) = delete;
-    ~DeribitBook() = default;
-
-    [[nodiscard]] const std::string& Symbol() const {
-        return symbol_;
-    }
-
-    [[nodiscard]] order_book::Readiness GetReadiness() const {
-        return desynced_ ? order_book::Readiness::kDesynced : book_.GetReadiness();
-    }
-
-    [[nodiscard]] bool IsReady() const {
-        return GetReadiness() == order_book::Readiness::kReady;
-    }
-
-    [[nodiscard]] std::optional<order_book::BookEntry> Best(order_book::Side side) const {
-        return book_.Best(side);
-    }
-
-    /// The underlying policy, for queries.
-    [[nodiscard]] const order_book::UnsequencedL2Policy& Policy() const {
-        return book_.Policy();
-    }
-
-    /// Replaces the book's state; clears a desync the adapter had set. An
-    /// integrity failure is counted and logged through the listener.
-    void ApplySnapshot(const order_book::UnsequencedL2Snapshot& snapshot);
-
-    /// Applies one message's updates as a unit. A defined no-op unless Ready.
-    void ApplyBatch(std::span<const order_book::L2Update> updates);
-
-    /// The adapter no longer trusts this book (a dropped frame, a malformed
-    /// message, an apply failure). Stays desynced until the next ApplySnapshot.
-    void MarkDesynced() {
-        desynced_ = true;
-    }
-
-  private:
-    std::string symbol_;
-    BookListener listener_;
-    order_book::OrderBook<order_book::UnsequencedL2Policy, BookListener> book_;
-    bool desynced_ = false;
-};
+using KrakenBook = AdapterBook<order_book::KrakenL3Policy>;
+using DeribitBook = AdapterBook<order_book::UnsequencedL2Policy>;
 
 /// Handle to a registered connection, returned by AddConnection.
 using ConnectionHandle = std::size_t;

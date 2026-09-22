@@ -52,6 +52,16 @@ void CaptureSession::SetFatalHandler(FatalHandler handler) {
     fatal_handler_ = std::move(handler);
 }
 
+void CaptureSession::RouteFatalToStopSignal(StopSignal& stop_signal, const TaggedLog& log) {
+    SetFatalHandler([&stop_signal, &log](std::string_view reason) {
+        // Any thread: the journal thread for a failed write, the connection
+        // thread for a ring overflow. Both the log and the latch are safe
+        // from there.
+        log.Error("journal failed: " + std::string(reason));
+        stop_signal.LatchFatal();
+    });
+}
+
 void CaptureSession::NotifyFatal(std::string_view reason) {
     FatalHandler handler;
     {

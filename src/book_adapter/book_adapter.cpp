@@ -19,12 +19,16 @@ namespace {
 // few are logged, the rest are only counted.
 constexpr std::uint64_t kMaxLoggedErrors = 10;
 
-std::string ErrorText(const char* what, const std::exception& error, std::uint64_t count) {
-    std::string text = std::string(what) + ": " + error.what();
+std::string ErrorText(const char* what, std::string_view message, std::uint64_t count) {
+    std::string text = std::string(what) + ": " + std::string(message);
     if (count == kMaxLoggedErrors) {
         text += " (further errors of this kind are counted, not logged)";
     }
     return text;
+}
+
+std::string ErrorText(const char* what, const std::exception& error, std::uint64_t count) {
+    return ErrorText(what, std::string_view(error.what()), count);
 }
 
 }  // namespace
@@ -49,36 +53,6 @@ void BookListener::OnIntegrityCheckFailed(order_book::IntegrityIssue issue) {
     ++stats_->issues[static_cast<std::size_t>(issue)];
     log_->Warn("book " + *symbol_ + ": integrity issue " + std::string(ToString(issue)) +
                ", book desynced until its next snapshot");
-}
-
-KrakenBook::KrakenBook(std::string symbol, std::size_t depth, ConnectionStats& stats,
-                       const feed_handler::TaggedLog& log)
-    : symbol_(std::move(symbol)),
-      listener_(symbol_, stats, log),
-      book_(listener_, order_book::KrakenL3Policy(depth)) {}
-
-void KrakenBook::ApplySnapshot(const order_book::L3Snapshot& snapshot,
-                               const order_book::ChecksumMeta& meta) {
-    desynced_ = false;
-    book_.ApplySnapshot(snapshot, meta);
-}
-
-void KrakenBook::ApplyBatch(std::span<const order_book::KrakenL3Update> updates,
-                            const order_book::ChecksumMeta& meta) {
-    book_.ApplyBatch(updates, meta);
-}
-
-DeribitBook::DeribitBook(std::string symbol, ConnectionStats& stats,
-                         const feed_handler::TaggedLog& log)
-    : symbol_(std::move(symbol)), listener_(symbol_, stats, log), book_(listener_) {}
-
-void DeribitBook::ApplySnapshot(const order_book::UnsequencedL2Snapshot& snapshot) {
-    desynced_ = false;
-    book_.ApplySnapshot(snapshot);
-}
-
-void DeribitBook::ApplyBatch(std::span<const order_book::L2Update> updates) {
-    book_.ApplyBatch(updates);
 }
 
 ConnectionHandle BookAdapter::AddConnection(std::string name, const BookSettings& settings) {
@@ -234,10 +208,9 @@ void BookAdapter::OnKrakenFrame(Connection& conn, const feed_handler::CaptureFra
                 KrakenBook* book = nullptr;
                 if (found == conn.books.end()) {
                     book = conn.books
-                               .emplace(
-                                   message.symbol,
-                                   std::make_unique<KrakenBook>(
-                                       message.symbol, conn.settings.kraken_depth, stats, conn.log))
+                               .emplace(message.symbol, std::make_unique<KrakenBook>(
+                                                            message.symbol, stats, conn.log,
+                                                            conn.settings.kraken_depth))
                                .first->second.get();
                 } else {
                     book = found->second.get();
@@ -296,11 +269,7 @@ void BookAdapter::OnDeribitParseError(Connection& conn, const DeribitFixParseErr
     ConnectionStats& stats = conn.stats;
     ++stats.parse_errors;
     if (stats.parse_errors <= kMaxLoggedErrors) {
-        std::string text = "unusable FIX message: " + error.what;
-        if (stats.parse_errors == kMaxLoggedErrors) {
-            text += " (further errors of this kind are counted, not logged)";
-        }
-        conn.log.Error(text);
+        conn.log.Error(ErrorText("unusable FIX message", error.what, stats.parse_errors));
     }
     // Without the symbol, the message may have been for any of the books. With
     // it, only that one has missed something.

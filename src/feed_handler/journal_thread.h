@@ -177,8 +177,8 @@ class JournalThread {
     /// Publishes the record count and turns a writer failure into Fail().
     void AfterWrite();
 
-    SpscRing<JournalEvent> ring_;
     std::size_t capacity_;
+    SpscRing<JournalEvent> ring_;
     FatalCallback on_fatal_;
 
     std::atomic<int> state_{kHealthy};
