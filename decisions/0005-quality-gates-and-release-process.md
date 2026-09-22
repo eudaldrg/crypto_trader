@@ -94,43 +94,52 @@ local hook is still worth having now: it catches things before they leave
 this machine, which is strictly better than catching them never, but it is
 not the same guarantee a required CI check would be.
 
-### Tier 3 — release-time: not implemented, open questions recorded here
+### Tier 3 — release-time: branching decided and first mechanism built; simulation/perf/coverage checks still open
 
 The project owner wants, eventually: running simulations, checking build
 times don't regress, checking runtime performance doesn't regress, coverage
 thresholds, and flagging newly-added code that has no test covering it. None
-of this is built yet, and neither is a "release" concept at all — there is
-nothing to release. Recording the open questions now so they aren't
-re-litigated from scratch later:
+of that is built yet. Recording the open questions now so they aren't
+re-litigated from scratch later, and recording what has since been decided:
 
-- **When does a release check run?** Three shapes were discussed, none
-  chosen:
-  1. After every task/PR — thorough, but likely too slow and too frequent
-     for checks like simulations or perf comparisons to make sense at that
-     granularity.
-  2. Feature branches stay unmerged until a release is being cut — keeps
-     `main` always release-ready, but risks a pile of long-lived unmerged
-     branches with growing merge-conflict exposure the longer they sit.
-  3. A parallel "next release" branch alongside `main` — decouples release
-     cadence from merge cadence, but is another branch to keep in sync and
-     makes versioning less obviously linear.
-- **Coverage / untested-code checks**: wants "don't add untested code" as a
-  gate eventually. Needs a coverage tool decision (the `coverage` CMake
-  preset with `--coverage` instrumentation already exists per
-  `decisions/0002`/CLAUDE.md, but nothing consumes its output yet — e.g. no
-  gcovr/llvm-cov report generation or a diff-coverage threshold check) and a
-  decision on what threshold or diff-coverage policy actually means "don't
-  add untested code" in practice.
+- **When does a release check run?** Decided: shape 3 (a parallel branch
+  alongside `main`) from the three discussed originally —
+  `feature/* -> dev` continuously, `dev -> main` only to cut a release
+  (tagged). `dev` is not GitHub's "default branch" (`main` still is), which
+  matters below.
+- **Tracking what a merge into `dev` closes, before it is actually
+  released**: GitHub's own `Closes #N` PR-body syntax only auto-closes an
+  issue when the closing PR merges into the *default* branch — merging into
+  `dev` does nothing automatically, confirmed empirically (issues #3/#4 sat
+  open 31 minutes after their PR merged into `dev`, until closed by hand).
+  `.github/workflows/release-tracking.yml` now reads the same `Closes #N` /
+  `Fixes #N` / `Resolves #N` wording a PR body already carries (so it is
+  written once, not twice) and, on a PR merging into `dev`, adds an `in-dev`
+  label to every issue it references instead of closing it — a real "landed
+  in dev, not yet released" state that plain GitHub issues (open/closed
+  only) cannot express on their own. On the `dev -> main` release PR, the
+  same workflow removes that label (GitHub's own mechanism does the actual
+  closing there, since `main` is the default branch). The label list at
+  release time is also the release-notes input the project owner wanted a
+  way to build. `scripts/release_tracking.py` has the extraction regex and
+  is unit-testable without a live PR.
+- **Coverage / untested-code checks**: still open. Wants "don't add
+  untested code" as a gate eventually. Needs a coverage tool decision (the
+  `coverage` CMake preset with `--coverage` instrumentation already exists
+  per `decisions/0002`/CLAUDE.md, but nothing consumes its output yet — e.g.
+  no gcovr/llvm-cov report generation or a diff-coverage threshold check)
+  and a decision on what threshold or diff-coverage policy actually means
+  "don't add untested code" in practice.
 - **A "release manager" role/process** was floated (something that owns
   running simulations, perf comparisons, and deciding a release is healthy)
-  but not designed — depends on which of the branching shapes above gets
-  picked, since that determines what a release manager would actually be
-  looking at.
+  but not designed. The branching shape it would depend on is now decided
+  (above); what it would actually check (simulations, perf comparisons) is
+  still open.
 
-None of tier 3 blocks anything today. Revisit this ADR (not a new one, this
-section) once there's an actual reason to cut a release — a decision made
-speculatively now, before the project needs one, is more likely to be wrong
-than one made when there's a concrete case in front of it.
+The simulation/perf/coverage checks still block nothing today and remain
+speculative until there's a concrete case in front of them. The branching
+shape and the `in-dev` tracking above are no longer speculative: they are
+the actual mechanism the first real release will use.
 
 ## Consequences
 

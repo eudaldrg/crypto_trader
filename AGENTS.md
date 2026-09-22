@@ -87,10 +87,15 @@ format. See `exchanges/README.md` for the index.
 - `decisions/0005-quality-gates-and-release-process.md` — the commit-time
   (must compile) and push-time (full suite under ASan+UBSan and TSan)
   enforcement tiers, why MemorySanitizer is deferred rather than added, why a
-  local git hook isn't a real (unbypassable) gate, and the still-open
-  questions around a release process (branching strategy, coverage
-  thresholds, perf/simulation checks) — don't assume any of those were
-  decided, read the ADR's open-questions section first.
+  local git hook isn't a real (unbypassable) gate, and the release process:
+  `feature/* -> dev` continuously, `dev -> main` (tagged) only to cut a
+  release. Since `dev` isn't GitHub's default branch, a `Closes #N` PR into
+  `dev` does not auto-close the issue; `.github/workflows/release-tracking.yml`
+  (`scripts/release_tracking.py`) reads the same wording and applies an
+  `in-dev` label instead, removed again on the `dev -> main` release PR where
+  GitHub's own mechanism does the closing — also the release-notes input.
+  Coverage thresholds and perf/simulation checks are still open questions;
+  read the ADR's tier 3 section before assuming more than that was decided.
 - `decisions/0006-order-book-design.md` — the L1/L2/L3 granularity axis and
   the matching/non-matching axis (matching left as a concept-constrained
   seam, not implemented); why polymorphism across both is resolved with

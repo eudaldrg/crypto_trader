@@ -1,0 +1,45 @@
+name: Release tracking
+
+# First piece of the release process (decisions/0005): dev is where feature
+# branches land continuously, main is cut only for a release. An issue a PR
+# closes on merge into dev is not actually done yet -- it is "in dev,
+# awaiting release" -- so this replaces GitHub's own Closes-on-merge (which
+# only fires for the default branch, main here) with a label for that middle
+# state. The same "Closes #N" wording already used for `main` is read here
+# too, so writing a PR body once is enough for both: the "in-dev" label
+# names what already shipped to dev and doubles as release-notes input, and
+# it is removed (not applied) on the dev -> main release merge, where
+# GitHub's own mechanism does the actual closing.
+on:
+  pull_request:
+    types: [closed]
+    branches: [dev, main]
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  label-in-dev:
+    if: github.event.pull_request.merged == true && github.base_ref == 'dev'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Add in-dev to every issue this PR closes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          python3 "${GITHUB_WORKSPACE}/scripts/release_tracking.py" label --label in-dev
+
+  unlabel-released:
+    if: github.event.pull_request.merged == true && github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Remove in-dev from every issue this release merge closes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          python3 "${GITHUB_WORKSPACE}/scripts/release_tracking.py" unlabel --label in-dev
