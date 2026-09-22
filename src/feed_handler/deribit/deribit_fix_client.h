@@ -151,6 +151,12 @@ struct FixClientConfig {
 /// Not copyable or movable: the thread captures `this`.
 class FixClient {
   public:
+    /// `capture` should be a JournalMode::kThreaded one, and the client takes
+    /// over its fatal handler (CaptureSession::SetFatalHandler): a journal write
+    /// failure is only ever reported through it, so an inline session that fails
+    /// is not noticed. The connection thread closes the session when its socket
+    /// is lost; the session must be closed before this client is destroyed if it
+    /// is still open then (ClientCapture::Join does).
     FixClient(SessionConfig session_cfg, CaptureSession& capture, FixClientConfig cfg);
 
     FixClient(const FixClient&) = delete;
@@ -176,10 +182,11 @@ class FixClient {
     /// Permanent shutdown: RequestStop() then Join(). Idempotent.
     void Stop();
 
-    /// True when capture cannot continue: a journal file could not be opened,
-    /// or a write into an open one failed. The owning process should exit
-    /// rather than stay connected while discarding the data it exists to
-    /// collect.
+    /// True when capture cannot continue: a journal file could not be opened, or
+    /// the journal reported a failure (a write that failed, a ring that
+    /// overflowed) through the fatal handler this client registers on its
+    /// session. The owning process should exit rather than stay connected while
+    /// discarding the data it exists to collect.
     bool Fatal() const {
         return stop_signal_.Fatal();
     }
@@ -218,7 +225,9 @@ class FixClient {
     /// before classifying it. Returns false when the session must be dropped.
     bool DrainFramedMessages(int fd);
     /// Journals one framed message verbatim, before any parsing. Returns false
-    /// on a journal failure that is fatal to capture.
+    /// when it could not be journaled: no open connect, or a journal that has
+    /// failed (which the fatal handler has already latched, see
+    /// CaptureSession::RouteFatalToStopSignal in the constructor).
     bool JournalMessage(std::string_view raw);
     /// Sends the scheduled Heartbeat(35=0) if HeartBtInt seconds have passed
     /// since the last outbound byte. Returns false only when the send failed,

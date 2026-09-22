@@ -231,7 +231,16 @@ FetchContent_Declare(
   GIT_TAG v3.4.0
   SYSTEM
 )
-FetchContent_MakeAvailable(ixwebsocket simdjson nlohmann_json tomlplusplus)
+# moodycamel readerwriterqueue: the bounded SPSC rings that carry frames from a
+# connection thread to the journal and book threads (decisions/0002,
+# src/feed_handler/spsc_ring.h). Header-only.
+FetchContent_Declare(
+  readerwriterqueue
+  GIT_REPOSITORY https://github.com/cameron314/readerwriterqueue.git
+  GIT_TAG v1.0.7
+  SYSTEM
+)
+FetchContent_MakeAvailable(ixwebsocket simdjson nlohmann_json tomlplusplus readerwriterqueue)
 
 # GoogleTest: TDD for feed-parsing/journal/order-book logic, per decisions/0002.
 option(BUILD_TESTING "Build test targets" ON)
@@ -265,6 +274,11 @@ function(add_project_test name)
   add_executable(${name} ${ARGN})
   target_link_libraries(${name} PRIVATE project_options project_warnings project_sanitizers
                                         GTest::gtest_main)
+  # Every discovered test runs under a cgroup memory cap (TEST_MEMORY_MAX, 4G by
+  # default), so a runaway test dies alone instead of taking the whole tmux
+  # session with it. scripts/with_memory_cap.sh has the why.
+  set_property(TARGET ${name} PROPERTY TEST_LAUNCHER
+                                       "${CMAKE_SOURCE_DIR}/scripts/with_memory_cap.sh")
   gtest_discover_tests(${name})
 endfunction()
 
@@ -287,6 +301,7 @@ add_library(feed_handler STATIC
   src/feed_handler/credentials.cpp
   src/feed_handler/journal_format.cpp
   src/feed_handler/journal_reader.cpp
+  src/feed_handler/journal_thread.cpp
   src/feed_handler/journal_writer.cpp
   src/feed_handler/logging.cpp
   src/feed_handler/message_sink.cpp
@@ -307,15 +322,8 @@ target_link_libraries(feed_handler
   PRIVATE ixwebsocket::ixwebsocket simdjson::simdjson tomlplusplus::tomlplusplus
           OpenSSL::Crypto ZLIB::ZLIB
 )
-
-# The capture binary (decisions/0004): every configured connection, across
-# exchanges, from one process. Which ones is the --config file; credentials come
-# from the environment. See feed_handler_main.cpp and docs/modules/feed-handler.md.
-add_project_executable(feed_handler_capture
-  src/feed_handler/feed_handler_main.cpp
-)
-target_link_libraries(feed_handler_capture PRIVATE feed_handler)
-set_target_properties(feed_handler_capture PROPERTIES OUTPUT_NAME feed_handler)
+# spsc_ring.h includes the moodycamel header, so consumers of feed_handler need it.
+target_link_libraries(feed_handler PUBLIC readerwriterqueue)
 
 if(BUILD_TESTING)
   # Proves the FetchContent wiring for IXWebSocket/simdjson/GoogleTest
@@ -335,10 +343,12 @@ if(BUILD_TESTING)
     src/feed_handler/tests/feed_handler_config_test.cpp
     src/feed_handler/tests/fix_message_test.cpp
     src/feed_handler/tests/journal_test.cpp
+    src/feed_handler/tests/journal_thread_test.cpp
     src/feed_handler/tests/kraken_rest_client_test.cpp
     src/feed_handler/tests/kraken_ws_client_test.cpp
     src/feed_handler/tests/runner_test.cpp
     src/feed_handler/tests/selection_test.cpp
+    src/feed_handler/tests/spsc_ring_test.cpp
     src/feed_handler/tests/staleness_watchdog_test.cpp
     src/feed_handler/tests/stop_signal_test.cpp
   )
@@ -403,6 +413,61 @@ add_project_executable(kraken_journal_dump
   src/order_book/tools/kraken_journal_dump.cpp
 )
 target_link_libraries(kraken_journal_dump PRIVATE order_book_kraken_wire feed_handler)
+
+#### Book adapter (docs/investigations/2026-09-21-issue-14-architecture.md) ####
+# Frames in, books out: dispatches a connection's frames to per-symbol books. It
+# sits above both order_book and feed_handler, which is why it is not part of
+# order_book (decisions/0006 keeps that library free of feed_handler).
+add_library(book_adapter STATIC
+  src/book_adapter/book_adapter.cpp
+  src/book_adapter/book_service.cpp
+  src/book_adapter/book_wiring.cpp
+  src/book_adapter/deribit_fix_book_wire.cpp
+  src/book_adapter/journal_replay.cpp
+)
+target_link_libraries(book_adapter PUBLIC order_book_kraken_wire feed_handler)
+
+if(BUILD_TESTING)
+  add_project_test(book_adapter_tests
+    src/book_adapter/tests/book_adapter_test.cpp
+    src/book_adapter/tests/book_service_concurrency_test.cpp
+    src/book_adapter/tests/book_service_overflow_test.cpp
+    src/book_adapter/tests/book_service_test.cpp
+    src/book_adapter/tests/book_wiring_test.cpp
+    src/book_adapter/tests/deribit_fix_book_test.cpp
+    src/book_adapter/tests/deribit_fix_replay_test.cpp
+    src/book_adapter/tests/journal_replay_test.cpp
+  )
+  target_link_libraries(book_adapter_tests PRIVATE book_adapter)
+  target_compile_definitions(book_adapter_tests PRIVATE
+    TEST_DATA_DIR="${ORDER_BOOK_TEST_DATA_DIR}"
+  )
+endif()
+
+# The capture binary (decisions/0004): every configured connection, across
+# exchanges, from one process. Which ones is the --config file; credentials come
+# from the environment. See feed_handler_main.cpp and docs/modules/feed-handler.md.
+# It links book_adapter as well as feed_handler: the binary is where the live
+# books are wired in, because feed_handler itself must not depend on them.
+add_project_executable(feed_handler_capture
+  src/feed_handler/feed_handler_main.cpp
+)
+target_link_libraries(feed_handler_capture PRIVATE feed_handler book_adapter)
+set_target_properties(feed_handler_capture PROPERTIES OUTPUT_NAME feed_handler)
+
+# Replays journals through the adapter inline and prints counts plus parse and
+# apply wall time: the profiling harness for the book code.
+add_project_executable(journal_replay
+  src/book_adapter/tools/journal_replay.cpp
+)
+target_link_libraries(journal_replay PRIVATE book_adapter)
+
+# Cuts a small, Logon-free slice out of a real capture for use as a test
+# fixture. Prints counts only, never payload bytes (AGENTS.md).
+add_project_executable(journal_slice
+  src/book_adapter/tools/journal_slice.cpp
+)
+target_link_libraries(journal_slice PRIVATE feed_handler)
 
 # libFuzzer pilot (decisions/0007). A raw add_executable, not
 # add_project_executable: -fsanitize=fuzzer supplies its own main, so its

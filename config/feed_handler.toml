@@ -17,6 +17,11 @@
 journal_dir = "./journal"
 state_dir = "./state"
 
+# Run order books off the live captures. Off by default: a capture tool's job is
+# journaling. The depth and decimals below are what a book is built for, so they
+# only matter once this is true.
+order_books = false
+
 [[connections]]
 id = "kraken-btc-usd"
 exchange = "kraken"
@@ -25,6 +30,8 @@ feed = "level3"
 symbols = ["BTC/USD"]
 api_key_env = "KRAKEN_API_KEY"
 api_secret_env = "KRAKEN_API_SECRET"
+# Level3 subscribe depth: 10, 100 or 1000. Sent explicitly on every subscribe.
+depth = 10
 
 [[connections]]
 id = "deribit-btc-perp"
@@ -33,3 +40,8 @@ env = "testnet"
 symbols = ["BTC-PERPETUAL"]
 api_key_env = "DERIBIT_TESTNET_CLIENT_ID"
 api_secret_env = "DERIBIT_TESTNET_CLIENT_SECRET"
+# Decimal places of the integer price and quantity a book works in, for every
+# symbol on this connection: use the finest among them. BTC-PERPETUAL: a 0.5 tick
+# and whole USD contracts. (Kraken takes its scale from the AssetPairs lookup.)
+price_decimals = 1
+quantity_decimals = 0

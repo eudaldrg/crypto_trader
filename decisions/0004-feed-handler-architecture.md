@@ -108,19 +108,27 @@ just not reachable for every connection in v1, for one specific reason:
   IXWebSocket with the hand-rolled RFC6455 client: doing so hands the fd
   back and lets Kraken connections join the same epoll-group model as
   everything else, instead of remaining a permanent special case.
-- **v1 concretely**: one Kraken connection on IXWebSocket's own thread,
+- **v1 concretely (superseded 2026-09-21, see "Journal thread and connect_id"
+  below)**: a connection's own thread (IXWebSocket's for Kraken, the client's
+  for Deribit) does no disk I/O and no parsing. It stamps a frame, copies it
+  into a bounded SPSC ring per consumer and returns; a journal thread writes
+  the file, and a book thread (`decisions/0008`) builds the books. What this
+  bullet said before, kept because the reasoning behind it is what the
+  replacement had to beat: *one Kraken connection on IXWebSocket's own thread,
   calling `on_frame` synchronously into its own journal writer. No
   synchronization is needed yet regardless of grouping model, because each
-  connection — grouped on a shared epoll thread or standalone on a
-  library-owned one — writes to its own journal file; there is no shared
-  mutable state between connections until the fan-in seam below is reached.
+  connection writes to its own journal file; there is no shared mutable state
+  between connections until the fan-in seam below is reached.*
 - The fan-in seam is unchanged by any of this: the day something needs input
   from more than one connection's thread (a merged sequencer, or an order
   book pinned to its own dedicated core reading from several feeds), that
   consumer gets fed via a moodycamel SPSC ring per producer thread
   (`decisions/0002`) — a push-from-many-threads / pull-from-one-consumer
   pattern layered on top, not a redesign of the epoll-group threads
-  themselves.
+  themselves. **It is now built** in that shape: one ring per connection per
+  consumer (the journal's, and the book thread's in `decisions/0008`), one
+  consumer thread polling its rings. The epoll-group end-goal above is
+  untouched.
 
 ### Journal format v1: raw bytes, not a unified schema
 
@@ -129,10 +137,12 @@ the exchange's own wire encoding verbatim — no re-encoding step, since
 Kraken already arrives as JSON text and Deribit FIX already arrives as
 tag=value bytes:
 
-- **One append-only file per (exchange, connection-incarnation) — not per
-  symbol.** A single Kraken WS connection interleaves every subscribed
-  symbol on one TCP stream in true arrival order; splitting by symbol at
-  capture time would mean parsing before journaling (contradicting
+- **One append-only file per (exchange, `connect_id`) — not per
+  symbol.** (`connect_id` is one established connection to an exchange, bumped
+  on every reconnect; it was formerly called "incarnation", so older commits
+  and notes that use that word mean the same thing.) A single Kraken WS
+  connection interleaves every subscribed symbol on one TCP stream in true
+  arrival order; splitting by symbol at capture time would mean parsing before journaling (contradicting
   raw-as-received) and would destroy the one true arrival order the capture
   sequence number below exists to preserve. Symbol filtering is a read-time
   index concern, not a file-layout concern.
@@ -155,9 +165,9 @@ tag=value bytes:
   short of the bad record. A reader treats the first invalid record as
   end-of-valid-data, not an error to propagate.
 - **Capture timestamp is both monotonic and wall-clock**: a wall-clock
-  anchor (`CLOCK_REALTIME`) recorded once per file/incarnation, plus a
+  anchor (`CLOCK_REALTIME`) recorded once per file/`connect_id`, plus a
   monotonic (`CLOCK_MONOTONIC`) reading per record for ordering/latency
-  deltas within that incarnation. Monotonic-only can't be correlated across
+  deltas within that `connect_id`. Monotonic-only can't be correlated across
   a restart or against exchange-side timestamps, so it can't stand alone.
   Known limitation for v1: with IXWebSocket owning the socket, the
   timestamp is taken when our callback receives the frame, not at the
@@ -166,24 +176,31 @@ tag=value bytes:
   realistically reachable once the hand-rolled WS client
   (`decisions/0002`) replaces IXWebSocket.
 - A **reconnect is an explicit record**, not something inferred later from
-  message content — it marks "new connection incarnation, fresh snapshot
+  message content — it marks "new `connect_id`, fresh snapshot
   follows," so anything reading the journal never has to guess.
 - The capture sequence number is the seam Replay-mode determinism will need
   once multiple exchange threads feed one journal — today it is trivially
   "write order" per connection, but adding it now avoids retrofitting a
   global ordering scheme onto an already-running journal format later.
-- **Backpressure policy**: the journal write happens synchronously on the
-  connection's own thread (see threading model above), so a slow disk stalls
-  that connection's reads. v1 accepts this rather than dropping messages —
-  a buffered (1 MiB userspace buffer), non-per-record-fsync'd `ofstream`
-  should keep up at Kraken single-symbol message rates as implemented. File
-  preallocation (`fallocate`) is **not** implemented in v1, despite earlier
-  drafts of this ADR describing it as part of the policy — deferred
-  deliberately until there are real throughput measurements to justify it,
-  same as everything else in this bullet. This is a real risk if message
-  volume grows (a stalled read can make Kraken treat the client as a slow
-  consumer and drop it) and should be revisited with actual measurements
-  once there's traffic to measure, not assumed away.
+- **Backpressure policy (superseded 2026-09-21).** The journal is written on
+  its own thread behind a bounded SPSC ring, so a slow disk no longer stalls the
+  connection's reads. A full ring or a failed write is fatal to the capture; it
+  never blocks the socket and never drops a frame. The reasoning and the
+  mechanism are in "Journal thread and connect_id" below. The original bullet is
+  kept, since its risk statement is what the change answered:
+
+  > the journal write happens synchronously on the connection's own thread (see
+  > threading model above), so a slow disk stalls that connection's reads. v1
+  > accepts this rather than dropping messages: a buffered (1 MiB userspace
+  > buffer), non-per-record-fsync'd `ofstream` should keep up at Kraken
+  > single-symbol message rates as implemented. File preallocation (`fallocate`)
+  > is **not** implemented in v1 [...] deferred deliberately until there are real
+  > throughput measurements to justify it. This is a real risk if message volume
+  > grows (a stalled read can make Kraken treat the client as a slow consumer and
+  > drop it) and should be revisited with actual measurements once there's
+  > traffic to measure, not assumed away.
+
+  `fallocate` is still not implemented, for the same reason as before.
 
 ### Per-exchange snapshot/recovery/gap handling
 
@@ -193,9 +210,11 @@ tag=value bytes:
   `decisions/0001`). On disconnect, reconnect and resubscribe with
   `snapshot: true` again; the fresh snapshot is the recovery mechanism, not
   a replay-from-sequence-number request (Kraken doesn't offer one). The
-  per-message `checksum` field is **not validated at this stage** — it's
-  only computable over a reconstructed book, which doesn't exist until the
-  order book lands. This is a deliberate deferral, not an oversight. Token
+  per-message `checksum` field was **not validated at this stage**, since it's
+  only computable over a reconstructed book, which didn't exist until the
+  order book landed. That was a deliberate deferral, not an oversight; the
+  golden book now verifies it (`decisions/0006`) and the book adapter runs that
+  check on every message (`decisions/0008`). Token
   refresh, nonce, and reconnect-rate-limit specifics for Kraken are tracked
   in `exchanges/kraken.md`, not here.
 - **Staleness watchdog, independent of transport defaults**: a half-open TCP
@@ -203,7 +222,7 @@ tag=value bytes:
   is off by default, so relying on it would be relying on an off-by-default
   setting nobody deliberately turned on. v1 needs an application-level
   timer: no message (including heartbeats) within N seconds forces a
-  reconnect (new connection incarnation), regardless of what the transport
+  reconnect (new `connect_id`), regardless of what the transport
   library does or doesn't do on its own.
 - **Deribit (FIX)**: two independent sequencing layers — FIX session-level
   `MsgSeqNum` (transport reliability) and MD-level
@@ -231,7 +250,7 @@ offset, shared by writer and reader). The choices worth recording here:
 - 64-byte file header: magic `CTJOURNL`, `uint16` format version, header
   size, the `CLOCK_REALTIME`/`CLOCK_MONOTONIC` anchor *pair* (sampled
   together, so per-record monotonic readings convert to wall clock), a
-  16-byte exchange tag, the incarnation ordinal, and a CRC-32 over the
+  16-byte exchange tag, the `connect_id` ordinal, and a CRC-32 over the
   header itself. All integers little-endian, written shift-by-shift rather
   than by struct punning.
 - 24-byte record header (type, payload length, capture sequence, monotonic
@@ -241,7 +260,7 @@ offset, shared by writer and reader). The choices worth recording here:
   already a transitive dependency via IXWebSocket's `USE_ZLIB` so it cost no
   new dependency.
 - The reconnect marker is a distinct `record_type`
-  (`connection_incarnation`), payload = a free-form reason string. It is
+  (`connect`), payload = a free-form reason string. It is
   written through the same stamped-frame path as wire data, so it takes its
   place in the same capture sequence rather than sitting outside the
   ordering.
@@ -298,11 +317,11 @@ binary. The choices worth recording:
 - **Failing to open a journal file is fatal to the process**, unlike a
   failed connection. Staying connected while unable to capture would
   silently discard the data the process exists to collect.
-- Incarnation bookkeeping lives in `capture_session` rather than in the
+- `connect_id` bookkeeping lives in `capture_session` rather than in the
   WebSocket callback, so the rotation logic (new file, incremented
-  incarnation, marker record, reset sequence numbering) is testable without a
-  socket. Files are named `<exchange>-<incarnation>-<UTC timestamp>.journal`:
-  the incarnation is what the format cares about, the timestamp keeps
+  `connect_id`, marker record, reset sequence numbering) is testable without a
+  socket. Files are named `<exchange>-<connect_id>-<UTC timestamp>.journal`:
+  the `connect_id` is what the format cares about, the timestamp keeps
   separate process runs (which all start counting at 1) from colliding.
 
 ### Kraken nonce persistence: as implemented (2026-09-16)
@@ -514,7 +533,7 @@ What the earlier text claimed and the code did not do:
   register a second sink at all. A second sink was not "a later addition", it
   was impossible.
 - The one event a second sink cannot be correct without — a reconnect — was not
-  on the interface either. `write_incarnation_marker` was a `journal_writer`
+  on the interface either. `write_connect_marker` was a `journal_writer`
   method, so an order book had no way to learn that it must reset.
 - A frame carried no identity: nothing on a `capture_frame` said which exchange
   or wire encoding produced it, so a sink fed by both clients would have had to
@@ -522,44 +541,46 @@ What the earlier text claimed and the code did not do:
 
 What now exists:
 
-- **`message_sink` gains `on_incarnation(incarnation, reason)`** alongside the
+- **`message_sink` gains `on_connect(connect_id, reason)`** alongside the
   pure-virtual `on_frame`, with a no-op default body. Most sinks have no state
   to reset; an order book has nothing but.
-- **The incarnation marker record and the incarnation notification stay two
-  different things.** `journal_writer` keeps `write_incarnation_marker(frame)`
+- **The connect marker record and the connect notification stay two
+  different things.** `journal_writer` keeps `write_connect_marker(frame)`
   as its own concrete method, called directly by `capture_session`, and does
-  *not* override `on_incarnation`. The marker is a *record*: it needs a stamped
-  frame so it takes its place in this incarnation's capture sequence, and the
+  *not* override `on_connect`. The marker is a *record*: it needs a stamped
+  frame so it takes its place in this `connect_id`'s capture sequence, and the
   session's single `capture_stamper` is the only thing entitled to hand out a
-  sequence number. Routing it through `on_incarnation` instead would mean the
+  sequence number. Routing it through `on_connect` instead would mean the
   writer stamping its own frames from a second sequence source, which is
   exactly what a single stamper exists to prevent. The notification form needs
   no sequence number at all, so the two do not collapse into one call.
 - **`capture_session::add_sink(message_sink&)` registers additional non-owning
   sinks** (a small `std::vector<message_sink*>`), which receive both `on_frame`
-  and `on_incarnation`. The journal writer is deliberately not one of them: it
+  and `on_connect`. The journal writer is deliberately not one of them: it
   is the always-present sink that makes capture durable, it is the only one
   whose failure `on_wire_message` reports, and it always goes first — the same
   "journal first, classify second" discipline both clients already follow, one
   level down, so nothing a downstream sink does can decide whether a record is
   written. Extra sinks *do* still see a frame whose journal write failed: what
-  failed is the disk, not the data. Sinks are told about an incarnation only
+  failed is the disk, not the data. Sinks are told about a `connect_id` only
   once it is actually usable, since every caller treats a failed
-  `begin_incarnation` as fatal to capture.
+  `begin_connect` as fatal to capture.
 - This is all the fan-out there is, on purpose: same thread, same call, no
-  queue. The cross-thread fan-in seam above is unchanged and still future work.
-  It will change what a sink does inside `on_frame`, not this call — which is
-  the whole point of the frame-ownership contract.
+  queue. The cross-thread fan-in seam above was future work when this was
+  written and has since been built the way it predicted: it changed what a sink
+  does inside `on_frame` (copy the frame into a ring), not this call, which is
+  the whole point of the frame-ownership contract. The journal writer stopped
+  being called inline too, see below.
 - **`capture_frame` gains `frame_source source`** — an enum naming the wire
   shape (`kraken_json`, `deribit_fix`, `unknown`), not just the exchange,
   because what a sink has to decide is which parser the payload goes to. It is
-  supplied by the *client*, at the `on_wire_message`/`begin_incarnation` call
+  supplied by the *client*, at the `on_wire_message`/`begin_connect` call
   site, rather than configured on `capture_session`: the client is the only
   thing that knows first-hand what it just received, whereas a session
   configured by the binary that owns it could be handed the wrong answer and
   nothing would notice until an order book parsed JSON as tag=value.
 - **`frame_source` is not in the journal format and needs no version bump.** A
-  journal file is one per (exchange, connection-incarnation) and its header
+  journal file is one per (exchange, `connect_id`) and its header
   already carries the exchange tag, so a replay source recovers this once per
   file rather than once per record.
 
@@ -570,7 +591,7 @@ Two capture bugs fixed with it, both on the path an order book would sit on:
   `while (... && !client.fatal())` loop in `kraken_feed_handler` never noticed
   and the process ran "healthy" while capturing nothing — the exact outcome the
   "failing to open a journal file is fatal" rule exists to prevent, arrived at
-  from the other direction. A message arriving *before* the first incarnation
+  from the other direction. A message arriving *before* the first `connect_id`
   is deliberately still not fatal: that one is recoverable on the next connect.
   Kraken's `wait_for_stop` predicate now includes `fatal()` too; the fatal
   paths were already calling `notify_all()` on that condition variable, but a
@@ -581,7 +602,7 @@ Two capture bugs fixed with it, both on the path an order book would sit on:
   dozen, and the next one added would have been missed). Previously *no* path
   closed it: a gap, a peer Logout, framing loss, a `recv()` error and a
   staleness reconnect all left the file open with up to a full 1 MiB write
-  buffer unflushed until the next successful connection's `begin_incarnation`
+  buffer unflushed until the next successful connection's `begin_connect`
   closed it — up to `max_reconnect_wait_ms` (30s) later, or never if the
   exchange stayed down. Kraken already did the equivalent on its `Close` event,
   for the reason its comment gives: a closed file is a complete, readable one.
@@ -591,7 +612,7 @@ Testing notes worth keeping:
 - The Deribit loopback harness gained the ability to stop listening mid-test.
   That is what makes "the journal was closed" observable at all: with the
   listener still up, the client reconnects immediately and the *next*
-  `begin_incarnation` closes the previous file regardless, so the test would
+  `begin_connect` closes the previous file regardless, so the test would
   pass either way. With nothing to reconnect to, the only thing that can have
   closed the file is the path under test. "Closed" is asserted as "reads back
   from disk in full, at clean EOF" rather than as a counter, since records sit
@@ -612,7 +633,7 @@ their own exchange. TOML over YAML/JSON/XML because its array-of-tables is
 exactly "a list of connection entries", its scalars are unambiguous, and it
 allows comments; `toml++` is header-only and comes in through `FetchContent`
 like GoogleTest. One entry is one socket and one journal, which keeps this ADR's
-"one file per (exchange, connection-incarnation), not per symbol" rule intact
+"one file per (exchange, `connect_id`), not per symbol" rule intact
 and makes a second Deribit instrument or a shard past Kraken's 200 symbols a
 config edit. Credentials are named by environment variable, never stored (the
 schema and its validation are in `docs/modules/feed-handler.md`).
@@ -702,6 +723,98 @@ control plane, a handful of calls per process, so it does not conflict with
 ADR 0006's compile-time-polymorphism preference, which is about the per-message
 path.
 
+### Journal thread and connect_id (2026-09-21)
+
+Written against what shipped (`docs/investigations/2026-09-21-issue-14-architecture.md`
+has the discussion that led here). Where this contradicts the journal-write and
+threading text above, this is what the code does.
+
+**The journal is written on its own thread.** With the writer called first on
+the connection thread, the `write()` a full 1 MiB buffer triggers sat in front of
+every book update, which is the risk the backpressure bullet above named. A
+`CaptureSession` now has a `JournalMode`:
+
+- `kInline`, the default: the old behavior, on the connection thread. Kept
+  because it is deterministic, which is what unit tests want.
+- `kThreaded`, what `ClientCapture` always builds: the connection thread stamps a
+  frame once (the one `CaptureStamper`, so capture sequence and timestamp are
+  fixed at stamp time), copies the payload into a bounded SPSC ring
+  (`spsc_ring.h`, moodycamel `readerwriterqueue`) and returns. A `JournalThread`
+  drains the ring and runs an unchanged `JournalWriter`, so the bytes on disk are
+  exactly what inline mode writes and the committed fixtures still read. The
+  connection thread never touches the disk after the file is open.
+
+The choices worth recording:
+
+- **A full journal ring, or a failed write, is fatal to the capture.** The
+  journal is the source of truth, so it neither blocks the socket (Kraken drops
+  slow consumers) nor drops a frame. The push that finds the ring full latches a
+  sticky error and calls the session's fatal handler, once; a write failure does
+  the same from the journal thread. `Config::journal_ring_events` defaults to
+  `1 << 16` events, sized for seconds of traffic at the measured rates (Kraken
+  108,573 and Deribit 43,606 messages per hour); it has no TOML key.
+- **Failure is asynchronous, so the clients register a fatal handler.**
+  `OnWireMessage`'s return value can no longer be the one place a write failure
+  is noticed. Both clients call `CaptureSession::SetFatalHandler` with a function
+  that latches their `StopSignal`, which is how "any connection's fatal error
+  stops every connection" still works. They expect a threaded session: an inline
+  session no longer latches fatal on a write failure, and only reports it through
+  the return value. What the return value still carries is "no journal file
+  open" and an already-latched failure.
+- **Control events are in-band and never dropped.** A new file (with its stamped
+  connect marker) and a disconnect go through the ring's unbounded `PushControl`,
+  so a full ring cannot lose the event that finishes a file, and they stay
+  ordered with the frames around them.
+- **`Close()` is a barrier.** In threaded mode it returns only after the journal
+  thread has written everything queued, flushed and closed the file, so the file
+  is complete and readable on return, and the sinks' `OnDisconnect` keeps its
+  "after the file is closed" guarantee. `ClientCapture::Join` joins the client
+  and then closes the session, so no fatal can still arrive afterwards. That
+  order matters: the fatal handler points at the client, and a session that still
+  has an open journal when its client is destroyed could deliver a fatal to it.
+- **The file open and header write stay synchronous in `BeginConnect`.** They are
+  rare and off the hot path, and it keeps an unusable journal directory or an
+  unwritable header an immediate, fatal error for the caller. Only the marker
+  record and everything after it go through the ring.
+- **Test seam.** `Config::journal_start = false` leaves the journal thread
+  unstarted so nothing drains the ring and an overflow is certain, on any build
+  and under any sanitizer, without racing the consumer. `Disconnect()` starts an
+  unstarted thread first so the barrier cannot hang. How to use it without
+  exhausting memory is in `docs/tasks/testing.md`.
+- **A per-frame heap allocation on the producer is accepted for v1.** Copying a
+  payload into a `std::vector` allocates on the connection thread. The replay
+  driver (`decisions/0008`) is what measures it; the fix, if it matters, is a
+  preallocated slot pool, not done ahead of a number.
+
+**`connect_id` (formerly "incarnation").** It numbers the established
+connections of one `[[connections]]` entry: 1 for the first the entry
+establishes, plus one for every reconnect. `BeginConnect` bumps it, so it goes up
+per connection and per journal file, and not per rotation (a file is never
+rotated for size or age, and when rotation exists, #5, it must not stale a book).
+It is per session, not global, and restarts at 1 each process run; it is a
+relaxed atomic because a connection's `Summary()` reads it from another thread
+while the client thread is inside `BeginConnect`. It names the concept the
+journal's connect marker record announces (`RecordType::kConnect`, numeric value
+unchanged, so v1 files read as before).
+
+**Sinks are told both ends of a connect.** `MessageSink` gains `OnDisconnect(
+connect_id)` next to `OnConnect`, with a no-op default. `CaptureSession::Close()`
+is the one place a connect ends, so it is the one place `OnDisconnect` comes from:
+once per announced `connect_id`, after the file is closed, and before the next
+`OnConnect` when `BeginConnect` closes the previous connect. A connect that
+failed to start was never announced, so it is never disconnected. This is what
+lets a stateful sink such as a book go stale as soon as its feed drops rather
+than at the next successful connect. Kraken reaches `Close()` from IXWebSocket's
+`Close` event (its `Error` event is only raised for failed connection attempts,
+so no socket loss skips it); Deribit closes on every exit of its read loop.
+
+**Two more seams for a consumer that lives in another library.**
+`CaptureConnection::AddSink` registers an extra sink on a connection's session,
+and `CaptureSet::StartAll` takes an optional `BeforeStart` callback, called just
+before each connection's `Start()`. The feed handler library depends on nothing
+downstream of it; `decisions/0008` says what plugs into these and why the
+callback exists.
+
 ## Consequences
 
 - Kraken-first, Deribit-second implementation order is intentional: it
@@ -713,13 +826,14 @@ path.
   book exists to validate against.
 - Matching and self-match prevention are out of scope for LiveTrading/Replay
   order books entirely; only the Simulation-mode fake exchange matches.
-- This ADR does not yet cover: the order book itself, strategy/order-entry
-  hookup, or the concrete SPSC queue placement for multithreading — each is
-  a future ADR once there's a concrete design to lock in rather than
-  speculate about.
+- This ADR does not cover: the order book itself (`decisions/0006`), the
+  book adapter and the ring that feeds it (`decisions/0008`), or strategy and
+  order-entry hookup, which is still a future ADR once there's a concrete design
+  to lock in rather than speculate about. The journal's own SPSC ring is
+  covered here, in "Journal thread and connect_id".
 - **Replay resync is intentionally underspecified here.** Reconstructing
   "the same order the strategies originally saw" needs a manifest ordering
-  incarnation files (directory listing order isn't a safe substitute) and an
+  per-`connect_id` files (directory listing order isn't a safe substitute) and an
   explicit pacing contract (as-fast-as-possible vs. reproducing recorded
   inter-arrival gaps) — both are real design questions for the Replay-mode
   ADR when that mode is actually built, not resolved by this one.

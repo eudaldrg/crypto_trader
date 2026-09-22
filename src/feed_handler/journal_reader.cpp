@@ -54,7 +54,7 @@ std::expected<JournalReader, std::string> JournalReader::Open(const std::filesys
     reader.header_.format_version = version;
     reader.header_.realtime_ns = journal::LoadLe<std::uint64_t>(view.subspan(16));
     reader.header_.monotonic_ns = journal::LoadLe<std::uint64_t>(view.subspan(24));
-    reader.header_.incarnation = journal::LoadLe<std::uint64_t>(view.subspan(48));
+    reader.header_.connect_id = journal::LoadLe<std::uint64_t>(view.subspan(48));
 
     const std::span<const std::byte> name = view.subspan(32, journal::kExchangeFieldSize);
     for (const std::byte letter : name) {

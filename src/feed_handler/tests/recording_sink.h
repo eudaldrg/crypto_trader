@@ -3,7 +3,7 @@
 // Shared by the CaptureSession tests and by both exchange clients' tests,
 // because "what does a frame look like by the time a downstream sink gets it"
 // is the same question in all three, and the answer (the frame identity, the
-// incarnation notification) is exactly the seam the order book will plug into.
+// connect notification) is exactly the seam the order book will plug into.
 //
 // Thread safe on purpose: the client tests register one of these with a
 // CaptureSession that a client's own connection thread then drives, so the
@@ -23,9 +23,9 @@
 
 namespace feed_handler::testing {
 
-/// One incarnation notification, as seen by a sink.
-struct RecordedIncarnation {
-    std::uint64_t incarnation = 0;
+/// One connect notification, as seen by a sink.
+struct RecordedConnect {
+    std::uint64_t connect_id = 0;
     std::string reason;
 };
 
@@ -52,6 +52,7 @@ class RecordingSink final : public MessageSink {
   public:
     void OnFrame(const CaptureFrame& frame) override {
         const std::lock_guard<std::mutex> lock(mutex_);
+        events_.push_back("frame " + std::to_string(frame.capture_sequence));
         frames_.push_back(RecordedFrame{
             .payload = CopyOf(frame.payload),
             .capture_sequence = frame.capture_sequence,
@@ -60,10 +61,11 @@ class RecordingSink final : public MessageSink {
         });
     }
 
-    void OnIncarnation(std::uint64_t incarnation, std::string_view reason) override {
+    void OnConnect(std::uint64_t connect_id, std::string_view reason) override {
         const std::lock_guard<std::mutex> lock(mutex_);
-        incarnations_.push_back(RecordedIncarnation{
-            .incarnation = incarnation,
+        events_.push_back("connect " + std::to_string(connect_id));
+        connects_.push_back(RecordedConnect{
+            .connect_id = connect_id,
             .reason = std::string(reason),
         });
     }
@@ -73,9 +75,29 @@ class RecordingSink final : public MessageSink {
         return frames_;
     }
 
-    std::vector<RecordedIncarnation> Incarnations() const {
+    void OnDisconnect(std::uint64_t connect_id) override {
         const std::lock_guard<std::mutex> lock(mutex_);
-        return incarnations_;
+        events_.push_back("disconnect " + std::to_string(connect_id));
+        disconnects_.push_back(connect_id);
+    }
+
+    std::vector<RecordedConnect> Connects() const {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return connects_;
+    }
+
+    /// The connect_id of every disconnect, in delivery order.
+    std::vector<std::uint64_t> Disconnects() const {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return disconnects_;
+    }
+
+    /// Every event in delivery order across the three kinds ("connect 1",
+    /// "frame 2", "disconnect 1"), for tests about ordering between them, which
+    /// the per-kind accessors cannot express.
+    std::vector<std::string> Events() const {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return events_;
     }
 
     std::size_t FrameCount() const {
@@ -86,7 +108,9 @@ class RecordingSink final : public MessageSink {
   private:
     mutable std::mutex mutex_;
     std::vector<RecordedFrame> frames_;
-    std::vector<RecordedIncarnation> incarnations_;
+    std::vector<RecordedConnect> connects_;
+    std::vector<std::uint64_t> disconnects_;
+    std::vector<std::string> events_;
 };
 
 }  // namespace feed_handler::testing

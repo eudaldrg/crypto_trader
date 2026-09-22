@@ -22,7 +22,8 @@ Deribit's WS `book` channel uses `change_id`/`prev_change_id` sequencing,
 while Deribit's FIX market data uses session sequence numbers and an
 `MDUpdateAction` (New/Change/Delete) per entry (decisions/0001). This
 design's `L2Update` models the WS shape; normalizing FIX into it is the
-feed handler's job, not the book's.
+feed handler's job, not the book's. FIX has no `change_id`, so it goes to a
+separate sequence-free L2 policy (see "L2 without a `change_id`").
 
 The project builds at C++23 (`CMakeLists.txt:4`).
 
@@ -349,6 +350,46 @@ stays a listener notification plus a state transition, not a hard
 exception baked into control flow, since a longer or more adverse capture
 could still reveal a real gap case the current design needs to handle
 differently.
+
+### L2 without a `change_id`
+
+`L2Policy::ApplyBatch` requires a `ChangeIdMeta`, and Deribit's FIX market data
+carries none (`exchanges/deribit.md`): its entries have an `MDUpdateAction` and
+the only sequence is the FIX session's `MsgSeqNum`, which belongs to the
+session, not to the book. So the FIX-fed book needs an L2 form with no
+sequencing.
+
+- **Shape.** The price levels and the per-update rules (unknown-level, crossed
+  book, the duplicate-`New` assert of tier 2 above) moved into a shared
+  `L2Levels` class. `L2Policy` is `L2Levels` plus the `change_id` baseline and
+  gap check, unchanged in behavior. `UnsequencedL2Policy` is `L2Levels` and
+  nothing else: `ApplySnapshot(UnsequencedL2Snapshot)` (levels only) and
+  `ApplyBatch(span<const L2Update>)`, with no gap check. Same `L2Update`,
+  `L2ChangeSet` and `OrderBook` engine, so listeners and readiness are
+  identical.
+- **Two types, not an overload.** Adding `ApplyBatch(updates)` to `L2Policy`
+  would make a forgotten `ChangeIdMeta` on the sequenced WS book compile and
+  silently skip the gap check, which is the one protection that book has.
+  With two policy types, the sequenced one cannot be applied without its meta,
+  and the unsequenced one cannot be handed one. The snapshot types differ for
+  the same reason (`L2Snapshot` carries the baseline `change_id`,
+  `UnsequencedL2Snapshot` does not). The engine's `Apply`, `ApplySnapshot` and
+  `ApplyBatch` are now constrained on the policy accepting exactly the
+  arguments given, so a mismatch is rejected at the call site by a
+  `requires`-clause rather than as an error inside the policy. The tests
+  `static_assert` the rejected combinations on both the engine and the
+  policies.
+- **No synthesized `change_id`.** Generating a counter in the adapter and
+  feeding it to `L2Policy` would satisfy the signature, but the gap check would
+  compare a number the adapter made up against itself. It could never fire,
+  yet it would read as protection. Better to have no check that visibly says
+  so.
+- **Where FIX gaps are handled instead.** A FIX session gap (a `MsgSeqNum`
+  jump) is the session layer's problem: the Deribit client treats it as a
+  lost session and reconnects, which bumps the connection's `connect_id` and
+  resets the book to await a fresh snapshot. What the book still checks is
+  what it can check without a sequence: an unknown level and a crossed book
+  both desync it.
 
 ### Build integration: follows the `feed_handler` precedent
 

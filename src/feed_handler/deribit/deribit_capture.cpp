@@ -30,7 +30,7 @@ class DeribitCapture final : public ClientCapture<FixClient> {
                std::to_string(GetClient().MessagesReceived()) + " messages (" +
                std::to_string(GetClient().SnapshotsReceived()) + " snapshot(s), " +
                std::to_string(GetClient().IncrementalsReceived()) + " incremental(s)) across " +
-               std::to_string(JournalSession().Incarnation()) + " incarnation(s), " +
+               std::to_string(JournalSession().ConnectId()) + " connect(s), " +
                std::to_string(JournalSession().TotalRecordsWritten()) + " journal records, " +
                std::to_string(GetClient().ConnectionAttempts()) + " connection attempt(s), " +
                std::to_string(GetClient().ForcedReconnects()) + " watchdog-forced reconnect(s)";

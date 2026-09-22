@@ -161,8 +161,17 @@ feed handler's `--config` mode):
 - **One snapshot per symbol**, then updates for both interleaved on the same
   connection, each `data[]` entry carrying its own `symbol` and `checksum`.
 - Documented limits, not exercised: at most 200 symbols per connection, and a
-  depth-weighted subscribe budget (5 per symbol at depth 10, against 200/s on a
-  standard account).
+  depth-weighted subscribe budget (against 200/s on a standard account, 500/s on
+  pro): 5 points per symbol at depth 10, 25 at depth 100, 100 at depth 1000.
+
+## Subscribe `depth` (docs.kraken.com, checked 2026-09-21)
+
+`params.depth` on the level3 subscribe takes `10`, `100` or `1000` and defaults
+to `10`. Only the default has been observed live; `100` and `1000` are as
+documented and unexercised here. The feed handler validates the config's `depth`
+against those three values and sends it explicitly on every subscribe, so the
+depth a book is built for is the depth that was requested, not whatever Kraken's
+default happens to be.
 
 ## Recovery
 
@@ -205,9 +214,10 @@ trusting it (`src/order_book/tests/kraken_checksum_test.cpp`).
 **Client-side depth truncation is mandatory, and Kraken does not do it
 for you.** Kraken's own docs: *"After each update, the book should be
 truncated to your subscribed depth, there will be no `delete` event for
-price levels that fall out of scope."* No `depth` parameter is sent on
-subscribe (`kraken_ws_client.cpp`), so the default (10) applies — the
-same window the checksum itself uses. Two consequences that only showed
+price levels that fall out of scope."* The subscribe sends `depth`
+explicitly (`kraken_ws_client.cpp`, from the connection's config, default 10,
+the same window the checksum itself uses); the capture this section was
+verified against was taken when no depth was sent, so the default of 10 applied. Two consequences that only showed
 up against real captured data, not in a hand-written unit test:
 
 1. **An order that drops out of the tracked window and later re-enters

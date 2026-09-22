@@ -58,7 +58,7 @@ using KrakenBook = OrderBook<KrakenL3Policy, RecordingListener>;
 // real kraken_feed_handler binary -- not a Python probe -- via its native
 // v1 journal format) through the Kraken L3 book, verifying every
 // message's checksum along the way, including the snapshot's. 6496 wire
-// messages, 6497 journal records (the extra one is the kConnectionIncarnation
+// messages, 6497 journal records (the extra one is the kConnect
 // marker), zero forced reconnects at capture time; 6362 of them are level3
 // messages that carry a checksum (1 snapshot + 6361 updates).
 TEST(KrakenCaptureReplay, RealSessionAppliesWithNoIntegrityIssues) {
@@ -78,19 +78,19 @@ TEST(KrakenCaptureReplay, RealSessionAppliesWithNoIntegrityIssues) {
         if (record->type != feed_handler::journal::RecordType::kWireMessage) {
             continue;
         }
-        const std::optional<KrakenL3Message> message =
-            ParseKrakenL3Message(ParseWirePayload(record->payload), kCaptureScale, HashOrderId);
-        if (!message.has_value()) {
-            continue;  // status, subscribe reply, heartbeat: not level3 book traffic
-        }
-
-        if (message->is_snapshot) {
-            book.ApplySnapshot(message->Snapshot(), message->meta);
-            got_snapshot = true;
-        } else {
-            ASSERT_TRUE(got_snapshot) << "update message arrived before a snapshot";
-            book.ApplyBatch(std::span<const KrakenL3Update>(message->orders), message->meta);
-            ++update_message_count;
+        // The capture is a single-symbol connection, so every message is for
+        // the one book; a message for another symbol would fail the checksum.
+        for (const KrakenL3Message& message :
+             ParseKrakenL3Messages(ParseWirePayload(record->payload), kCaptureScale, HashOrderId)) {
+            EXPECT_EQ(message.symbol, "BTC/USD");
+            if (message.is_snapshot) {
+                book.ApplySnapshot(message.Snapshot(), message.meta);
+                got_snapshot = true;
+            } else {
+                ASSERT_TRUE(got_snapshot) << "update message arrived before a snapshot";
+                book.ApplyBatch(std::span<const KrakenL3Update>(message.orders), message.meta);
+                ++update_message_count;
+            }
         }
     }
 

@@ -1,7 +1,7 @@
 // Sequential reader for the v1 capture journal written by JournalWriter.
 // See journal_format.h for the byte layout.
 //
-// Full Replay mode (pacing, cross-incarnation manifest ordering) is a future
+// Full Replay mode (pacing, cross-connect manifest ordering) is a future
 // ADR; this reader is the lower layer both that and any offline journal
 // inspection will sit on, and it is what makes the writer round-trip testable.
 #pragma once
@@ -20,7 +20,7 @@
 
 namespace feed_handler {
 
-/// The once-per-file/incarnation metadata from the journal header.
+/// The once-per-file metadata from the journal header.
 struct JournalFileHeader {
     std::uint16_t format_version = 0;
     /// CLOCK_REALTIME and CLOCK_MONOTONIC sampled at the same instant when the
@@ -29,7 +29,7 @@ struct JournalFileHeader {
     std::uint64_t realtime_ns = 0;
     std::uint64_t monotonic_ns = 0;
     std::string exchange;
-    std::uint64_t incarnation = 0;
+    std::uint64_t connect_id = 0;
 };
 
 /// One decoded record. `payload` views the reader's internal buffer and is

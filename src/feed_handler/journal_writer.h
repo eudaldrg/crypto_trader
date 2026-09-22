@@ -16,7 +16,7 @@
 namespace feed_handler {
 
 /// Writes one append-only journal file for one (exchange,
-/// connection-incarnation) pair.
+/// connect_id) pair.
 ///
 /// Deliberately a dumb sink: it journals whatever frame it is handed and never
 /// originates traffic of its own. Keeping outbound requests out of the journal
@@ -32,9 +32,9 @@ class JournalWriter final : public MessageSink {
     struct Config {
         /// Short exchange tag, e.g. "kraken". Truncated to 16 bytes on disk.
         std::string exchange;
-        /// Connection-incarnation ordinal for this file, monotonically
+        /// Connect_id ordinal for this file, monotonically
         /// increasing within a process run.
-        std::uint64_t incarnation = 0;
+        std::uint64_t connect_id = 0;
         /// Output buffer size. One flush per this many bytes rather than per
         /// record; a larger buffer trades crash-tail length for syscalls.
         std::size_t buffer_bytes = 1U << 20U;
@@ -56,18 +56,18 @@ class JournalWriter final : public MessageSink {
     /// Journals `frame` as a `wire_message` record. Inbound wire bytes only.
     void OnFrame(const CaptureFrame& frame) override;
 
-    /// Journals the explicit "new connection incarnation, fresh snapshot
+    /// Journals the explicit "new connection, fresh snapshot
     /// follows" marker. `frame.payload` is a free-form reason string rather
     /// than wire data; the caller stamps it like any other frame so the marker
     /// takes its place in the same capture sequence.
     ///
     /// Deliberately its own concrete method rather than an override of
-    /// message_sink::on_incarnation(): the marker is a record and needs a
+    /// message_sink::on_connect(): the marker is a record and needs a
     /// stamped frame, and the only thing entitled to allocate a capture
-    /// sequence number is the CaptureSession's stamper. on_incarnation() is
+    /// sequence number is the CaptureSession's stamper. on_connect() is
     /// the notification other sinks get; this is the record. Hence this writer
     /// leaves that interface method at its inherited no-op.
-    void WriteIncarnationMarker(const CaptureFrame& frame);
+    void WriteConnectMarker(const CaptureFrame& frame);
 
     void Flush();
 

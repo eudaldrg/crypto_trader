@@ -25,7 +25,9 @@ using ChangeId = Ordered<struct ChangeIdTag, std::int64_t>;
 // happens to carry 0), but that's an unstated invariant, not what the
 // protocol actually signals -- the explicit operation is what's used
 // here. FIX's MDUpdateAction-based L2 shape is a distinct wire shape the
-// feed handler normalizes into this one -- out of scope here.
+// feed handler normalizes into this one -- out of scope here. That
+// normalized form carries no change_id at all, so it goes to
+// UnsequencedL2Policy below rather than to L2Policy.
 enum class L2Operation : std::uint8_t { kNew, kChange, kDelete };
 
 struct L2Update {
@@ -51,6 +53,13 @@ struct L2Snapshot {
     ChangeId change_id;
 };
 
+// The snapshot for a feed with no change_id (FIX): the same levels, nothing to
+// establish a baseline for. A distinct type from L2Snapshot so the two policies
+// cannot be handed each other's snapshot.
+struct UnsequencedL2Snapshot {
+    std::vector<L2Update> levels;
+};
+
 struct L2ChangeSet {
     bool bid_top_of_book_changed = false;
     bool ask_top_of_book_changed = false;
@@ -58,12 +67,12 @@ struct L2ChangeSet {
     std::optional<IntegrityIssue> integrity_issue;
 };
 
-// The golden L2 book (decisions/0006): aggregated price levels per side,
-// with batch-level change_id sequencing and crossed-book detection. A
-// genuine gap or a crossed book after applying a batch is reported via
-// L2ChangeSet::integrity_issue -- the engine turns that into a Desynced
-// transition, so this policy never has to "keep going" after either.
-class L2Policy {
+// The price-level state and the level-by-level rules both L2 policies share
+// (decisions/0006, "L2 without a change_id"): aggregated levels per side,
+// unknown-level and crossed-book detection, top-of-book change flags. It knows
+// nothing about sequencing; that is exactly what the two policies below add or
+// leave out.
+class L2Levels {
   public:
     [[nodiscard]] std::optional<BookEntry> Best(Side side) const {
         return side == Side::kBid ? BestOf(bids_) : BestOf(asks_);
@@ -74,11 +83,11 @@ class L2Policy {
     // a LevelListener sees the snapshot's initial levels via OnLevelChanged,
     // and a crossed-book snapshot is reported and desyncs the book instead
     // of being applied silently.
-    L2ChangeSet ApplySnapshot(const L2Snapshot& snapshot) {
+    L2ChangeSet ReplaceWith(std::span<const L2Update> levels) {
         bids_.clear();
         asks_.clear();
         L2ChangeSet change_set;
-        for (const L2Update& level : snapshot.levels) {
+        for (const L2Update& level : levels) {
             if (level.operation == L2Operation::kDelete) {
                 continue;
             }
@@ -89,7 +98,6 @@ class L2Policy {
             }
             change_set.level_changes.push_back({level.side, level.price, level.quantity});
         }
-        last_change_id_ = snapshot.change_id;
 
         change_set.bid_top_of_book_changed = true;
         change_set.ask_top_of_book_changed = true;
@@ -99,17 +107,8 @@ class L2Policy {
         return change_set;
     }
 
-    L2ChangeSet ApplyBatch(std::span<const L2Update> updates, const ChangeIdMeta& meta) {
+    L2ChangeSet ApplyUpdates(std::span<const L2Update> updates) {
         L2ChangeSet change_set;
-
-        // A genuine gap means the state after it is unknown -- don't guess at
-        // applying updates that may not be the ones the exchange actually
-        // meant to follow the last message we saw. The engine transitions to
-        // Desynced from integrity_issue alone, so state here stays untouched.
-        if (meta.prev_change_id != last_change_id_) {
-            change_set.integrity_issue = IntegrityIssue::kGap;
-            return change_set;
-        }
 
         const std::optional<BookEntry> old_best_bid = Best(Side::kBid);
         const std::optional<BookEntry> old_best_ask = Best(Side::kAsk);
@@ -130,8 +129,6 @@ class L2Policy {
         if (IsCrossed(new_best_bid, new_best_ask)) {
             ReportIssue(change_set.integrity_issue, IntegrityIssue::kCrossedBook);
         }
-
-        last_change_id_ = meta.change_id;
         return change_set;
     }
 
@@ -167,7 +164,71 @@ class L2Policy {
 
     LevelMap<Price, Quantity, std::greater<>> bids_;
     LevelMap<Price, Quantity, std::less<>> asks_;
+};
+
+// The golden L2 book for a sequenced feed (Deribit WS `book`): L2Levels plus
+// batch-level change_id sequencing. A genuine gap or a crossed book after
+// applying a batch is reported via L2ChangeSet::integrity_issue -- the engine
+// turns that into a Desynced transition, so this policy never has to "keep
+// going" after either. ApplyBatch requires a ChangeIdMeta and ApplySnapshot an
+// L2Snapshot; there is no form without one (decisions/0006, "L2 without a
+// change_id").
+class L2Policy {
+  public:
+    [[nodiscard]] std::optional<BookEntry> Best(Side side) const {
+        return levels_.Best(side);
+    }
+
+    L2ChangeSet ApplySnapshot(const L2Snapshot& snapshot) {
+        L2ChangeSet change_set = levels_.ReplaceWith(snapshot.levels);
+        last_change_id_ = snapshot.change_id;
+        return change_set;
+    }
+
+    L2ChangeSet ApplyBatch(std::span<const L2Update> updates, const ChangeIdMeta& meta) {
+        // A genuine gap means the state after it is unknown -- don't guess at
+        // applying updates that may not be the ones the exchange actually
+        // meant to follow the last message we saw. The engine transitions to
+        // Desynced from integrity_issue alone, so state here stays untouched.
+        if (meta.prev_change_id != last_change_id_) {
+            L2ChangeSet change_set;
+            change_set.integrity_issue = IntegrityIssue::kGap;
+            return change_set;
+        }
+
+        L2ChangeSet change_set = levels_.ApplyUpdates(updates);
+        last_change_id_ = meta.change_id;
+        return change_set;
+    }
+
+  private:
+    L2Levels levels_;
     ChangeId last_change_id_{};
+};
+
+// The golden L2 book for a feed that carries no change_id (Deribit FIX market
+// data): the same levels and the same unknown-level and crossed-book checks,
+// with no gap check because there is nothing to check against. It is a
+// separate type from L2Policy, not an overload of it, so that a sequenced book
+// can never be applied without its ChangeIdMeta (which would silently skip the
+// gap check) and an unsequenced one can never be handed one (decisions/0006,
+// "L2 without a change_id").
+class UnsequencedL2Policy {
+  public:
+    [[nodiscard]] std::optional<BookEntry> Best(Side side) const {
+        return levels_.Best(side);
+    }
+
+    L2ChangeSet ApplySnapshot(const UnsequencedL2Snapshot& snapshot) {
+        return levels_.ReplaceWith(snapshot.levels);
+    }
+
+    L2ChangeSet ApplyBatch(std::span<const L2Update> updates) {
+        return levels_.ApplyUpdates(updates);
+    }
+
+  private:
+    L2Levels levels_;
 };
 
 }  // namespace order_book
