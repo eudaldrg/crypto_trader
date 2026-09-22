@@ -11,6 +11,8 @@
 #include <string>
 #include <string_view>
 
+#include "feed_handler/message_sink.h"
+
 namespace feed_handler {
 
 class CaptureConnection {
@@ -29,6 +31,14 @@ class CaptureConnection {
     /// The config's connection id, which also names the journal files and tags
     /// every log line.
     virtual std::string_view Id() const = 0;
+
+    /// Registers an extra consumer of what this connection captures: `sink` sees
+    /// every frame, connect and disconnect, on the connection's own thread, after
+    /// the journal has taken each one. This is how something downstream of the
+    /// capture (the order books) is attached without the capture code knowing it
+    /// exists. NON-OWNING: `sink` must outlive the connection. Only before
+    /// Start(): the list is walked by the connection's thread without a lock.
+    virtual void AddSink(MessageSink& sink) = 0;
 
     /// Starts the connection's thread(s) and returns immediately.
     virtual void Start() = 0;

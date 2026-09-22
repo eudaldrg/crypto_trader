@@ -2,9 +2,10 @@
 //
 // Per decisions/0004 this connection runs on IXWebSocket's own thread (the
 // library owns the fd and does not expose it, so it cannot join an epoll
-// group), journals every inbound message synchronously on that thread, and
-// treats every (re)connect identically: fresh token, fresh subscribe, fresh
-// snapshot, new journal incarnation.
+// group), hands every inbound message to a threaded CaptureSession (the journal
+// is written by its own thread, never this one), and treats every (re)connect
+// identically: fresh token, fresh subscribe, fresh snapshot, new journal file
+// and connect_id.
 //
 // Reconnect/backoff is IXWebSocket's automatic reconnection rather than a
 // hand-rolled loop -- the library already implements exponential backoff with
@@ -43,7 +44,7 @@ namespace feed_handler::kraken {
 /// knows first-hand what shape the bytes it just received are in. A session
 /// configured by the binary that owns it could be handed the wrong answer and
 /// nothing would notice until an order book parsed JSON as tag=value.
-inline constexpr FrameSource kWireSource = FrameSource::kRakenJson;
+inline constexpr FrameSource kWireSource = FrameSource::kKrakenJson;
 
 /// The bits of an inbound message this client cares about. Book content is
 /// deliberately not parsed: v1 journals raw bytes and the order book that
@@ -81,7 +82,10 @@ struct MessageClassification {
 /// Single pass over the top-level object; nothing inside `data` is touched.
 MessageClassification ClassifyMessage(std::string_view json);
 
-/// Builds the level3 subscribe payload for `symbols` (exchanges/kraken.md).
+/// Builds the level3 subscribe payload for `symbols` (exchanges/kraken.md). The
+/// `depth` is always sent, never left to Kraken's default, so it is the same
+/// number the connection's book is built for; it must be one of
+/// kSupportedDepths (the config layer validates it).
 ///
 /// The symbols are spliced in without JSON escaping, so they must already have
 /// passed the config layer's symbol check (feed_handler/config): no quote,
@@ -90,7 +94,8 @@ MessageClassification ClassifyMessage(std::string_view json);
 /// The result carries a live credential in-body: it must never be journaled
 /// or logged. JournalWriter has no outbound path at all, which is what keeps
 /// that structural rather than a rule to remember.
-std::string BuildSubscribeMessage(std::span<const std::string> symbols, std::string_view token);
+std::string BuildSubscribeMessage(std::span<const std::string> symbols, int depth,
+                                  std::string_view token);
 
 struct WsClientConfig {
     std::string url = std::string(kDefaultWsUrl);
@@ -100,6 +105,8 @@ struct WsClientConfig {
     /// WS v2 spells bitcoin "BTC", not REST's "XBT" (exchanges/kraken.md). All
     /// of them ride one subscribe on one socket, up to Kraken's cap of 200.
     std::vector<std::string> symbols = {"BTC/USD"};
+    /// The level3 subscribe depth, sent explicitly (kSupportedDepths).
+    int depth = kDefaultDepth;
     /// WebSocket-level ping. IXWebSocket defaults this to -1 (off), so it is
     /// set deliberately; it is the transport half of liveness detection, with
     /// the staleness watchdog below as the independent application half.
@@ -126,6 +133,12 @@ class WsClient {
     /// owns the nonce high-water mark that keeps signed calls strictly
     /// increasing (exchanges/kraken.md), so a per-reconnect instance would
     /// reintroduce the nonce collision it exists to prevent.
+    ///
+    /// `session` should be a JournalMode::kThreaded one, and the client takes
+    /// over its fatal handler (CaptureSession::SetFatalHandler): a journal write
+    /// failure is only ever reported through it, so an inline session that fails
+    /// is not noticed. The session must be closed before this client is
+    /// destroyed if it is still open then (ClientCapture::Join does).
     WsClient(RestClient& rest, Credentials creds, CaptureSession& session, WsClientConfig cfg = {});
 
     WsClient(const WsClient&) = delete;
@@ -161,9 +174,21 @@ class WsClient {
     /// not a send path: nothing outbound goes through here.
     void HandleMessage(const std::string& payload);
 
-    /// True when capture cannot continue: a journal file could not be opened,
-    /// or a write into an open one failed. The owning process should shut down
-    /// rather than stay connected while dropping data on the floor.
+    /// Handles the socket closing: flushes and closes the connect's file and
+    /// tells the session's sinks the connection is gone. Normally called by
+    /// IXWebSocket's callback on its own thread, whichever way the socket was
+    /// lost (peer close, transport failure, this client's own ForceReconnect or
+    /// shutdown): the library reports every one of them as a Close event.
+    ///
+    /// Public for the same reason as HandleMessage(): the disconnect
+    /// notification is testable without a live socket.
+    void HandleClose(std::uint16_t code, const std::string& reason);
+
+    /// True when capture cannot continue: a journal file could not be opened, or
+    /// the journal reported a failure (a write that failed, a ring that
+    /// overflowed) through the fatal handler this client registers on its
+    /// session. The owning process should shut down rather than stay connected
+    /// while dropping data on the floor.
     bool Fatal() const {
         return stop_signal_.Fatal();
     }

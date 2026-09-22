@@ -22,13 +22,14 @@ class KrakenCapture final : public ClientCapture<WsClient> {
                               session,
                               WsClientConfig{.url = connection.endpoint,
                                              .id = connection.id,
-                                             .symbols = connection.symbols});
+                                             .symbols = connection.symbols,
+                                             .depth = connection.depth});
           }) {}
 
     std::string Summary() const override {
         return "[" + std::string(Id()) + "] captured " +
                std::to_string(GetClient().MessagesReceived()) + " messages across " +
-               std::to_string(JournalSession().Incarnation()) + " incarnation(s), " +
+               std::to_string(JournalSession().ConnectId()) + " connect(s), " +
                std::to_string(JournalSession().TotalRecordsWritten()) + " journal records, " +
                std::to_string(GetClient().ForcedReconnects()) + " watchdog-forced reconnect(s)";
     }

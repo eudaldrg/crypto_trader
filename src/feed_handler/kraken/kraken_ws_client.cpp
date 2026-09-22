@@ -134,11 +134,12 @@ MessageClassification ClassifyMessage(std::string_view json) {
     return {.kind = ClassifyChannel(channel, type), .detail = type};
 }
 
-std::string BuildSubscribeMessage(std::span<const std::string> symbols, std::string_view token) {
+std::string BuildSubscribeMessage(std::span<const std::string> symbols, int depth,
+                                  std::string_view token) {
     // Hand-built rather than via a JSON writer: the payload is fixed shape and
-    // every interpolated value is constrained (config-validated symbols and
-    // Kraken's own base64-ish token), so there is nothing here needing
-    // escaping.
+    // every interpolated value is constrained (config-validated symbols, an
+    // integer depth and Kraken's own base64-ish token), so there is nothing
+    // here needing escaping.
     std::string message;
     message.reserve(160 + token.size() + symbols.size() * 16);
     message += R"({"method":"subscribe","params":{"channel":"level3","symbol":[)";
@@ -147,7 +148,9 @@ std::string BuildSubscribeMessage(std::span<const std::string> symbols, std::str
         message += symbols[index];
         message += '"';
     }
-    message += R"(],"snapshot":true,"token":")";
+    message += R"(],"depth":)";
+    message += std::to_string(depth);
+    message += R"(,"snapshot":true,"token":")";
     message += token;
     message += R"("}})";
     return message;
@@ -180,6 +183,10 @@ WsClient::WsClient(RestClient& rest, Credentials creds, CaptureSession& session,
     ws_->setMaxWaitBetweenReconnectionRetries(cfg_.max_reconnect_wait_ms);
     ws_->setPingInterval(cfg_.ping_interval_seconds);
 
+    // Before the socket can deliver anything: the journal thread reports a write
+    // failure, and the connection thread a ring overflow, through this.
+    session_.RouteFatalToStopSignal(stop_signal_, log_);
+
     ws_->setOnMessageCallback([this](const ix::WebSocketMessagePtr& message) {
         switch (message->type) {
             case ix::WebSocketMessageType::Open:
@@ -189,15 +196,17 @@ WsClient::WsClient(RestClient& rest, Credentials creds, CaptureSession& session,
                 HandleMessage(message->str);
                 break;
             case ix::WebSocketMessageType::Close:
-                // Flush and close the incarnation's file here rather than
-                // waiting for the next connect: the reconnect may take a
-                // while, and a closed file is a complete, readable one.
-                watchdog_.Disarm();
-                session_.Close();
-                log_.Warn("websocket closed (code " + std::to_string(message->closeInfo.code) +
-                          "): " + message->closeInfo.reason);
+                HandleClose(message->closeInfo.code, message->closeInfo.reason);
                 break;
             case ix::WebSocketMessageType::Error:
+                // Not a socket loss: IXWebSocket raises Error only for a failed
+                // connection attempt (handshake or refused connect), before any
+                // Open, so no connect is open here and there is nothing to
+                // close or announce. A socket that was up is always reported
+                // as Close, which is where the disconnect comes from. Closing
+                // the session here would be wrong, not just redundant: were an
+                // Error ever raised on a live socket, it would end the journal
+                // while frames kept arriving.
                 watchdog_.Disarm();
                 log_.Error("websocket error: " + message->errorInfo.reason + " (retry " +
                            std::to_string(message->errorInfo.retries) + ")");
@@ -218,6 +227,8 @@ WsClient::WsClient(RestClient& rest, Credentials creds, CaptureSession& session,
 
 WsClient::~WsClient() {
     Stop();
+    // The handler points at this object; the session outlives it.
+    session_.SetFatalHandler({});
 }
 
 void WsClient::Start() {
@@ -291,7 +302,7 @@ void WsClient::HandleOpen() {
     // Outbound only: never stamped, never journaled. The token lives in the
     // message body, so journaling this would archive a live credential
     // (decisions/0004).
-    const auto sent = ws_->send(BuildSubscribeMessage(cfg_.symbols, token->token));
+    const auto sent = ws_->send(BuildSubscribeMessage(cfg_.symbols, cfg_.depth, token->token));
     if (!sent.success) {
         log_.Error("failed to send level3 subscribe");
         BackOffAfterSetupFailure();
@@ -299,7 +310,7 @@ void WsClient::HandleOpen() {
         return;
     }
 
-    const auto path = session_.BeginIncarnation(
+    const auto path = session_.BeginConnect(
         "kraken level3 " + JoinSymbols(cfg_.symbols) + " connected to " + cfg_.url, kWireSource);
     if (!path) {
         // Staying connected while unable to capture would silently throw away
@@ -310,8 +321,20 @@ void WsClient::HandleOpen() {
     }
 
     consecutive_setup_failures_ = 0;
-    log_.Info("incarnation " + std::to_string(session_.Incarnation()) + " started, journaling to " +
+    log_.Info("connect_id " + std::to_string(session_.ConnectId()) + " started, journaling to " +
               path->string());
+}
+
+void WsClient::HandleClose(std::uint16_t code, const std::string& reason) {
+    // Flush and close the connect's file here rather than waiting for the next
+    // connect: the reconnect may take a while, and a closed file is a complete,
+    // readable one. Closing the session is also what tells its sinks the
+    // connection is gone, so a book goes stale now, not at the next connect.
+    // A no-op when nothing is open, e.g. the socket closed before HandleOpen
+    // got as far as BeginConnect.
+    watchdog_.Disarm();
+    session_.Close();
+    log_.Warn("websocket closed (code " + std::to_string(code) + "): " + reason);
 }
 
 void WsClient::HandleMessage(const std::string& payload) {
@@ -324,19 +347,18 @@ void WsClient::HandleMessage(const std::string& payload) {
     if (!session_.OnWireMessage(BytesOf(payload), kWireSource)) {
         const std::string_view reason = session_.Error();
         if (reason.empty()) {
-            // No open incarnation yet -- a message that arrived between the
+            // No open connect yet -- a message that arrived between the
             // socket opening and handle_open() finishing. Loud, but the next
-            // incarnation fixes it, so it is not a reason to end the process.
+            // connect fixes it, so it is not a reason to end the process.
             log_.Error("dropped a message: no journal file open");
-        } else {
-            // A sticky writer error (a full disk, say) never heals: every later
-            // message would be dropped just as silently. Same rule as a journal
-            // file that cannot be opened at all, and as Deribit's
-            // journal_message -- capturing nothing while looking healthy is the
-            // one outcome this process must not have.
-            log_.Error("journal write failed: " + std::string(reason));
-            stop_signal_.LatchFatal();
         }
+        // Otherwise the journal has failed (a full disk, a ring overflow), which
+        // never heals. It is not decided here: the session already reported it
+        // through the fatal handler routed to stop_signal_ in the constructor
+        // (CaptureSession::RouteFatalToStopSignal), which is what latches the
+        // fatal and logs the reason. The journal is on its own thread, so this
+        // return value can no longer be the one place a write failure is
+        // noticed.
     }
 
     const MessageClassification classified = ClassifyMessage(payload);

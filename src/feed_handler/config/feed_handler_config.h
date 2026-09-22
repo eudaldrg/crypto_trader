@@ -29,6 +29,7 @@
 #include <vector>
 
 #include "feed_handler/exchange_traits.h"
+#include "feed_handler/kraken/kraken_endpoints.h"
 
 namespace feed_handler::config {
 
@@ -85,13 +86,32 @@ struct Connection {
     /// credentials themselves.
     std::string api_key_env;
     std::string api_secret_env;
+    /// Kraken only: the level3 subscribe depth, always sent explicitly, so the
+    /// depth a book is built for and the depth subscribed cannot drift. Default
+    /// 10. Unused (10) on a Deribit connection, where the key is rejected.
+    int depth = kraken::kDefaultDepth;
+    /// Deribit only: decimal places of the price and quantity integers a book
+    /// works in, applied to every symbol on the connection; use the finest
+    /// decimals among them. Absent when the key is not given, which is an error
+    /// only once order books are enabled. Kraken's scale comes from the
+    /// AssetPairs lookup, so the keys are rejected on a Kraken connection.
+    std::optional<int> price_decimals;
+    std::optional<int> quantity_decimals;
 };
+
+/// The largest `price_decimals` / `quantity_decimals` accepted: what
+/// order_book::InstrumentScale can represent.
+inline constexpr int kMaxDecimals = 15;
 
 struct FeedHandlerConfig {
     /// Both are resolved against the process's working directory when relative.
     std::filesystem::path journal_dir = "journal";
     /// Local runtime state that belongs to this machine (Kraken's nonce mark).
     std::filesystem::path state_dir = "state";
+    /// Whether to run order books off the live captures. Off by default: a
+    /// capture tool's job is journaling, and a new component should not change
+    /// that until it has run for a while.
+    bool order_books = false;
     std::vector<Connection> connections;
 };
 

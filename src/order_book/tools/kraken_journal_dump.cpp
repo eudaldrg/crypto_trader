@@ -6,6 +6,9 @@
 // all order-book logic lives here, not in the viewer, so the picture can
 // never drift from what the real book actually does.
 //
+// A journal is dumped as one instrument: the first symbol it carries. A
+// multi-symbol journal has its other symbols skipped, with a warning.
+//
 // Usage: kraken_journal_dump <journal_path> <output_json_path>
 //            [--price-decimals N] [--quantity-decimals N] [--depth N]
 //
@@ -160,6 +163,8 @@ int RunDump(const std::filesystem::path& journal_path, const std::filesystem::pa
     KrakenBook book(listener, KrakenL3Policy(settings.depth));
     json frames = json::array();
     int frame_index = 0;
+    std::string dumped_symbol;
+    int skipped_other_symbol = 0;
 
     while (const std::optional<feed_handler::JournalRecord> record = reader->Next()) {
         if (record->type != feed_handler::journal::RecordType::kWireMessage) {
@@ -169,25 +174,35 @@ int RunDump(const std::filesystem::path& journal_path, const std::filesystem::pa
         if (wire.is_discarded()) {
             continue;
         }
-        const std::optional<KrakenL3Message> message =
-            ParseKrakenL3Message(wire, scale, to_order_id);
-        if (!message.has_value()) {
-            continue;
-        }
-
-        if (message->is_snapshot) {
-            book.ApplySnapshot(message->Snapshot(), message->meta);
-        } else {
-            if (!book.IsReady()) {
+        for (const KrakenL3Message& message : ParseKrakenL3Messages(wire, scale, to_order_id)) {
+            // One book, so one symbol: the first one seen. Entries for any
+            // other symbol are skipped rather than applied to the wrong book.
+            if (dumped_symbol.empty()) {
+                dumped_symbol = message.symbol;
+            }
+            if (message.symbol != dumped_symbol) {
+                ++skipped_other_symbol;
                 continue;
             }
-            book.ApplyBatch(std::span<const KrakenL3Update>(message->orders), message->meta);
+
+            if (message.is_snapshot) {
+                book.ApplySnapshot(message.Snapshot(), message.meta);
+            } else {
+                if (!book.IsReady()) {
+                    continue;
+                }
+                book.ApplyBatch(std::span<const KrakenL3Update>(message.orders), message.meta);
+            }
+            frames.push_back(DumpFrame(frame_index, message.is_snapshot ? "snapshot" : "update",
+                                       book, message.meta.checksum, scale, names));
+            ++frame_index;
         }
-        frames.push_back(DumpFrame(frame_index, message->is_snapshot ? "snapshot" : "update", book,
-                                   message->meta.checksum, scale, names));
-        ++frame_index;
     }
 
+    if (skipped_other_symbol > 0) {
+        std::cerr << "warning: skipped " << skipped_other_symbol
+                  << " message(s) for symbols other than " << dumped_symbol << "\n";
+    }
     if (reader->StoppedEarly()) {
         std::cerr << "warning: journal reader stopped early: " << reader->StopReason() << "\n";
     }

@@ -1,7 +1,7 @@
-// Incarnation/journal-rotation bookkeeping and sink fan-out: the parts of the
+// Connect_id/journal-rotation bookkeeping and sink fan-out: the parts of the
 // reconnect path that can be tested without a socket. decisions/0004 requires
-// one file per (exchange, connection-incarnation), an explicit marker record at
-// the start of each, and per-incarnation capture sequence numbers; the sink
+// one file per (exchange, connect_id), an explicit marker record at
+// the start of each, and per-connect capture sequence numbers; the sink
 // fan-out is what the order book will attach to.
 #include "feed_handler/capture_session.h"
 
@@ -15,6 +15,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "feed_handler/journal_reader.h"
 #include "feed_handler/message_sink.h"
@@ -31,7 +32,7 @@ using feed_handler::testing::RecordingSink;
 /// These tests are not about any particular exchange; they only need a value
 /// that is not the default, so that "the session passed the source through"
 /// cannot be confused with "nobody set it".
-constexpr FrameSource kSource = FrameSource::kRakenJson;
+constexpr FrameSource kSource = FrameSource::kKrakenJson;
 
 std::span<const std::byte> BytesOf(std::string_view text) {
     return {std::bit_cast<const std::byte*>(text.data()), text.size()};
@@ -68,32 +69,32 @@ class CaptureSessionDir : public ::testing::Test {
     std::filesystem::path dir_;
 };
 
-TEST_F(CaptureSessionDir, CreatesTheDirectoryAndOpensAFilePerIncarnation) {
+TEST_F(CaptureSessionDir, CreatesTheDirectoryAndOpensAFilePerConnect) {
     CaptureSession session({.directory = dir_, .exchange = "kraken"});
-    EXPECT_EQ(session.Incarnation(), 0U);
+    EXPECT_EQ(session.ConnectId(), 0U);
 
-    const auto first = session.BeginIncarnation("connected", kSource);
+    const auto first = session.BeginConnect("connected", kSource);
     ASSERT_TRUE(first.has_value()) << first.error();
-    EXPECT_EQ(session.Incarnation(), 1U);
+    EXPECT_EQ(session.ConnectId(), 1U);
     EXPECT_TRUE(std::filesystem::exists(*first));
 
-    const auto second = session.BeginIncarnation("reconnected", kSource);
+    const auto second = session.BeginConnect("reconnected", kSource);
     ASSERT_TRUE(second.has_value()) << second.error();
-    EXPECT_EQ(session.Incarnation(), 2U);
+    EXPECT_EQ(session.ConnectId(), 2U);
     EXPECT_NE(*first, *second);
-    // The previous incarnation's file stays on disk, complete: one file per
-    // (exchange, connection-incarnation), never reopened or appended to.
+    // The previous connect's file stays on disk, complete: one file per
+    // (exchange, connect_id), never reopened or appended to.
     EXPECT_TRUE(std::filesystem::exists(*first));
 }
 
 TEST_F(CaptureSessionDir, FilePrefixNamesTheFileButNotTheHeaderExchange) {
-    // Two connections to one exchange, same directory, both on incarnation 1:
+    // Two connections to one exchange, same directory, both on connect_id 1:
     // only distinct prefixes keep their files apart.
     CaptureSession first({.directory = dir_, .exchange = "kraken", .file_prefix = "kraken-btc"});
     CaptureSession second({.directory = dir_, .exchange = "kraken", .file_prefix = "kraken-eth"});
 
-    const auto first_path = first.BeginIncarnation("connected", kSource);
-    const auto second_path = second.BeginIncarnation("connected", kSource);
+    const auto first_path = first.BeginConnect("connected", kSource);
+    const auto second_path = second.BeginConnect("connected", kSource);
     ASSERT_TRUE(first_path.has_value()) << first_path.error();
     ASSERT_TRUE(second_path.has_value()) << second_path.error();
     EXPECT_NE(*first_path, *second_path);
@@ -107,27 +108,27 @@ TEST_F(CaptureSessionDir, FilePrefixNamesTheFileButNotTheHeaderExchange) {
     EXPECT_EQ(reader->Header().exchange, "kraken");
 }
 
-TEST_F(CaptureSessionDir, WritesTheIncarnationMarkerAsTheFirstRecordOfEveryFile) {
+TEST_F(CaptureSessionDir, WritesTheConnectMarkerAsTheFirstRecordOfEveryFile) {
     CaptureSession session({.directory = dir_, .exchange = "kraken"});
 
-    const auto first = session.BeginIncarnation("connected", kSource);
+    const auto first = session.BeginConnect("connected", kSource);
     ASSERT_TRUE(first.has_value()) << first.error();
     EXPECT_TRUE(session.OnWireMessage(BytesOf(kSnapshot), kSource));
     EXPECT_TRUE(session.OnWireMessage(BytesOf(kUpdate), kSource));
 
-    const auto second = session.BeginIncarnation("staleness watchdog", kSource);
+    const auto second = session.BeginConnect("staleness watchdog", kSource);
     ASSERT_TRUE(second.has_value()) << second.error();
     EXPECT_TRUE(session.OnWireMessage(BytesOf(kSnapshot), kSource));
     session.Close();
 
     auto reader = JournalReader::Open(*first);
     ASSERT_TRUE(reader.has_value()) << reader.error();
-    EXPECT_EQ(reader->Header().incarnation, 1U);
+    EXPECT_EQ(reader->Header().connect_id, 1U);
     EXPECT_EQ(reader->Header().exchange, "kraken");
 
     auto marker = reader->Next();
     ASSERT_TRUE(marker.has_value());
-    EXPECT_EQ(marker->type, RecordType::kConnectionIncarnation);
+    EXPECT_EQ(marker->type, RecordType::kConnect);
     EXPECT_EQ(TextOf(marker->payload), "connected");
     EXPECT_EQ(marker->capture_sequence, 1U);
 
@@ -142,23 +143,23 @@ TEST_F(CaptureSessionDir, WritesTheIncarnationMarkerAsTheFirstRecordOfEveryFile)
 
     auto second_reader = JournalReader::Open(*second);
     ASSERT_TRUE(second_reader.has_value()) << second_reader.error();
-    EXPECT_EQ(second_reader->Header().incarnation, 2U);
+    EXPECT_EQ(second_reader->Header().connect_id, 2U);
     auto second_marker = second_reader->Next();
     ASSERT_TRUE(second_marker.has_value());
-    EXPECT_EQ(second_marker->type, RecordType::kConnectionIncarnation);
+    EXPECT_EQ(second_marker->type, RecordType::kConnect);
     EXPECT_EQ(TextOf(second_marker->payload), "staleness watchdog");
-    // Capture sequence numbers are per-incarnation, so the new file restarts
+    // Capture sequence numbers are per-connect, so the new file restarts
     // at 1 rather than continuing the previous file's numbering.
     EXPECT_EQ(second_marker->capture_sequence, 1U);
 }
 
-TEST_F(CaptureSessionDir, CountsRecordsAcrossIncarnations) {
+TEST_F(CaptureSessionDir, CountsRecordsAcrossConnects) {
     CaptureSession session({.directory = dir_, .exchange = "kraken"});
-    ASSERT_TRUE(session.BeginIncarnation("connected", kSource).has_value());
+    ASSERT_TRUE(session.BeginConnect("connected", kSource).has_value());
     session.OnWireMessage(BytesOf(kUpdate), kSource);
     EXPECT_EQ(session.RecordsWritten(), 2U);  // marker + one message
 
-    ASSERT_TRUE(session.BeginIncarnation("reconnected", kSource).has_value());
+    ASSERT_TRUE(session.BeginConnect("reconnected", kSource).has_value());
     session.OnWireMessage(BytesOf(kUpdate), kSource);
     EXPECT_EQ(session.RecordsWritten(), 2U);
     EXPECT_EQ(session.TotalRecordsWritten(), 4U);
@@ -167,7 +168,7 @@ TEST_F(CaptureSessionDir, CountsRecordsAcrossIncarnations) {
     EXPECT_EQ(session.TotalRecordsWritten(), 4U);
 }
 
-TEST_F(CaptureSessionDir, DropsMessagesArrivingBeforeAnIncarnationIsOpen) {
+TEST_F(CaptureSessionDir, DropsMessagesArrivingBeforeAConnectIsOpen) {
     CaptureSession session({.directory = dir_, .exchange = "kraken"});
     // Reported rather than silently swallowed: the caller logs it.
     EXPECT_FALSE(session.OnWireMessage(BytesOf(kUpdate), kSource));
@@ -181,7 +182,7 @@ TEST_F(CaptureSessionDir, ReportsAnUnusableDirectoryInsteadOfThrowing) {
     { std::ofstream file(blocker); }
 
     CaptureSession session({.directory = blocker / "journal", .exchange = "kraken"});
-    const auto started = session.BeginIncarnation("connected", kSource);
+    const auto started = session.BeginConnect("connected", kSource);
     EXPECT_FALSE(started.has_value());
     EXPECT_FALSE(started.error().empty());
 }
@@ -195,7 +196,7 @@ TEST_F(CaptureSessionDir, DeliversEveryFrameToEveryRegisteredSink) {
     session.AddSink(first);
     session.AddSink(second);
 
-    ASSERT_TRUE(session.BeginIncarnation("connected", kSource).has_value());
+    ASSERT_TRUE(session.BeginConnect("connected", kSource).has_value());
     EXPECT_TRUE(session.OnWireMessage(BytesOf(kSnapshot), kSource));
     EXPECT_TRUE(session.OnWireMessage(BytesOf(kUpdate), kSource));
 
@@ -212,9 +213,9 @@ TEST_F(CaptureSessionDir, DeliversEveryFrameToEveryRegisteredSink) {
         EXPECT_EQ(frames[0].capture_sequence, 2U);
         EXPECT_EQ(frames[1].capture_sequence, 3U);
         EXPECT_NE(frames[0].monotonic_ns, 0U);
-        // The incarnation marker is a journal record, not a frame: a sink is
-        // told about the incarnation, it is not handed the marker's payload.
-        EXPECT_EQ(sink->Incarnations().size(), 1U);
+        // The connect marker is a journal record, not a frame: a sink is
+        // told about the connect, it is not handed the marker's payload.
+        EXPECT_EQ(sink->Connects().size(), 1U);
     }
 }
 
@@ -225,7 +226,7 @@ TEST_F(CaptureSessionDir, JournalsEveryFrameItFansOutToSinks) {
     RecordingSink sink;
     session.AddSink(sink);
 
-    const auto path = session.BeginIncarnation("connected", kSource);
+    const auto path = session.BeginConnect("connected", kSource);
     ASSERT_TRUE(path.has_value()) << path.error();
     EXPECT_TRUE(session.OnWireMessage(BytesOf(kSnapshot), kSource));
     session.Close();
@@ -239,7 +240,7 @@ TEST_F(CaptureSessionDir, JournalsEveryFrameItFansOutToSinks) {
     EXPECT_EQ(sink.Frames().size(), 1U);
 }
 
-TEST_F(CaptureSessionDir, TellsEverySinkAboutEveryIncarnation) {
+TEST_F(CaptureSessionDir, TellsEverySinkAboutEveryConnect) {
     // A reconnect is the one event a stateful sink cannot be correct without:
     // it is when an order book has to throw away the book it built from the
     // previous connection and wait for the fresh snapshot.
@@ -249,23 +250,23 @@ TEST_F(CaptureSessionDir, TellsEverySinkAboutEveryIncarnation) {
     session.AddSink(first);
     session.AddSink(second);
 
-    ASSERT_TRUE(session.BeginIncarnation("connected", kSource).has_value());
-    ASSERT_TRUE(session.BeginIncarnation("staleness watchdog", kSource).has_value());
+    ASSERT_TRUE(session.BeginConnect("connected", kSource).has_value());
+    ASSERT_TRUE(session.BeginConnect("staleness watchdog", kSource).has_value());
 
     for (const RecordingSink* sink : {&first, &second}) {
-        const auto seen = sink->Incarnations();
+        const auto seen = sink->Connects();
         ASSERT_EQ(seen.size(), 2U);
-        EXPECT_EQ(seen[0].incarnation, 1U);
+        EXPECT_EQ(seen[0].connect_id, 1U);
         EXPECT_EQ(seen[0].reason, "connected");
-        EXPECT_EQ(seen[1].incarnation, 2U);
+        EXPECT_EQ(seen[1].connect_id, 2U);
         // Verbatim, and the same text the marker record carries, so a journal
         // and a live sink describe the same reconnect the same way.
         EXPECT_EQ(seen[1].reason, "staleness watchdog");
     }
 }
 
-TEST_F(CaptureSessionDir, DoesNotAnnounceAnIncarnationThatFailedToStart) {
-    // The caller treats a failed begin_incarnation as fatal to capture, so
+TEST_F(CaptureSessionDir, DoesNotAnnounceAConnectThatFailedToStart) {
+    // The caller treats a failed begin_connect as fatal to capture, so
     // telling a sink to reset for a connection that never starts would leave it
     // resetting on a lie.
     std::filesystem::create_directories(dir_);
@@ -276,11 +277,126 @@ TEST_F(CaptureSessionDir, DoesNotAnnounceAnIncarnationThatFailedToStart) {
     RecordingSink sink;
     session.AddSink(sink);
 
-    EXPECT_FALSE(session.BeginIncarnation("connected", kSource).has_value());
-    EXPECT_TRUE(sink.Incarnations().empty());
+    EXPECT_FALSE(session.BeginConnect("connected", kSource).has_value());
+    EXPECT_TRUE(sink.Connects().empty());
 }
 
-TEST(CaptureSessionNaming, MakesExchangeAndIncarnationObviousFromTheFileName) {
+TEST_F(CaptureSessionDir, DisconnectFollowsTheFramesAndPrecedesTheNextConnect) {
+    // The ordering a book relies on: connect, its frames, disconnect, and only
+    // then the next connect. The reconnect goes through BeginConnect, which has
+    // to end the previous connect first.
+    CaptureSession session({.directory = dir_, .exchange = "kraken"});
+    RecordingSink sink;
+    session.AddSink(sink);
+
+    ASSERT_TRUE(session.BeginConnect("connected", kSource).has_value());
+    EXPECT_TRUE(session.OnWireMessage(BytesOf(kSnapshot), kSource));
+    EXPECT_TRUE(session.OnWireMessage(BytesOf(kUpdate), kSource));
+    ASSERT_TRUE(session.BeginConnect("staleness watchdog", kSource).has_value());
+    EXPECT_TRUE(session.OnWireMessage(BytesOf(kSnapshot), kSource));
+    session.Close();
+
+    // Frame numbers are capture sequences: the marker took 1, the wire
+    // messages follow, and the count restarts with the new connect.
+    const std::vector<std::string> expected = {
+        "connect 1", "frame 2", "frame 3", "disconnect 1", "connect 2", "frame 2", "disconnect 2"};
+    EXPECT_EQ(sink.Events(), expected);
+    EXPECT_EQ(sink.Disconnects(), (std::vector<std::uint64_t>{1, 2}));
+}
+
+TEST_F(CaptureSessionDir, DisconnectIsDeliveredOncePerConnect) {
+    CaptureSession session({.directory = dir_, .exchange = "kraken"});
+    RecordingSink sink;
+    session.AddSink(sink);
+
+    ASSERT_TRUE(session.BeginConnect("connected", kSource).has_value());
+    session.Close();
+    session.Close();
+    EXPECT_EQ(sink.Disconnects(), (std::vector<std::uint64_t>{1}));
+
+    // A connect ended by an explicit Close is not ended again by the next
+    // BeginConnect, which closes "the previous one" as its first step.
+    ASSERT_TRUE(session.BeginConnect("reconnected", kSource).has_value());
+    EXPECT_EQ(sink.Disconnects(), (std::vector<std::uint64_t>{1}));
+    session.Close();
+    EXPECT_EQ(sink.Disconnects(), (std::vector<std::uint64_t>{1, 2}));
+    const std::vector<std::string> expected = {"connect 1", "disconnect 1", "connect 2",
+                                               "disconnect 2"};
+    EXPECT_EQ(sink.Events(), expected);
+}
+
+TEST_F(CaptureSessionDir, DisconnectIsNotDeliveredForASessionThatNeverConnected) {
+    CaptureSession session({.directory = dir_, .exchange = "kraken"});
+    RecordingSink sink;
+    session.AddSink(sink);
+
+    session.Close();
+    EXPECT_TRUE(sink.Disconnects().empty());
+    EXPECT_TRUE(sink.Events().empty());
+}
+
+TEST_F(CaptureSessionDir, DisconnectIsNotDeliveredForAConnectThatFailedToStart) {
+    // No OnConnect went out for it, so no OnDisconnect may either.
+    std::filesystem::create_directories(dir_);
+    const std::filesystem::path blocker = dir_ / "not-a-dir";
+    { std::ofstream file(blocker); }
+
+    CaptureSession session({.directory = blocker / "journal", .exchange = "kraken"});
+    RecordingSink sink;
+    session.AddSink(sink);
+
+    EXPECT_FALSE(session.BeginConnect("connected", kSource).has_value());
+    session.Close();
+    EXPECT_FALSE(session.BeginConnect("connected again", kSource).has_value());
+    EXPECT_TRUE(sink.Events().empty());
+}
+
+TEST_F(CaptureSessionDir, DisconnectReachesEverySinkAfterTheJournalIsComplete) {
+    // Reading the journal from inside the callback is what a sink that reacts
+    // to a disconnect (by flushing, say) would do: the file has to be closed and
+    // readable by then.
+    class JournalCheckingSink final : public feed_handler::MessageSink {
+      public:
+        explicit JournalCheckingSink(const std::filesystem::path& path) : path_(path) {}
+        void OnFrame(const feed_handler::CaptureFrame& /*frame*/) override {}
+        void OnDisconnect(std::uint64_t /*connect_id*/) override {
+            auto reader = JournalReader::Open(path_);
+            complete_ = reader.has_value();
+            while (reader.has_value() && reader->Next().has_value()) {
+                ++records_;
+            }
+            complete_ = complete_ && !reader->StoppedEarly();
+        }
+        bool Complete() const {
+            return complete_;
+        }
+        std::uint64_t Records() const {
+            return records_;
+        }
+
+      private:
+        std::filesystem::path path_;
+        bool complete_ = false;
+        std::uint64_t records_ = 0;
+    };
+
+    CaptureSession session({.directory = dir_, .exchange = "kraken"});
+    RecordingSink recording;
+    session.AddSink(recording);
+
+    const auto path = session.BeginConnect("connected", kSource);
+    ASSERT_TRUE(path.has_value()) << path.error();
+    JournalCheckingSink checking(*path);
+    session.AddSink(checking);
+    EXPECT_TRUE(session.OnWireMessage(BytesOf(kSnapshot), kSource));
+    session.Close();
+
+    EXPECT_TRUE(checking.Complete());
+    EXPECT_EQ(checking.Records(), 2U);  // the marker and the frame
+    EXPECT_EQ(recording.Disconnects(), (std::vector<std::uint64_t>{1}));
+}
+
+TEST(CaptureSessionNaming, MakesExchangeAndConnectIdObviousFromTheFileName) {
     // 2026-09-16T21:30:00Z.
     constexpr std::uint64_t kRealtimeNs = 1'789'594'200ULL * 1'000'000'000ULL;
     EXPECT_EQ(feed_handler::JournalFileName("kraken", 3, kRealtimeNs),

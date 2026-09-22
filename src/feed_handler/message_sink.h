@@ -19,7 +19,7 @@ namespace feed_handler {
 /// bytes it was handed.
 ///
 /// Deliberately NOT part of the on-disk journal format: a journal file is one
-/// per (exchange, connection-incarnation) and its header already carries the
+/// per (exchange, connect_id) and its header already carries the
 /// exchange tag, so a replay source recovers this once per file rather than
 /// once per record, and the format needs no version bump for it
 /// (journal_format.h).
@@ -28,7 +28,7 @@ enum class FrameSource : std::uint8_t {
     /// default-constructed frame carries.
     kUnknown = 0,
     /// Kraken WebSocket v2 JSON text (kraken/kraken_ws_client.h).
-    kRakenJson = 1,
+    kKrakenJson = 1,
     /// Deribit FIX.4.4 tag=value bytes (deribit/deribit_fix_client.h).
     kDeribitFix = 2,
 };
@@ -80,16 +80,28 @@ class MessageSink {
     /// Called once per inbound wire message, on the connection's own thread.
     virtual void OnFrame(const CaptureFrame& frame) = 0;
 
-    /// Called when a new connection incarnation begins, before any of its
+    /// Called when a new connection begins, before any of its
     /// frames: "the connection was re-established, a fresh snapshot follows,
     /// throw away whatever you built from the previous one". `reason` is the
-    /// same free-form text journaled in the incarnation marker record.
+    /// same free-form text journaled in the connect marker record.
     ///
     /// This is the one event a stateful sink cannot be correct without -- a
     /// reconnect is exactly when an order book has to reset -- but most sinks
     /// have no state to reset, hence a no-op default rather than a second pure
     /// virtual every implementation would have to write out.
-    virtual void OnIncarnation(std::uint64_t /*incarnation*/, std::string_view /*reason*/) {}
+    virtual void OnConnect(std::uint64_t /*connect_id*/, std::string_view /*reason*/) {}
+
+    /// Called when the connection `connect_id` ends: "the feed dropped, what you
+    /// hold is now stale until the next OnConnect". This is what lets an order
+    /// book stop trusting its state the moment the socket is lost rather than
+    /// at the next successful reconnect, which can be a full backoff away.
+    ///
+    /// Exactly once per connect_id that OnConnect announced, on the same thread
+    /// as the frames, after the last frame of that connection and before the
+    /// next OnConnect. Never called for a connection that was not announced (a
+    /// failed start, or a session that never connected). No-op default for the
+    /// same reason as OnConnect.
+    virtual void OnDisconnect(std::uint64_t /*connect_id*/) {}
 };
 
 /// Nanoseconds since an unspecified monotonic epoch (CLOCK_MONOTONIC).

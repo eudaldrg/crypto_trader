@@ -47,12 +47,16 @@ std::expected<CaptureSet, std::string> CaptureSet::Build(
     return set;
 }
 
-void CaptureSet::StartAll() {
-    const auto start = [this](bool kraken) {
+void CaptureSet::StartAll(const BeforeStart& before_start) {
+    const auto start = [&](bool kraken) {
         for (std::size_t index = 0; index < connections_.size(); ++index) {
-            if ((entries_[index].exchange == config::Exchange::kKraken) == kraken) {
-                connections_[index]->Start();
+            if ((entries_[index].exchange == config::Exchange::kKraken) != kraken) {
+                continue;
             }
+            if (before_start) {
+                before_start(*connections_[index], entries_[index], kraken ? rest_.get() : nullptr);
+            }
+            connections_[index]->Start();
         }
     };
     start(false);

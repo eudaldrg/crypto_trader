@@ -207,10 +207,16 @@ FixClient::FixClient(SessionConfig session_cfg, CaptureSession& capture, FixClie
       log_(cfg_.id),
       capture_(capture),
       session_(std::move(session_cfg)),
-      watchdog_(cfg_.staleness_timeout_ns) {}
+      watchdog_(cfg_.staleness_timeout_ns) {
+    // Before the thread can journal anything: the journal thread reports a write
+    // failure, and this client's thread a ring overflow, through this.
+    capture_.RouteFatalToStopSignal(stop_signal_, log_);
+}
 
 FixClient::~FixClient() {
     Stop();
+    // The handler points at this object; the session outlives it.
+    capture_.SetFatalHandler({});
 }
 
 void FixClient::Start() {
@@ -269,16 +275,16 @@ void FixClient::RunOneConnection() {
         return;
     }
     const ScopedFd socket_fd(*connected);
-    // Declared before the incarnation it closes, so no exit below can skip it.
+    // Declared before the connect it closes, so no exit below can skip it.
     // Closing a session with nothing open is a no-op, so it is also harmless if
-    // begin_incarnation() itself fails.
+    // begin_connect() itself fails.
     const ScopedCapture capture_guard(capture_);
     log_.Info("connected to " + cfg_.host + ":" + std::to_string(cfg_.port));
 
-    // Everything that defines a connection incarnation resets together: fresh
+    // Everything that defines a connection resets together: fresh
     // FIX sequence numbers (Deribit accepts a session restarting at 1 without
     // ResetSeqNumFlag -- exchanges/deribit.md), a fresh framer, and a fresh
-    // journal file with its incarnation marker as the first record.
+    // journal file with its connect marker as the first record.
     framer_ = fix::Framer{};
     session_.ResetSequenceNumbers();
     logged_on_ = false;
@@ -286,9 +292,9 @@ void FixClient::RunOneConnection() {
     last_outbound_ns_ = MonotonicNowNs();
 
     const auto path =
-        capture_.BeginIncarnation("deribit fix " + JoinSymbols(cfg_.symbols) + " connected to " +
-                                      cfg_.host + ":" + std::to_string(cfg_.port),
-                                  kWireSource);
+        capture_.BeginConnect("deribit fix " + JoinSymbols(cfg_.symbols) + " connected to " +
+                                  cfg_.host + ":" + std::to_string(cfg_.port),
+                              kWireSource);
     if (!path) {
         // Same rule as Kraken: staying connected while unable to capture would
         // silently throw away the data this process exists to collect.
@@ -296,7 +302,7 @@ void FixClient::RunOneConnection() {
         stop_signal_.LatchFatal();
         return;
     }
-    log_.Info("incarnation " + std::to_string(capture_.Incarnation()) + " started, journaling to " +
+    log_.Info("connect_id " + std::to_string(capture_.ConnectId()) + " started, journaling to " +
               path->string());
 
     const auto logon = session_.BuildLogon();
@@ -457,13 +463,17 @@ bool FixClient::JournalMessage(std::string_view raw) {
     if (capture_.OnWireMessage(BytesOf(raw), kWireSource)) {
         return true;
     }
-    const std::string_view reason = capture_.Error();
-    if (reason.empty()) {
+    if (capture_.Error().empty()) {
+        // No open connect, so nothing to write into. The next connect fixes it.
         log_.Error("dropped a message: no journal file open");
-        return false;
     }
-    log_.Error("journal write failed: " + std::string(reason));
-    stop_signal_.LatchFatal();
+    // Otherwise the journal has failed (a full disk, a ring overflow), which
+    // never heals. It is not decided here: the session already reported it
+    // through the fatal handler routed to stop_signal_ in the constructor
+    // (CaptureSession::RouteFatalToStopSignal), which latches the fatal and
+    // logs the reason. The journal is on its own thread, so this return value
+    // can no longer be the one place a write failure is noticed. Either way
+    // the session is no longer usable.
     return false;
 }
 

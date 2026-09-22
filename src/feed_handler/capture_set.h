@@ -7,6 +7,7 @@
 #pragma once
 
 #include <expected>
+#include <functional>
 #include <memory>
 #include <span>
 #include <string>
@@ -38,8 +39,27 @@ class CaptureSet {
     /// RestClient goes: see the member order.
     ~CaptureSet() = default;
 
+    /// Called by StartAll once per connection, immediately before that
+    /// connection's Start(), on the thread that called StartAll, with the
+    /// connection, the config entry it was built from and, for a Kraken
+    /// connection only (null otherwise), the shared RestClient whose AssetPairs
+    /// cache the instrument-reference lookup has just filled (FindAssetPair finds
+    /// nothing if the lookup failed; reading it is safe, no Kraken connection
+    /// thread exists yet).
+    ///
+    /// The one place a consumer downstream of the capture (the order books, which
+    /// live in a library that depends on this one) can attach to a connection with
+    /// what only this order knows: `AddSink` is only legal before Start(), and a
+    /// Kraken connection's instrument scale exists only after the lookup, which
+    /// runs after the Deribit connections have started. It must not throw and must
+    /// not block for long: the connection waits for it.
+    using BeforeStart =
+        std::function<void(CaptureConnection& connection, const config::Connection& entry,
+                           const kraken::RestClient* rest)>;
+
     /// Starts every non-Kraken connection, then the Kraken instrument-reference
-    /// lookup, then the Kraken connections. That order is the point:
+    /// lookup, then the Kraken connections, calling `before_start` (if given)
+    /// ahead of each connection's Start(). That order is the point:
     ///  - The lookup is a blocking REST GET (10 s connect and 20 s transfer
     ///    timeouts, so up to about 30 s). Run before anything starts, a slow
     ///    Kraken REST endpoint would delay Deribit's capture.
@@ -47,7 +67,7 @@ class CaptureSet {
     ///    RestClient's request mutex, the same one every token fetch takes, so
     ///    it would stall connections that are mid-connect, and FindAssetPair
     ///    reads the pair table without synchronisation by contract.
-    void StartAll();
+    void StartAll(const BeforeStart& before_start = {});
 
     /// In the order the entries were given.
     std::span<const std::unique_ptr<CaptureConnection>> Connections() const {

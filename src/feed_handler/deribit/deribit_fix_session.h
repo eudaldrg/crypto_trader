@@ -118,7 +118,7 @@ struct InboundCheck {
 
 /// One FIX session's message construction and sequence state.
 ///
-/// One instance per connection incarnation, driven by that connection's own
+/// One instance per connection, driven by that connection's own
 /// thread; not thread safe and does not need to be (decisions/0004).
 ///
 /// Every build_* call consumes an outbound MsgSeqNum(34), so messages must be

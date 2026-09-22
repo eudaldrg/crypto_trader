@@ -27,7 +27,7 @@ JournalWriter::JournalWriter(const std::filesystem::path& path, const Config& cf
     journal::StoreLe<std::uint32_t>(view.subspan(12), 0);
     // The realtime/monotonic pair must be sampled as close together as
     // possible: it is the only anchor tying per-record monotonic readings back
-    // to wall clock for this incarnation.
+    // to wall clock for this connect_id.
     journal::StoreLe<std::uint64_t>(view.subspan(16), RealtimeNowNs());
     journal::StoreLe<std::uint64_t>(view.subspan(24), MonotonicNowNs());
 
@@ -35,7 +35,7 @@ JournalWriter::JournalWriter(const std::filesystem::path& path, const Config& cf
     for (std::size_t index = 0; index < name_bytes; ++index) {
         view[32 + index] = static_cast<std::byte>(cfg.exchange[index]);
     }
-    journal::StoreLe<std::uint64_t>(view.subspan(48), cfg.incarnation);
+    journal::StoreLe<std::uint64_t>(view.subspan(48), cfg.connect_id);
     journal::StoreLe<std::uint32_t>(view.subspan(56), 0);
     journal::StoreLe<std::uint32_t>(view.subspan(60), journal::Crc32Of(view.first(60)));
 
@@ -55,8 +55,8 @@ void JournalWriter::OnFrame(const CaptureFrame& frame) {
     WriteRecord(journal::RecordType::kWireMessage, frame);
 }
 
-void JournalWriter::WriteIncarnationMarker(const CaptureFrame& frame) {
-    WriteRecord(journal::RecordType::kConnectionIncarnation, frame);
+void JournalWriter::WriteConnectMarker(const CaptureFrame& frame) {
+    WriteRecord(journal::RecordType::kConnect, frame);
 }
 
 void JournalWriter::WriteRecord(journal::RecordType type, const CaptureFrame& frame) {

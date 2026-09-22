@@ -2,7 +2,7 @@
 // reader so the byte offsets have exactly one definition.
 // See decisions/0004-feed-handler-architecture.md, "Journal format v1".
 //
-// One append-only file per (exchange, connection-incarnation). All integers
+// One append-only file per (exchange, connect_id). All integers
 // are little-endian on the wire regardless of host byte order.
 //
 // File header (64 bytes):
@@ -14,12 +14,12 @@
 //    16      8   realtime_ns      uint64, CLOCK_REALTIME at file creation
 //    24      8   monotonic_ns     uint64, CLOCK_MONOTONIC at the same instant
 //    32     16   exchange         ASCII, NUL-padded ("kraken")
-//    48      8   incarnation      uint64, connection-incarnation ordinal
+//    48      8   connect_id       uint64, connection ordinal
 //    56      4   reserved         uint32, 0
 //    60      4   crc32            CRC-32 of bytes [0, 60)
 //
 // The realtime/monotonic pair is the anchor that makes the per-record
-// monotonic timestamps convertible to wall clock for this incarnation;
+// monotonic timestamps convertible to wall clock for this connect_id;
 // monotonic alone cannot be correlated across a restart or against
 // exchange-side timestamps.
 //
@@ -70,17 +70,17 @@ enum class RecordType : std::uint8_t {
     /// in-body (see exchanges/kraken.md).
     kWireMessage = 1,
 
-    /// "New connection incarnation, fresh snapshot follows." An explicit
+    /// "New connection, fresh snapshot follows." An explicit
     /// record so nothing reading the journal has to infer a reconnect from
     /// message content. Its payload is a free-form UTF-8 reason string
     /// (possibly empty), not wire data.
-    kConnectionIncarnation = 2,
+    kConnect = 2,
 };
 
 /// True for record types this format version knows how to interpret.
 constexpr bool IsKnownRecordType(std::uint8_t raw) {
     return raw == static_cast<std::uint8_t>(RecordType::kWireMessage) ||
-           raw == static_cast<std::uint8_t>(RecordType::kConnectionIncarnation);
+           raw == static_cast<std::uint8_t>(RecordType::kConnect);
 }
 
 /// Writes `value` little-endian into the first sizeof(T) bytes of `out`.

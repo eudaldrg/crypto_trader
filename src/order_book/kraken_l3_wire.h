@@ -4,7 +4,6 @@
 #include <cstdint>
 #include <functional>
 #include <nlohmann/json.hpp>
-#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -39,8 +38,9 @@ inline nlohmann::json ParseWirePayload(std::span<const std::byte> payload,
 
 // One parsed Kraken level3 snapshot or update message.
 struct KrakenL3Message {
-    bool is_snapshot;  // otherwise an update
-    ChecksumMeta meta;
+    bool is_snapshot;                    // otherwise an update
+    std::string symbol;                  // the data[] entry's own symbol, e.g. "BTC/USD"
+    ChecksumMeta meta;                   // that entry's checksum
     std::vector<KrakenL3Update> orders;  // bids first, then asks; wire order within a side
 
     [[nodiscard]] L3Snapshot Snapshot() const {
@@ -86,26 +86,41 @@ inline void AppendSide(std::vector<KrakenL3Update>& out, const nlohmann::json& d
 
 }  // namespace kraken_l3_wire_detail
 
-// Returns nullopt for anything that is not a level3 snapshot/update (status,
-// subscribe reply, heartbeat, other channels). Throws on a level3 message
-// that is malformed. scale is the instrument's price/quantity decimals -- it
-// must come from the instrument's reference data, not be assumed.
-inline std::optional<KrakenL3Message> ParseKrakenL3Message(const nlohmann::json& message,
-                                                           const InstrumentScale& scale,
-                                                           const OrderIdMapper& to_order_id) {
+// Returns one message per data[] entry, in wire order, and an empty vector for
+// anything that is not a level3 snapshot/update (status, subscribe reply,
+// heartbeat, other channels) or that carries an empty data[]. Each entry has
+// its own symbol and checksum (exchanges/kraken.md), so a connection carrying
+// several symbols is routed by KrakenL3Message::symbol. Throws on a level3
+// message or entry that is malformed. scale is the instrument's price/quantity
+// decimals -- it must come from the instrument's reference data, not be
+// assumed, and is applied to every entry, so callers with per-symbol scales
+// must not share a scale across symbols.
+inline std::vector<KrakenL3Message> ParseKrakenL3Messages(const nlohmann::json& message,
+                                                          const InstrumentScale& scale,
+                                                          const OrderIdMapper& to_order_id) {
+    std::vector<KrakenL3Message> parsed;
     if (!message.contains("channel") ||
         message.at("channel").get_ref<const std::string&>() != "level3") {
-        return std::nullopt;
+        return parsed;
     }
     const std::string& type = message.at("type").get_ref<const std::string&>();
     if (type != "snapshot" && type != "update") {
-        return std::nullopt;
+        return parsed;
     }
-    const nlohmann::json& data = message.at("data").at(0);
-    KrakenL3Message parsed{
-        type == "snapshot", ChecksumMeta{data.at("checksum").get<std::uint32_t>()}, {}};
-    kraken_l3_wire_detail::AppendSide(parsed.orders, data, Side::kBid, "bids", scale, to_order_id);
-    kraken_l3_wire_detail::AppendSide(parsed.orders, data, Side::kAsk, "asks", scale, to_order_id);
+    const bool is_snapshot = type == "snapshot";
+    const nlohmann::json& entries = message.at("data");
+    parsed.reserve(entries.size());
+    for (const nlohmann::json& data : entries) {
+        KrakenL3Message& entry = parsed.emplace_back(
+            KrakenL3Message{is_snapshot,
+                            data.at("symbol").get<std::string>(),
+                            ChecksumMeta{data.at("checksum").get<std::uint32_t>()},
+                            {}});
+        kraken_l3_wire_detail::AppendSide(entry.orders, data, Side::kBid, "bids", scale,
+                                          to_order_id);
+        kraken_l3_wire_detail::AppendSide(entry.orders, data, Side::kAsk, "asks", scale,
+                                          to_order_id);
+    }
     return parsed;
 }
 
