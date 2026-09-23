@@ -41,9 +41,10 @@ left to profiling.
 B. A connection thread never blocks on a consumer and never does disk I/O or
 parsing. Each consumer states what a full ring means for it:
 
-- **Journal: fatal.** The journal is the source of truth, so it never blocks the
-  socket and never drops a frame; a full ring or a failed write stops the
-  capture.
+- **Journal: stop journaling that connection, loudly.** It never blocks the
+  socket and never silently drops a frame from a file it keeps writing: a full
+  ring or a failed write ends that connection's journal and raises an alert,
+  and the connection and its books carry on (`decisions/0012`).
 - **Books: drop and desync.** Books never fail a capture: a full ring drops the
   frame, and that connection's books stay desynced until they recover
   (`decisions/0011`).
@@ -66,8 +67,9 @@ The rings are the seam that stays the same across both stages.
 
 ## Consequences
 
-- A consumer's failure is asynchronous: clients register a fatal handler rather
-  than reading it from a return value.
+- A consumer's failure is asynchronous: clients register a handler rather than
+  reading it from a return value. Today that handler stops every connection,
+  which `decisions/0012` changes.
 - Closing a connection's journal is a barrier: it returns once the journal
   thread has written and closed the file.
 - On one book thread, a slow connection's book work delays the other

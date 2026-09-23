@@ -1,7 +1,9 @@
-# 0011. Lost data is recovered by reconnecting and taking a fresh snapshot
+# 0011. A connection that lost data recovers by reconnecting for a fresh snapshot
 
 - Status: proposed
 - Date: 2026-09-23
+- Revisit when: an exchange is added whose snapshot is slow or delayed (a
+  CME-style recovery feed), or whose gaps make reconnecting too expensive.
 
 ## Context
 
@@ -28,9 +30,10 @@ for the exchange whose gaps have not been observed yet.
 
 ### B. Always reconnect and take a fresh snapshot
 
-Any loss ends the connection. The next connection gets a new `connect_id` and a
-fresh snapshot, and everything downstream resets at that boundary. One story for
-every exchange and every kind of loss. Hard: a reconnect costs a REST token call
+Any loss ends *that* connection. Its next connection gets a new `connect_id` and
+a fresh snapshot, and everything downstream of it resets at that boundary. One
+mechanism for every exchange and every kind of loss; other connections are
+untouched. Hard: a reconnect costs a REST token call
 (Kraken) and a Logon (Deribit), plus the time to the next snapshot.
 
 ### C. Keep applying and flag the book
@@ -39,7 +42,9 @@ No reconnect cost. Hard: a book that is wrong looks healthy.
 
 ## Decision
 
-B. Detection is local and recovery is uniform:
+B, because both current exchanges deliver a snapshot on (re)subscribe within
+seconds, so reconnecting is cheap and a second recovery path buys nothing yet.
+Detection and recovery are both scoped to one connection (`decisions/0012`):
 
 - A book that cannot be trusted is `Desynced`, is reported, and stops applying
   updates. It never silently carries on. It becomes `Ready` again only from a
@@ -56,8 +61,11 @@ B. Detection is local and recovery is uniform:
 
 ## Consequences
 
-- There is no gap-fill code. It is worth building only if real sessions gap often
-  enough that reconnecting costs too much.
+- There is no gap-fill code.
+- Target, once the revisit trigger fires: local recovery that avoids waiting on
+  the exchange, such as protocol gap-fill, or a local component that keeps a
+  current book per symbol and serves it as a snapshot to a restarted consumer
+  (a restarted book process, a journal reopened mid-connection).
 - A book desync does not itself force a reconnect yet: the book stays desynced
   until its connection reconnects for another reason. A thread-safe reconnect
   request is follow-up work.

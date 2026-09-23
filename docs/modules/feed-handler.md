@@ -1,7 +1,7 @@
 ---
 aliases: [feed handler, feed-handler, capture, config, connections, journal thread, order_books]
 sources: [src/feed_handler/**, config/**, src/book_adapter/book_service.*, src/book_adapter/book_wiring.*, src/book_adapter/ring_sink.h]
-decisions: [decisions/0001-feed-source-selection.md, decisions/0004-raw-frame-sink-seam.md, decisions/0009-journal-content-and-format.md, decisions/0010-connection-thread-handoff.md, decisions/0011-desync-recovery.md, decisions/0008-book-adapter-and-event-rings.md]
+decisions: [decisions/0001-feed-source-selection.md, decisions/0004-raw-frame-sink-seam.md, decisions/0009-journal-content-and-format.md, decisions/0010-connection-thread-handoff.md, decisions/0011-desync-recovery.md, decisions/0012-failure-containment.md, decisions/0008-book-adapter-and-event-rings.md]
 ---
 
 # Feed handler
@@ -55,10 +55,11 @@ multi-connection shutdown never swallows a second Ctrl-C.
 ### Fatal stops everything
 
 Any connection's fatal error stops every connection, and the log names which
-one (`[<id>] capture failed, stopping every connection`). It is deliberate and
-has no option: the common cause is a shared disk. The cost is that one
-connection's bad journal directory or id now stops the others, which two
-separate processes would not have done.
+one (`[<id>] capture failed, stopping every connection`). The reasoning was that
+the common cause is a shared disk. This contradicts `decisions/0012`, under
+which a journal failure stops journaling for that connection only and alerts,
+and only disk or memory exhaustion escalates; the code has not been changed
+yet.
 
 ### Startup and shutdown order
 

@@ -89,11 +89,18 @@ format. See `exchanges/README.md` for the index.
   connections (`docs/questions/`).
 - `decisions/0010-connection-thread-handoff.md` — connection threads never
   block, parse or touch disk; one SPSC ring per consumer, each with its own
-  full-ring policy (journal fatal, books drop and desync); staged towards
-  epoll thread groups, with IXWebSocket keeping Kraken out until replaced.
+  full-ring policy (journal stops for that connection, books drop and
+  desync); staged towards epoll thread groups, with IXWebSocket keeping
+  Kraken out until replaced.
 - `decisions/0011-desync-recovery.md` — any lost data (gap, checksum,
   silence, dropped frame, integrity issue) desyncs, and recovery is always a
-  reconnect plus a fresh snapshot; what `connect_id` means.
+  reconnect plus a fresh snapshot of that connection only; what `connect_id`
+  means.
+- `decisions/0012-failure-containment.md` — a failure stays at its own level
+  (book < connection < process); a journal failure stops that connection's
+  journal and alerts, it does not stop other connections; only disk/memory
+  exhaustion escalates, into a maintenance mode. The code still stops every
+  connection on any fatal.
 - `decisions/0005-quality-gates-and-release-process.md` — the commit-time
   (must compile) and push-time (full suite under ASan+UBSan and TSan)
   enforcement tiers, why MemorySanitizer is deferred rather than added, why a
