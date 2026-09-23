@@ -6,11 +6,10 @@
 
 namespace order_book {
 
-// Kraken's level3 checksum (decisions/0006, "L3 checksum: algorithm and
-// placement"): a free function over the golden book's BookView, kept
-// outside the generic engine since this is exchange-specific behavior --
-// L3Policy calls this itself, the engine and the generic L3 listener
-// concept never reference it directly.
+// Kraken's level3 checksum (docs/modules/order-book.md,
+// "Kraken L3: checksum, depth and add ordering"): a free function over the golden book's BookView,
+// kept outside the generic engine since this is exchange-specific behavior -- L3Policy calls this
+// itself, the engine and the generic L3 listener concept never reference it directly.
 //
 // Algorithm (verified against Kraken's own worked example, see
 // kraken_checksum_test.cpp -- not guessed from the field's existence

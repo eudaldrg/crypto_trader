@@ -5,10 +5,19 @@ secondary/future target (real market data here is L2, not L3).
 
 ## Surfaces
 
-- **WS `book.*` channel**: public, no auth/KYC. Aggregated L2
-  (`[operation, price, quantity]`). Carries real `change_id`/`prev_change_id`
-  sequence numbers — genuine gap-detection problem, closer to CME-style than
-  Kraken's feed.
+- **WS `book.*` channel**: aggregated L2, each entry an explicit
+  `[operation, price, quantity]` tuple with `operation` one of
+  `new`/`change`/`delete` (do not infer delete from a zero quantity). The
+  grouped/interval channels (e.g. `book.BTC-PERPETUAL.100ms`) are public; the
+  **raw channel (`book.<instrument>.raw`) requires authentication**:
+  unauthenticated, the subscribe fails with
+  `raw_subscriptions_not_available_for_unauthorized`; `public/auth` with the
+  same testnet client credentials as FIX fixes it. Only the raw channel carries
+  `change_id`/`prev_change_id` sequencing. Confirmed 2026-09-17 on a ~2-minute
+  testnet capture (`experiments/deribit_ws_book_probe.py`, 2072 records, now a
+  replay fixture): `prev_change_id` matched the previous `change_id` with zero
+  gaps across 2069 consecutive `change` messages, and `quantity` was 0 on every
+  `delete` and never otherwise.
 - **FIX API** (the one this project targets, per `decisions/0002` — hand-rolled,
   not QuickFIX, as a deliberate protocol-level exercise): testnet host
   `fix-test.deribit.com:9881`, FIX.4.4. Also L2, not L3 — same granularity

@@ -199,7 +199,7 @@ and verified against a real ~2-minute `BTC/USD` capture via the real
 `src/order_book/tests/kraken_capture_replay_test.cpp` — 6496 wire records
 captured, of which 6362 carry a `level3` checksum (1 snapshot + 6361
 updates; the rest is non-`level3` control traffic), zero checksum
-mismatches across all of them (see decisions/0006's plan, task T7).
+mismatches across all of them.
 
 **Algorithm**: for each side, take the top 10 price levels (asks
 ascending, bids descending), and within each level iterate its resting

@@ -1,7 +1,7 @@
 // Turns one journaled Deribit FIX message into what an L2 book applies
 // (exchanges/deribit.md, "Responses"). The FIX counterpart of
 // order_book/kraken_l3_wire.h, kept in the adapter library rather than the
-// order-book one because it reads feed_handler's FIX parser, and decisions/0006
+// order-book one because it reads feed_handler's FIX parser, and decisions/0008
 // keeps order_book free of feed_handler.
 //
 //   35=W  MarketDataSnapshotFullRefresh: symbol from 55, one entry per level
@@ -9,8 +9,8 @@
 //         UnsequencedL2Snapshot.
 //   35=X  MarketDataIncrementalRefresh: entries keyed by 279 (0 New, 1 Change,
 //         2 Delete) with 269/270/271, as one batch of L2Update for
-//         UnsequencedL2Policy. FIX carries no change_id (decisions/0006, "L2
-//         without a change_id"), so there is no meta.
+//         UnsequencedL2Policy. FIX carries no change_id (docs/modules/order-book.md,
+//         "L2 without a change_id"), so there is no meta.
 //   anything else (35=A, 0, 1, 5, 3, j, Y, ...): session traffic, nothing for a
 //         book, reported as kIgnored.
 //

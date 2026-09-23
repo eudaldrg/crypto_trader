@@ -1,7 +1,7 @@
 ---
 aliases: [order book, ob, l1, l2, l3, golden book, book adapter, journal replay, journal_replay, journal_slice]
 sources: [src/order_book/**, src/book_adapter/**]
-decisions: [decisions/0006-order-book-design.md, decisions/0008-book-adapter-and-event-rings.md]
+decisions: [decisions/0006-order-book-policies.md, decisions/0013-golden-reference-book.md, decisions/0011-desync-recovery.md, decisions/0008-book-adapter-and-event-rings.md]
 ---
 
 # Order book
@@ -9,8 +9,10 @@ decisions: [decisions/0006-order-book-design.md, decisions/0008-book-adapter-and
 The golden-reference order book: a deliberately simple, `std::map`-based
 implementation of L1, L2 and L3 books that later fast, exchange-specific books
 get validated against, plus the adapter that feeds it live captures and journals.
-Design rationale is in `decisions/0006` (the books) and `decisions/0008` (the
-adapter); this is what is where and how to use it.
+The decisions behind it: compile-time policies (`decisions/0006`), the golden
+book as oracle (`decisions/0013`), desync and recovery (`decisions/0011`) and the
+adapter's layering (`decisions/0008`). This is what is where, how it behaves and
+how to use it.
 
 ## Shape
 
@@ -24,7 +26,7 @@ virtual dispatch.
 |---|---|---|
 | `L1Policy` | best price/quantity per side | |
 | `L2Policy` | Deribit `book`: `[new/change/delete, price, qty]` per level | `change_id`/`prev_change_id` gap detection |
-| `UnsequencedL2Policy` | Deribit FIX market data, normalized to the same `L2Update`s | no `change_id`, so no gap check; unknown-level and crossed-book checks kept; own snapshot type (`decisions/0006`) |
+| `UnsequencedL2Policy` | Deribit FIX market data, normalized to the same `L2Update`s | no `change_id`, so no gap check; unknown-level and crossed-book checks kept; own snapshot type (see "L2 without a `change_id`") |
 | `L3Policy` | generic add/modify/delete by `order_id` | exchange-agnostic; optional `max_depth` |
 | `KrakenL3Policy` | Kraken `level3` | wraps `L3Policy`; adds checksum verification and Add ordering by timestamp; `subscribed_depth` has no default |
 
@@ -33,6 +35,135 @@ virtual dispatch.
 lots. Both the scale (price/quantity decimals) and the Kraken depth are
 per-instrument, per-subscription settings the caller supplies; nothing in the
 library hardcodes them.
+
+## How the books behave
+
+### Engine and policy contract
+
+The engine owns a reference to the listener, readiness, the `Apply`/
+`ApplySnapshot`/`ApplyBatch` entry points and the matching seam. A granularity
+policy applies updates and returns a policy-defined `ChangeSet`; the engine
+detects each change-set shape with `if constexpr (requires ...)` and turns it into
+listener calls. It never branches on which concrete policy it holds.
+
+### Listener hooks
+
+`OnTopOfBookChanged` is required by every granularity's listener concept, so a
+missing or misspelled one is a compile error. The rest are optional, called only
+if present: `OnLevelChanged`/`OnLevelDeleted` and `OnIntegrityCheckFailed` for
+L2 and L3, and `OnOrderAdded`/`OnOrderModified`/`OnOrderDeleted` for L3.
+
+### Message/batch boundary
+
+`ApplyBatch(span<const Update>, meta...)` validates sequencing (`change_id`) or
+the checksum once per exchange message, since one message carries several updates
+under one `change_id` or checksum. Top-of-book notifications coalesce to once per
+batch; order and level events still fire per update. Applying one update at a time
+would make the checksum uncomputable mid-message and show listeners top-of-book
+states that never existed on the exchange.
+
+### Readiness and errors
+
+`Uninitialized -> Ready -> Desynced`. `ApplySnapshot` clears and repopulates the
+book and makes it `Ready`; `Apply`/`ApplyBatch` on a book that is not `Ready` is
+a defined no-op, never undefined behavior. Errors come in three tiers:
+
+1. **Feed-integrity anomalies** (`Gap`, `ChecksumMismatch`, `CrossedBook`,
+   `UnknownOrder`, `UnknownLevel`) go to `OnIntegrityCheckFailed` and the book
+   becomes `Desynced` (`decisions/0011`).
+2. **API misuse** is an `assert()`, active in Debug and tests. Partial so far:
+   `L2Levels` asserts on a `New` for a price already tracked, and `L3Policy`
+   asserts an order it removes still has a level. Negative quantities are not
+   guarded yet. A duplicate L3 add for a live `order_id` is not misuse: it is a
+   defined remove-then-re-add (see "Kraken L3" below).
+3. **Nothing is silently ignored**: a `Change` for an untracked L2 price reports
+   `UnknownLevel`.
+
+`std::expected` as a second result channel from `Apply` was considered and not
+used, to keep one reporting channel; worth revisiting if a pull-based
+differential harness is built.
+
+### Query surface and `BookView`
+
+All granularities expose `IsReady()` and `Best(Side)`. L3 adds `Levels(Side)`
+(per-level order ids, for tooling) and `OrderQuantity(OrderId)`; there is no
+general depth or full-order query. `BookView` is a granularity-agnostic,
+comparable dump of a book: what the Kraken checksum and the replay tests read,
+never a policy's storage (`decisions/0013`).
+
+### Threads and ownership
+
+Single-threaded and caller-synchronized. Listeners are called inline from the
+apply call and must not re-enter it. The engine holds the listener by reference,
+so it is neither assignable nor movable, and resetting a book means erasing and
+recreating it.
+
+### Wire encoding vs. stored state
+
+`L1Update` keeps the wire's zero-quantity-means-no-level encoding, because that
+is what an L1 feed sends. `L2Update` carries an explicit `L2Operation`
+(new/change/delete), as Deribit sends it; inferring delete from a zero quantity
+happened to work on one capture but relied on an unstated invariant. Whatever
+the wire encoding, stored state and queries use `std::optional`, never a
+sentinel.
+
+### Level container
+
+Levels are `LevelMap<K, V, Cmp>` (`types.h`), an alias for `std::map` with
+`std::greater<>` for bids and `std::less<>` for asks, so a faster container is
+a typedef change.
+
+### L2 without a `change_id`
+
+Deribit FIX market data has no `change_id` (`exchanges/deribit.md`), so it has
+its own policy:
+
+- **Shape.** The levels and per-update rules (unknown level, crossed book, the
+  duplicate-`New` assert) live in `L2Levels`. `L2Policy` is `L2Levels` plus the
+  `change_id` baseline and gap check; `UnsequencedL2Policy` is `L2Levels` alone,
+  with its own `UnsequencedL2Snapshot`. Same `L2Update`, `L2ChangeSet` and
+  engine.
+- **Two types, not an overload.** An `ApplyBatch(updates)` overload on
+  `L2Policy` would let a forgotten `ChangeIdMeta` compile and silently skip the
+  one protection the sequenced book has. The engine's entry points are
+  constrained on the policy accepting exactly the arguments given, and the tests
+  `static_assert` the rejected combinations.
+- **No synthesized `change_id`.** A counter made up by the adapter would satisfy
+  the signature, but the gap check would compare it with itself and never fire.
+- **FIX gaps are the session's job**: a `MsgSeqNum` jump reconnects
+  (`decisions/0011`). The book still checks what it can without a sequence.
+
+### Kraken L3: checksum, depth and add ordering
+
+The generic `L3Policy` knows no exchange: add/modify/delete by `order_id`,
+orders in arrival order per level, crossed-book and unknown-order detection, an
+optional `max_depth`. `KrakenL3Policy` composes it and adds three things
+(wire facts and how they were found: `exchanges/kraken.md`):
+
+1. **Checksum verification.** `kraken_checksum.h` computes it over `BookView`,
+   and `KrakenL3Policy` verifies it on every batch *and* on the snapshot
+   (`ApplySnapshot` takes a `ChecksumMeta` too). Neither the engine nor
+   `L3Policy` knows about it; a mismatch is the generic `ChecksumMismatch`. A
+   listener could not do this check: it has no batch boundary and cannot desync
+   the book.
+2. **Depth truncation.** Kraken never deletes a level that falls out of the
+   subscribed depth, so both sides are truncated to it after every batch and
+   snapshot. The depth is the subscription's and has no default. Without
+   truncation, an order re-entering the window arrives as a fresh `Add` with the
+   same `order_id` and duplicates a stale copy. The checksum's own window is
+   always 10 levels (`kKrakenChecksumLevels`), whatever the depth.
+3. **Add ordering by timestamp.** Orders entering the window in one message are
+   not listed in arrival order. `ApplyBatch` sorts only the `Added` events by
+   their own `timestamp` and puts them back in the positions Adds held; other
+   events keep their positions, because an `Added` can be followed in the same
+   message by a `Modified`/`Deleted` of that order.
+
+### Matching
+
+`MatchingPolicyConcept` only requires `MatchingEnabled()`; `NoMatchingPolicy`
+applies diffs as given ("trust the feed"). A real matching policy needs an order
+submission entry point and fill notifications the concepts do not model yet
+(`docs/questions/2026-09-23-matching-seam.md`).
 
 ## Wired to captures: `src/book_adapter/`
 

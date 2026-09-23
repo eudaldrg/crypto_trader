@@ -3,7 +3,7 @@
 //
 // This is glue, and it lives here rather than in feed_handler on purpose. The
 // capture library must not depend on the book library (book_adapter depends on
-// feed_handler, and decisions/0006 keeps the book code out of the capture), so
+// feed_handler, and decisions/0008 keeps the book code out of the capture), so
 // the capture library offers two generic seams instead, and this code plugs
 // books into them where both libraries are visible:
 //

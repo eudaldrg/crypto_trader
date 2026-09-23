@@ -15,19 +15,16 @@ namespace order_book {
 
 using ChangeId = Ordered<struct ChangeIdTag, std::int64_t>;
 
-// Deribit's WS book wire shape specifically (decisions/0006, decisions/
-// 0001): each entry is an explicit [operation, price, quantity] tuple --
-// confirmed against a real captured session (2026-09-17): New/Change both
-// carry the level's new total quantity, Delete always carries quantity
-// 0 (an artifact of nothing being left, not the delete signal itself).
-// Relying on quantity==0 to mean "delete" was tried in an earlier draft
-// of this policy and technically worked against real data (delete always
-// happens to carry 0), but that's an unstated invariant, not what the
-// protocol actually signals -- the explicit operation is what's used
-// here. FIX's MDUpdateAction-based L2 shape is a distinct wire shape the
-// feed handler normalizes into this one -- out of scope here. That
-// normalized form carries no change_id at all, so it goes to
-// UnsequencedL2Policy below rather than to L2Policy.
+// Deribit's WS book wire shape specifically (exchanges/deribit.md): each entry is an explicit
+// [operation, price, quantity] tuple -- confirmed against a real captured session (2026-09-17):
+// New/Change both carry the level's new total quantity, Delete always carries quantity 0 (an
+// artifact of nothing being left, not the delete signal itself). Relying on quantity==0 to mean
+// "delete" was tried in an earlier draft of this policy and technically worked against real data
+// (delete always happens to carry 0), but that's an unstated invariant, not what the protocol
+// actually signals -- the explicit operation is what's used here. FIX's MDUpdateAction-based L2
+// shape is a distinct wire shape the feed handler normalizes into this one -- out of scope here.
+// That normalized form carries no change_id at all, so it goes to UnsequencedL2Policy below rather
+// than to L2Policy.
 enum class L2Operation : std::uint8_t { kNew, kChange, kDelete };
 
 struct L2Update {
@@ -37,8 +34,8 @@ struct L2Update {
     L2Operation operation;
 };
 
-// Validated once per batch, not per update (decisions/0006, "Message/
-// batch boundary"): a real book message carries several updates under
+// Validated once per batch, not per update (docs/modules/order-book.md,
+// "Message/batch boundary"): a real book message carries several updates under
 // one change_id.
 struct ChangeIdMeta {
     ChangeId change_id;
@@ -68,7 +65,7 @@ struct L2ChangeSet {
 };
 
 // The price-level state and the level-by-level rules both L2 policies share
-// (decisions/0006, "L2 without a change_id"): aggregated levels per side,
+// (docs/modules/order-book.md, "L2 without a change_id"): aggregated levels per side,
 // unknown-level and crossed-book detection, top-of-book change flags. It knows
 // nothing about sequencing; that is exactly what the two policies below add or
 // leave out.
@@ -157,7 +154,7 @@ class L2Levels {
             return;
         }
         assert(!(update.operation == L2Operation::kNew && already_tracked) &&
-               "duplicate New for a price level already tracked (decisions/0006, tier-2)");
+               "duplicate New for a price level already tracked (API misuse)");
         map.insert_or_assign(update.price, update.quantity);
         change_set.level_changes.push_back({side, update.price, update.quantity});
     }
@@ -171,8 +168,8 @@ class L2Levels {
 // applying a batch is reported via L2ChangeSet::integrity_issue -- the engine
 // turns that into a Desynced transition, so this policy never has to "keep
 // going" after either. ApplyBatch requires a ChangeIdMeta and ApplySnapshot an
-// L2Snapshot; there is no form without one (decisions/0006, "L2 without a
-// change_id").
+// L2Snapshot; there is no form without one (docs/modules/order-book.md,
+// "L2 without a change_id").
 class L2Policy {
   public:
     [[nodiscard]] std::optional<BookEntry> Best(Side side) const {
@@ -211,7 +208,7 @@ class L2Policy {
 // with no gap check because there is nothing to check against. It is a
 // separate type from L2Policy, not an overload of it, so that a sequenced book
 // can never be applied without its ChangeIdMeta (which would silently skip the
-// gap check) and an unsequenced one can never be handed one (decisions/0006,
+// gap check) and an unsequenced one can never be handed one (docs/modules/order-book.md,
 // "L2 without a change_id").
 class UnsequencedL2Policy {
   public:

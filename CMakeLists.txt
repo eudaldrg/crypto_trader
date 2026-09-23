@@ -359,7 +359,7 @@ if(BUILD_TESTING)
   )
 endif()
 
-#### Order book (decisions/0006) ####
+#### Order book (decisions/0006, decisions/0013) ####
 # Mostly header-only (templates/concepts), but the Kraken checksum is
 # genuinely non-template logic, so this needs a compiled source, same
 # reasoning as feed_handler above.
@@ -417,7 +417,7 @@ target_link_libraries(kraken_journal_dump PRIVATE order_book_kraken_wire feed_ha
 #### Book adapter (docs/investigations/2026-09-21-issue-14-architecture.md) ####
 # Frames in, books out: dispatches a connection's frames to per-symbol books. It
 # sits above both order_book and feed_handler, which is why it is not part of
-# order_book (decisions/0006 keeps that library free of feed_handler).
+# order_book (decisions/0008 keeps that library free of feed_handler).
 add_library(book_adapter STATIC
   src/book_adapter/book_adapter.cpp
   src/book_adapter/book_service.cpp

@@ -2,8 +2,8 @@
 // book adapter, end to end: journal reader, FIX framing already done by the
 // client, T13's normalizer, UnsequencedL2Policy. The synthetic FIX messages in
 // deribit_fix_book_test.cpp are written from the docs; this is what the wire
-// really sends, which is what caught the Deribit WS shape ADR 0006's first
-// draft got wrong.
+// really sends, which is what caught the Deribit WS shape the order book's first
+// draft got wrong (exchanges/deribit.md).
 //
 // The fixture, deribit_fix_capture.journal, is the first 800 35=X of the hour
 // recorded on the Deribit testnet on 2026-09-19, cut by the journal_slice tool
