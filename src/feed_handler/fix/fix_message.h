@@ -2,7 +2,7 @@
 // BodyLength/CheckSum envelope, framing a byte stream back into whole
 // messages, and parsing one message into its fields.
 //
-// Hand-rolled rather than QuickFIX on purpose (decisions/0001, decisions/0002):
+// Hand-rolled rather than QuickFIX on purpose (decisions/0001):
 // the protocol layer is the exercise, in the same spirit as the hand-rolled
 // RFC6455 client that is meant to replace IXWebSocket later.
 //

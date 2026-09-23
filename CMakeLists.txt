@@ -190,7 +190,7 @@ if(ENABLE_GPERFTOOLS)
   set_target_properties(gperftools_profiler PROPERTIES IMPORTED_LOCATION "${GPERFTOOLS_PROFILER_LIBRARY}")
 endif()
 
-#### Third-party dependencies (decisions/0002, docs/architecture.md) ####
+#### Third-party dependencies (docs/architecture.md) ####
 include(FetchContent)
 
 # IXWebSocket: Kraken WSS transport. USE_TLS must be forced into the cache
@@ -213,10 +213,8 @@ FetchContent_Declare(
   SYSTEM
 )
 
-# JSON parsing: order_book_tests' capture-replay fixtures and the
-# kraken_journal_dump tool both need it to parse captured wire messages --
-# not a production dependency, decisions/0002 defers a real wire/journal
-# serialization format.
+# nlohmann_json: Kraken level3 book parsing (order_book/kraken_l3_wire.h, on the
+# live book thread), plus the capture-replay tests and kraken_journal_dump.
 FetchContent_Declare(
   nlohmann_json
   GIT_REPOSITORY https://github.com/nlohmann/json.git
@@ -232,7 +230,7 @@ FetchContent_Declare(
   SYSTEM
 )
 # moodycamel readerwriterqueue: the bounded SPSC rings that carry frames from a
-# connection thread to the journal and book threads (decisions/0002,
+# connection thread to the journal and book threads (docs/architecture.md,
 # src/feed_handler/spsc_ring.h). Header-only.
 FetchContent_Declare(
   readerwriterqueue
@@ -242,7 +240,7 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(ixwebsocket simdjson nlohmann_json tomlplusplus readerwriterqueue)
 
-# GoogleTest: TDD for feed-parsing/journal/order-book logic, per decisions/0002.
+# GoogleTest: TDD for feed-parsing/journal/order-book logic (docs/architecture.md).
 option(BUILD_TESTING "Build test targets" ON)
 if(BUILD_TESTING)
   set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
@@ -259,7 +257,7 @@ if(BUILD_TESTING)
 endif()
 
 # Wraps add_executable() + the standard project_options/project_warnings
-# linkage so future targets can't forget to link one -- see decisions/0002.
+# linkage so future targets can't forget to link one (AGENTS.md, Architecture notes).
 function(add_project_executable name)
   add_executable(${name} ${ARGN})
   target_link_libraries(${name} PRIVATE project_options project_warnings project_sanitizers)
@@ -268,8 +266,7 @@ function(add_project_executable name)
   endif()
 endfunction()
 
-# Same, but for a GTest-based test binary registered with ctest -- see
-# decisions/0002.
+# Same, but for a GTest-based test binary registered with ctest.
 function(add_project_test name)
   add_executable(${name} ${ARGN})
   target_link_libraries(${name} PRIVATE project_options project_warnings project_sanitizers

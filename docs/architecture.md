@@ -52,6 +52,33 @@ journal file ─► journal_replay ─► BookAdapter ─► books          (inl
   `docs/investigations/2026-09-20-capture-volume.md`. Re-measure once it runs;
   per-symbol volume varies widely.
 
+## Toolchain and dependencies
+
+Clang only, pinned to version 21, with `lld`, CMake presets and Ninja
+(`scripts/bootstrap.sh`, AGENTS.md). Every dependency comes in through
+`FetchContent`, pinned to a tag and marked `SYSTEM`; each is replaceable behind
+the one place that uses it, so none of these is an ADR. Adding one means a
+pinned `FetchContent_Declare` plus a line here saying what it is for.
+
+| Dependency | For | Notes |
+|---|---|---|
+| IXWebSocket | Kraken WSS transport | Chosen over Boost.Beast: no Boost anywhere else, and Asio is heavy for one client. Owns its socket and thread, which keeps Kraken out of an epoll group (`decisions/0010`); a hand-rolled RFC 6455 client is the planned replacement, as an exercise like the FIX session layer |
+| simdjson | Kraken client: message classification and REST responses | On-demand parsing; the dev CPU (i5-12400F) has AVX2 for its fast kernel |
+| nlohmann_json | Kraken `level3` book parsing (`kraken_l3_wire.h`), tests and tools | On the live book thread, so it is in the per-update path; moving it to simdjson (or benchmarking Glaze) is a profiling decision |
+| toml++ | the capture config | Header-only |
+| moodycamel `readerwriterqueue` | the SPSC rings (`spsc_ring.h`) | Header-only; no multi-cursor ring (`docs/questions/2026-09-23-ring-copies-and-slots.md`) |
+| zlib | journal CRC-32 | Already linked through IXWebSocket |
+| GoogleTest | every test binary (`add_project_test`) | Chosen over Boost.Test, which drags in the Boost ecosystem |
+
+Deliberately not used:
+
+- **Abseil / ankerl** hash and btree maps: candidates for the fast books; the
+  golden book stays on `std::map` (`decisions/0013`).
+- **QuickFIX**: the FIX layer is hand-rolled on purpose (`decisions/0001`).
+- **Boost.Serialization**: versioning trouble in past use. No serialization
+  library is needed while the journal stores raw wire bytes (`decisions/0009`).
+- **C++20 modules** (`decisions/0002`).
+
 ## Stretch goals
 
 - **Deribit SBE over UDP multicast**, the closest available analog to an

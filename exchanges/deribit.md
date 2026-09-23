@@ -18,7 +18,7 @@ market data (L2, not L3).
   replay fixture): `prev_change_id` matched the previous `change_id` with zero
   gaps across 2069 consecutive `change` messages, and `quantity` was 0 on every
   `delete` and never otherwise.
-- **FIX API** (the one this project targets, per `decisions/0002` — hand-rolled,
+- **FIX API** (the one this project targets, per `decisions/0001` — hand-rolled,
   not QuickFIX, as a deliberate protocol-level exercise): testnet host
   `fix-test.deribit.com:9881`, FIX.4.4. Also L2, not L3 — same granularity
   as `book.*`, just a different protocol surface (tag=value, session

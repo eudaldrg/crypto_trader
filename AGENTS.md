@@ -58,16 +58,11 @@ format. See `exchanges/README.md` for the index.
   Deribit FIX market data (L2 with FIX session sequencing, a second protocol
   surface). Neither ranks above the other. Deribit SBE multicast is a stretch
   goal; wire facts live in `exchanges/`.
-- `decisions/0002-tooling-stack.md` — concurrency primitives
-  (moodycamel `concurrentqueue`/`readerwriterqueue`), containers (Abseil /
-  ankerl hash & btree maps), testing (GoogleTest, not Boost.Test), profiling
-  (`perf c2c`, Valgrind, gperftools/tcmalloc — Linux-only), serialization
-  (deliberately deferred until a concrete wire/journal format is needed).
-  Also: C++20 modules were prototyped and confirmed working in Clang 21 +
-  CMake + Ninja, but **de-scoped back to plain `.h`/`.cpp`** because clangd's
-  modules support is experimental and cross-TU Find-References/Go-to-Definition
-  doesn't work across an `import` boundary — reliable navigation is a hard
-  project requirement. Don't reintroduce modules until clangd support matures.
+- `decisions/0002-no-cxx-modules.md` — plain `.h`/`.cpp`, not C++20 modules
+  (provisional): Clang 21 + CMake + Ninja build modules fine, but clangd's
+  cross-file navigation stops at an `import`, and reliable navigation is a hard
+  requirement. Don't introduce modules until its revisit trigger fires. The
+  dependency list and why each is there is `docs/architecture.md`.
 - `decisions/0003-dev-environment.md` — WSL2 (Ubuntu, native ext4, never
   `/mnt/c/...`) for day-to-day dev now; native dual-boot Linux planned later
   specifically because `perf c2c`/PMU access is unreliable under WSL2's
@@ -187,7 +182,7 @@ Push-time (`stages: [pre-push]`):
 
 ### Tests
 
-GoogleTest (`decisions/0002`), fetched via `FetchContent` and registered with
+GoogleTest (`docs/architecture.md`), fetched via `FetchContent` and registered with
 ctest:
 
 ```bash
