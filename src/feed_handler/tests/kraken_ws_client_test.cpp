@@ -5,7 +5,7 @@
 // what it does when the journal write fails.
 //
 // The capture tests drive handle_message() directly rather than over a socket.
-// IXWebSocket owns its own thread and fd (decisions/0004), and a real
+// IXWebSocket owns its own thread and fd (decisions/0010), and a real
 // connection would also need a signed REST token call, so a live-socket
 // harness like the Deribit one is not available here; handle_message() is the
 // entry point that callback would reach anyway.

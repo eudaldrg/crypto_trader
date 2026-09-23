@@ -3,7 +3,7 @@
 // hand-rolled POSIX TCP socket and journals every inbound message through the
 // same exchange-agnostic CaptureSession Kraken uses.
 //
-// Threading (decisions/0004): one dedicated thread doing a blocking recv()
+// Threading (decisions/0010): one dedicated thread doing a blocking recv()
 // loop, which is the same "one thread per connection" scope Kraken's v1 has --
 // just hand-rolled instead of library-provided. The epoll-per-thread-group
 // model in that ADR is explicitly the end-goal for when there is more than one
@@ -19,7 +19,7 @@
 // Transport: plain TCP, no TLS. Confirmed against the real testnet by
 // experiments/deribit_fix_probe.py (socket.create_connection, no ssl wrap).
 //
-// Reconnect policy (decisions/0004): a session-level gap, a duplicate, a
+// Reconnect policy (decisions/0011): a session-level gap, a duplicate, a
 // malformed MsgSeqNum, a framing loss or a failed envelope validation all mean
 // the same thing -- the session is no longer trustworthy. There is no
 // ResendRequest/SequenceReset gap fill; the answer is drop the connection,

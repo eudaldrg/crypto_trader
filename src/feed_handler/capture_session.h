@@ -1,7 +1,7 @@
 // Per-connection capture bookkeeping: which connect_id we are on, which
 // journal file it writes to, and the capture sequence numbering inside it.
 //
-// decisions/0004 makes the journal one file per (exchange,
+// decisions/0009 makes the journal one file per (exchange,
 // connect_id) and makes the reconnect an explicit record rather
 // than something inferred from message content. That is three pieces of state
 // that have to move together on every (re)connect -- new file, incremented
@@ -121,10 +121,9 @@ class CaptureSession {
     /// captures, after the journal writer has taken it. NON-OWNING: `sink` must
     /// outlive this session.
     ///
-    /// Deliberately the whole of the fan-out machinery for now. Cross-thread
-    /// delivery (the SPSC-ring fan-in seam in decisions/0004) is future work
-    /// and does not change this call -- it changes what a sink does inside
-    /// on_frame, which is exactly what the frame-ownership contract in
+    /// Deliberately the whole of the fan-out machinery. A sink that hands
+    /// frames to another thread (the book ring, decisions/0010) copies the
+    /// frame inside OnFrame, which is what the frame-ownership contract in
     /// message_sink.h was written to make possible.
     void AddSink(MessageSink& sink) {
         sinks_.push_back(&sink);

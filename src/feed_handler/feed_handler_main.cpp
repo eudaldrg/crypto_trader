@@ -2,7 +2,7 @@
 // configured symbols, and journal every inbound wire message until SIGINT. With
 // `order_books = true` in the config it also feeds every connection into live
 // order books on one thread (book_adapter); no strategy, no order entry
-// (decisions/0004).
+// (docs/architecture.md).
 //
 // Which connections to open is the `--config` TOML file (feed_handler/config),
 // optionally narrowed with `--exchange` and `--only`. Credentials are named

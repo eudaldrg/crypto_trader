@@ -22,7 +22,7 @@ std::unique_ptr<CaptureConnection> MakeKrakenCapture(const config::FeedHandlerCo
 
 /// Fetches instrument reference data and logs each configured Kraken symbol's
 /// tick size. Entries for other exchanges in `connections` are ignored. Not blocking for capture:
-/// the journal holds raw bytes, and nothing downstream of it needs a tick size yet (decisions/0004
+/// the journal holds raw bytes, and nothing downstream of it needs a tick size yet (decisions/0009
 /// keeps reference data out of the journal). It doubles as an early typo check: a symbol with no
 /// AssetPairs entry is logged, since Kraken would otherwise only reject it on
 /// subscribe.

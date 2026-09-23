@@ -6,11 +6,10 @@
 // the protocol layer is the exercise, in the same spirit as the hand-rolled
 // RFC6455 client that is meant to replace IXWebSocket later.
 //
-// Nothing here is Deribit-specific and nothing here does I/O -- a socket is
-// the next task's problem (decisions/0004). The framer is written for how a
-// socket actually delivers data (arbitrary chunk boundaries, several messages
-// per read, a partial message left over) so that plugging one in later is
-// wiring, not a redesign.
+// Nothing here is Deribit-specific and nothing here does I/O -- the socket is
+// deribit_fix_client's (docs/modules/deribit-fix.md). The framer is written for
+// how a socket actually delivers data (arbitrary chunk boundaries, several
+// messages per read, a partial message left over).
 //
 // Wire envelope, per the FIX spec:
 //
@@ -424,13 +423,13 @@ std::expected<RepeatingGroup, std::string> ReadGroup(
 ///
 /// Errors are sticky. There is no attempt to resynchronise mid-stream by
 /// hunting for the next BeginString: if the framing is wrong, everything
-/// after it is untrustworthy, and v1's answer to an untrustworthy session is
-/// the same as decisions/0004's answer to a sequence gap -- drop the
+/// after it is untrustworthy, and the answer to an untrustworthy session is
+/// the same as decisions/0011's answer to a sequence gap -- drop the
 /// connection and re-logon. That orchestration belongs to the client, so this
 /// class only has to make the condition unmissable.
 ///
 /// Not thread safe, and does not need to be: one framer per connection, driven
-/// by that connection's own thread (decisions/0004, threading model).
+/// by that connection's own thread (decisions/0010).
 class Framer {
   public:
     explicit Framer(std::size_t max_body_length = kMaxBodyLength);

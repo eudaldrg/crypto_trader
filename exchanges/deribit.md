@@ -81,7 +81,7 @@ secondary/future target (real market data here is L2, not L3).
 Two independent sequencing layers to be aware of when building the real
 client: FIX session-level `MsgSeqNum` (transport reliability — standard FIX
 repairs gaps here with `ResendRequest`/`SequenceReset`, though this project
-deliberately does not; see `decisions/0004`) and the MD-level
+deliberately does not; see `decisions/0011`) and the MD-level
 snapshot/incremental structure above (business-level). Neither is the same
 mechanism as Kraken's checksum approach.
 

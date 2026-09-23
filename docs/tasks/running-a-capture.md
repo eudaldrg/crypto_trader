@@ -87,4 +87,4 @@ checksum mismatches.
 
 Roughly 1.5 GiB/day for `BTC/USD` on Kraken and 0.2 GiB/day for
 `BTC-PERPETUAL` on Deribit, and other symbols differ several-fold; the numbers
-and the 5-10 symbols per exchange scope are in `decisions/0004`.
+and the capture scope are in `docs/investigations/2026-09-20-capture-volume.md`.

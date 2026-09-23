@@ -64,7 +64,7 @@ class JournalReader {
     /// A truncated or corrupt tail -- the normal outcome of a crash mid-write
     /// -- is NOT an error: the reader stops cleanly at the first record it
     /// cannot fully validate and reports it via stopped_early()/stop_reason(),
-    /// per decisions/0004.
+    /// per decisions/0009.
     std::optional<JournalRecord> Next();
 
     /// True if next() stopped on an invalid record rather than clean EOF.

@@ -190,7 +190,7 @@ if(ENABLE_GPERFTOOLS)
   set_target_properties(gperftools_profiler PROPERTIES IMPORTED_LOCATION "${GPERFTOOLS_PROFILER_LIBRARY}")
 endif()
 
-#### Third-party dependencies (decisions/0002, decisions/0004) ####
+#### Third-party dependencies (decisions/0002, docs/architecture.md) ####
 include(FetchContent)
 
 # IXWebSocket: Kraken WSS transport. USE_TLS must be forced into the cache
@@ -444,7 +444,7 @@ if(BUILD_TESTING)
   )
 endif()
 
-# The capture binary (decisions/0004): every configured connection, across
+# The capture binary (docs/architecture.md): every configured connection, across
 # exchanges, from one process. Which ones is the --config file; credentials come
 # from the environment. See feed_handler_main.cpp and docs/modules/feed-handler.md.
 # It links book_adapter as well as feed_handler: the binary is where the live

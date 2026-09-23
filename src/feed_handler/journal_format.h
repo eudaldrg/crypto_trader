@@ -1,6 +1,6 @@
 // On-disk layout of the v1 capture journal, shared by the writer and the
 // reader so the byte offsets have exactly one definition.
-// See decisions/0004-feed-handler-architecture.md, "Journal format v1".
+// See decisions/0009-journal-content-and-format.md.
 //
 // One append-only file per (exchange, connect_id). All integers
 // are little-endian on the wire regardless of host byte order.

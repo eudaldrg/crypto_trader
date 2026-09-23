@@ -27,7 +27,7 @@ mechanics plus a raw-POSIX-socket client on its own thread), which logs on to
 Deribit's FIX testnet, subscribes to the configured instruments and journals
 into the configured `journal_dir`. Each connection journals on its own
 thread behind an SPSC ring, so no connection thread touches the disk
-(`decisions/0004`). A golden
+(`decisions/0010`). A golden
 (deliberately simple, `std::map`-based) order book also exists in
 `src/order_book/` (L1/L2/L3 granularity, no matching yet, see
 `decisions/0006`), and `src/book_adapter/` wires it to both exchanges' feeds:
@@ -78,19 +78,22 @@ format. See `exchanges/README.md` for the index.
   specifically because `perf c2c`/PMU access is unreliable under WSL2's
   Hyper-V. Until dual-boot exists, any profiling that specifically needs
   `perf c2c` should go to a disposable cloud VPS, not WSL2.
-- `decisions/0004-feed-handler-architecture.md` — the three execution modes
-  (LiveTrading/Replay/Simulation) and the `MessageSink` interface (with its
-  frame-ownership contract) that keeps strategy-facing code identical across
-  them; the v1 journal format (raw wire bytes + capture metadata, framed and
-  versioned, one file per exchange+connect_id — not per symbol);
-  the threading model (epoll-per-thread-group is the end-goal, but
-  IXWebSocket owning its own fd/thread keeps Kraken a standalone exception
-  until it's replaced) and the journal thread behind a bounded SPSC ring (ring
-  overflow or a write failure is fatal, `Close()` is a barrier), plus what
-  `connect_id` (formerly "incarnation") means; and the
-  per-exchange snapshot/recovery/gap-handling recap (detailed wire facts
-  live in `exchanges/`, not here); and the TOML config format plus the initial
-  capture scope (5-10 symbols per exchange, with measured byte rates).
+- `decisions/0004-raw-frame-sink-seam.md` — exchange-facing code hands raw
+  wire frames to `MessageSink`s as non-owning views; a sink copies what it keeps.
+  This seam is what keeps strategy-facing code identical across
+  LiveTrading/Replay/Simulation (`docs/architecture.md`).
+- `decisions/0009-journal-content-and-format.md` — the journal records inbound
+  wire bytes verbatim, one file per connection and `connect_id`, versioned and
+  crash-tolerant, never outbound traffic (credentials). Explicitly not settled:
+  revisit once replay has to reproduce the live order of book updates across
+  connections (`docs/questions/`).
+- `decisions/0010-connection-thread-handoff.md` — connection threads never
+  block, parse or touch disk; one SPSC ring per consumer, each with its own
+  full-ring policy (journal fatal, books drop and desync); staged towards
+  epoll thread groups, with IXWebSocket keeping Kraken out until replaced.
+- `decisions/0011-desync-recovery.md` — any lost data (gap, checksum,
+  silence, dropped frame, integrity issue) desyncs, and recovery is always a
+  reconnect plus a fresh snapshot; what `connect_id` means.
 - `decisions/0005-quality-gates-and-release-process.md` — the commit-time
   (must compile) and push-time (full suite under ASan+UBSan and TSan)
   enforcement tiers, why MemorySanitizer is deferred rather than added, why a

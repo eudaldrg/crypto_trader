@@ -1,6 +1,6 @@
 // The mode-agnostic seam between exchange-facing code (live socket, replay
 // journal reader, future simulation engine) and everything downstream of it.
-// See decisions/0004-feed-handler-architecture.md, "Mode-agnostic seam".
+// See decisions/0004-raw-frame-sink-seam.md.
 #pragma once
 
 #include <cstddef>
@@ -66,7 +66,7 @@ struct CaptureFrame {
 /// plus any number of registered sinks.
 ///
 /// Dispatch mechanism (virtual vs. a compile-time policy) is deliberately left
-/// open by decisions/0004 until there is a real hot-path sink to measure, so
+/// open (docs/questions/2026-09-23-sink-dispatch-mechanism.md) until it is measured, so
 /// this stays a plain virtual interface for now.
 class MessageSink {
   public:
@@ -115,7 +115,7 @@ std::uint64_t RealtimeNowNs();
 ///
 /// One instance per connection; not thread safe, and does not need to be --
 /// each connection stamps its own frames on its own thread
-/// (decisions/0004, threading model).
+/// (decisions/0010).
 class CaptureStamper {
   public:
     /// Returns a frame viewing `payload` (no copy) stamped with the next

@@ -1,4 +1,4 @@
-// The application-level staleness timer decisions/0004 requires, exercised
+// The application-level staleness timer decisions/0011 requires, exercised
 // against an injected clock rather than by sleeping: the whole reason the
 // watchdog takes `now_ns` as a parameter is that its timing is testable
 // without a live socket or a slow test.

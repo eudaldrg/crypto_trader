@@ -1,6 +1,6 @@
 // Append-only v1 capture journal writer -- the always-present `message_sink`
 // every CaptureSession owns, and the only one that makes capture durable.
-// See decisions/0004-feed-handler-architecture.md and journal_format.h for the
+// See decisions/0009-journal-content-and-format.md and journal_format.h for the
 // on-disk layout.
 #pragma once
 
@@ -24,9 +24,9 @@ namespace feed_handler {
 /// path through this class to accidentally take (exchanges/kraken.md: the WS
 /// subscribe payload carries a live token in-body).
 ///
-/// Writes are buffered and NOT fsync'd per record (decisions/0004's
-/// backpressure note): they happen synchronously on the connection's own
-/// thread, so one instance belongs to exactly one thread and needs no locking.
+/// Writes are buffered and NOT fsync'd per record. They happen on one thread
+/// (the journal thread of a threaded CaptureSession, decisions/0010, or the
+/// caller's in an inline one), so an instance needs no locking.
 class JournalWriter final : public MessageSink {
   public:
     struct Config {

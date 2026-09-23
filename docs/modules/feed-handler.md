@@ -1,7 +1,7 @@
 ---
 aliases: [feed handler, feed-handler, capture, config, connections, journal thread, order_books]
 sources: [src/feed_handler/**, config/**, src/book_adapter/book_service.*, src/book_adapter/book_wiring.*, src/book_adapter/ring_sink.h]
-decisions: [decisions/0001-feed-source-selection.md, decisions/0004-feed-handler-architecture.md, decisions/0008-book-adapter-and-event-rings.md]
+decisions: [decisions/0001-feed-source-selection.md, decisions/0004-raw-frame-sink-seam.md, decisions/0009-journal-content-and-format.md, decisions/0010-connection-thread-handoff.md, decisions/0011-desync-recovery.md, decisions/0008-book-adapter-and-event-rings.md]
 ---
 
 # Feed handler
@@ -10,8 +10,11 @@ The capture side of the pipeline: one `feed_handler` binary connects to every
 configured exchange, subscribes to the configured symbols, and journals every
 inbound wire message verbatim, and, with `order_books = true`, also feeds them into
 live order books. Which connections to open is a TOML file passed with
-`--config`; the design rationale is in `decisions/0004` (and `decisions/0008` for
-the books), and this is what the file means and what to watch for.
+`--config`. The decisions behind it are the sink seam (`decisions/0004`), the
+journal (`decisions/0009`), the thread hand-off (`decisions/0010`) and recovery
+(`decisions/0011`), plus `decisions/0008` for the books; this is what the file
+means and what to watch for. The two clients have their own docs:
+[kraken-client](kraken-client.md) and [deribit-fix](deribit-fix.md).
 
 ## One connection, one socket, one journal
 
@@ -99,7 +102,44 @@ book must reset.
   file happens only because a new connection was established.
 - Sinks are told both ends: `OnConnect(connect_id, reason)` once the new file is
   usable and `OnDisconnect(connect_id)` once per connect, after its file is closed
-  (`decisions/0004`). A book goes stale on the disconnect, not at the next connect.
+  (`decisions/0011`). A book goes stale on the disconnect, not at the next connect.
+
+## The sink seam and the journal file
+
+`CaptureSession` owns a connection's capture: one `CaptureStamper` (the only
+source of capture sequence numbers), the journal writer, and any extra sinks
+registered with `AddSink` (`decisions/0004`).
+
+- **The journal writer is not one of the sinks.** It is always present, it goes
+  first, and it is the only one whose failure counts, so nothing a downstream
+  sink does can decide whether a record is written. Extra sinks still see a frame
+  whose journal write failed: what failed is the disk, not the data.
+- **The connect marker and the connect notification are different things.** The
+  marker is a record (`WriteConnectMarker`), stamped by the session's one stamper
+  so it takes its place in the capture sequence; `OnConnect` is a notification
+  and needs no sequence number. Sinks are told about a `connect_id` only once it
+  is usable, since a failed `BeginConnect` is fatal.
+- **`FrameSource` is set by the client** at the call site, the only place that
+  knows first-hand what it received, and is not stored per record: the journal
+  header's exchange tag recovers it once per file.
+
+The byte layout is in `src/feed_handler/journal_format.h`, shared by writer and
+reader. Choices worth knowing:
+
+- A 64-byte file header (magic `CTJOURNL`, version, the `CLOCK_REALTIME` and
+  `CLOCK_MONOTONIC` anchors sampled together, exchange tag, `connect_id`, CRC-32
+  over the header) and a 24-byte record header, payload and CRC-32 trailer over
+  both. A CRC rather than a length trailer, because it also catches a corrupted
+  body; zlib's `crc32()` was already linked through IXWebSocket.
+- Integers are little-endian, written shift by shift, not by struct punning.
+- The writer refuses a record whose capture sequence is not greater than the
+  last one and latches an error: an out-of-order record would be undetectable at
+  replay.
+- Writes are buffered (1 MiB) and not fsync'd per record. File preallocation
+  (`fallocate`) is not done; it waits for a throughput measurement that asks for
+  it.
+- Failing to open a journal file is fatal to the process: staying connected
+  while unable to capture would discard what the process exists to collect.
 
 ## Threads and the journal
 
@@ -155,7 +195,7 @@ captures. It is off by default because a capture tool's job is journaling.
 - **Books never fail a capture.** They cannot latch fatal or change the exit code. A
   full book ring drops the frame, counts it and desyncs that connection's books
   until its next `connect_id`; a parse or apply error is counted and desyncs.
-  `decisions/0008` has the policy.
+  `decisions/0010` has the policy.
 - The ring is 65,536 events per connection (`BookService::Config::ring_events`, no
   config key yet).
 - The books are only inspectable once the book thread has stopped; there is no
@@ -221,7 +261,7 @@ SOH-delimited FIX field (Deribit). Loosening it means adding escaping first.
   testnet REST endpoint to pair a different websocket with.
 - **Kraken: at most 200 symbols per connection** (validated), and the
   subscribe is one message. The subscribe cost is depth-weighted (5 per symbol
-  at depth 10 against a 200/s budget, `decisions/0004`), so a burst past about
+  at depth 10 against a 200/s budget, `exchanges/kraken.md`), so a burst past about
   40 symbols would need pacing, which is not implemented. At the intended 5-10
   symbols it does not matter.
 - **Kraken acknowledges a multi-symbol subscribe once per symbol.** The client

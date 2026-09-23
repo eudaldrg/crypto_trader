@@ -1,6 +1,6 @@
 // The journal on its own thread: what lets a connection thread hand a frame to
 // the disk without ever touching it (docs/investigations/2026-09-21-issue-14-
-// architecture.md, decisions/0004).
+// architecture.md, decisions/0010).
 //
 // The connection thread stamps a frame, copies it into an SPSC ring and returns;
 // this thread drains the ring in order and runs an ordinary JournalWriter, so the
