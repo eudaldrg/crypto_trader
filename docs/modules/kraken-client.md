@@ -1,7 +1,7 @@
 ---
 aliases: [kraken client, kraken ws, ixwebsocket, nonce, kraken rest]
 sources: [src/feed_handler/kraken/**]
-decisions: [decisions/0001-feed-source-selection.md, decisions/0010-connection-thread-handoff.md, decisions/0011-desync-recovery.md]
+decisions: [decisions/0001-exchange-feeds.md, decisions/0010-connection-thread-handoff.md, decisions/0011-desync-recovery.md]
 ---
 
 # Kraken client

@@ -1,7 +1,7 @@
 ---
 aliases: [feed handler, feed-handler, capture, config, connections, journal thread, order_books]
 sources: [src/feed_handler/**, config/**, src/book_adapter/book_service.*, src/book_adapter/book_wiring.*, src/book_adapter/ring_sink.h]
-decisions: [decisions/0001-feed-source-selection.md, decisions/0004-raw-frame-sink-seam.md, decisions/0009-journal-content-and-format.md, decisions/0010-connection-thread-handoff.md, decisions/0011-desync-recovery.md, decisions/0012-failure-containment.md, decisions/0008-book-adapter-layering.md]
+decisions: [decisions/0001-exchange-feeds.md, decisions/0004-raw-frame-sink-seam.md, decisions/0009-journal-content-and-format.md, decisions/0010-connection-thread-handoff.md, decisions/0011-desync-recovery.md, decisions/0012-failure-containment.md, decisions/0008-book-adapter-layering.md]
 ---
 
 # Feed handler

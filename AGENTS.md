@@ -53,16 +53,11 @@ the *what* (exact fields, endpoints) belongs in `exchanges/`; update it
 whenever a probe in `experiments/` confirms something new about the wire
 format. See `exchanges/README.md` for the index.
 
-- `decisions/0001-feed-source-selection.md` — why Kraken's public L3 `level3`
-  WS feed (genuine order-by-order `add`/`modify`/`delete` by `order_id`) is
-  the primary feed, with Deribit's L2 `book` channel (real `change_id`/
-  `prev_change_id` sequencing) as the secondary/differently-shaped feed
-  problem. Also documents empirically-confirmed wire details worth knowing:
-  Kraken `level3` has no sequence numbers but *does* carry a per-message
-  `checksum` for desync detection; Deribit's WS `book` and FIX market data
-  are both L2, not L3, despite FIX being a genuinely different protocol
-  surface. A real Deribit SBE/UDP-multicast colo feed exists but is gated
-  behind infra/cost not worth taking on yet (stretch goal).
+- `decisions/0001-exchange-feeds.md` — why the project builds against
+  Kraken `level3` (genuine order-by-order L3, with a per-message checksum) and
+  Deribit FIX market data (L2 with FIX session sequencing, a second protocol
+  surface). Neither ranks above the other. Deribit SBE multicast is a stretch
+  goal; wire facts live in `exchanges/`.
 - `decisions/0002-tooling-stack.md` — concurrency primitives
   (moodycamel `concurrentqueue`/`readerwriterqueue`), containers (Abseil /
   ankerl hash & btree maps), testing (GoogleTest, not Boost.Test), profiling
@@ -234,8 +229,8 @@ in any order inside an anonymous namespace without tripping a spurious
   (`kraken_l3_probe.py`, `deribit_fix_probe.py`) used to verify real wire
   behavior against both exchanges before building the real C++ pipeline —
   they are explicitly **not** the real design, just probes; findings from
-  running them are captured back into the relevant ADR (see the "Empirical
-  validation" section of `0001`). They read exchange credentials from
+  running them are captured into `exchanges/` (the ADR keeps only the
+  reasoning). They read exchange credentials from
   `experiments/.env` (gitignored) via a minimal hand-rolled dotenv loader —
   **never open or read `experiments/.env`** (only `.env.example` is safe to
   view). Captures from authenticated sessions can contain the auth handshake

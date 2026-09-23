@@ -1,6 +1,6 @@
 # Kraken
 
-See `decisions/0001-feed-source-selection.md` for why this feed was chosen.
+See `decisions/0001-exchange-feeds.md` for why this feed was chosen.
 
 ## Endpoints
 

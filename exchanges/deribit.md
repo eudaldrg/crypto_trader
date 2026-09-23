@@ -1,7 +1,7 @@
 # Deribit
 
-See `decisions/0001-feed-source-selection.md` for why this feed is a
-secondary/future target (real market data here is L2, not L3).
+See `decisions/0001-exchange-feeds.md` for why this project uses Deribit's FIX
+market data (L2, not L3).
 
 ## Surfaces
 
@@ -25,7 +25,7 @@ secondary/future target (real market data here is L2, not L3).
   sequence numbers/heartbeats).
 - **SBE over UDP multicast**: real L3-equivalent institutional feed, but
   gated behind Equinix LD4 colo or AWS Transit Gateway peering in specific
-  regions — stretch goal, not in scope yet (see `decisions/0001`).
+  regions — stretch goal, not in scope yet (`docs/architecture.md`).
 
 ## FIX session (testnet, confirmed by probe)
 

@@ -51,3 +51,11 @@ journal file ─► journal_replay ─► BookAdapter ─► books          (inl
   alternatives weighed are in
   `docs/investigations/2026-09-20-capture-volume.md`. Re-measure once it runs;
   per-symbol volume varies widely.
+
+## Stretch goals
+
+- **Deribit SBE over UDP multicast**, the closest available analog to an
+  institutional colocated feed. Free, but needs Equinix LD4 colocation or an AWS
+  Transit Gateway peering request in eu-west-2 or ap-northeast-1, with real
+  infrastructure cost. Worth it once the pipeline (capture, books, a strategy)
+  works end to end on the current feeds (`decisions/0001`).
