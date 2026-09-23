@@ -120,13 +120,10 @@ format. See `exchanges/README.md` for the index.
   the FIX `Framer` + `ParseMessage` pipeline (`ENABLE_FUZZER`,
   `src/feed_handler/fix/fuzz/`); why it is a raw `add_executable` and not part
   of the pre-push gate; Kraken `level3` and the journal reader are deferred.
-- `decisions/0008-book-adapter-and-event-rings.md`: why the book adapter is
-  its own library (`src/book_adapter/`) that `order_book` and `feed_handler` do
-  not depend on; one single-threaded adapter driven inline by journal replay and
-  behind a per-connection ring by the live book thread; the drop and desync
-  policy (never block, never fail a capture, stay desynced until the next
-  `connect_id`); stale-on-disconnect semantics; `order_books` default off with
-  its `depth`/decimals keys; order-id interning deferred; and the follow-ups.
+- `decisions/0008-book-adapter-layering.md` — `order_book` and
+  `feed_handler` never depend on each other; `src/book_adapter/` depends on
+  both and is linked only by binaries that want books. `feed_handler` offers
+  generic hooks (`AddSink`, `BeforeStart`) instead of knowing about books.
 
 ## Commands
 

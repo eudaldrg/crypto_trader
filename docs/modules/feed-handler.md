@@ -1,7 +1,7 @@
 ---
 aliases: [feed handler, feed-handler, capture, config, connections, journal thread, order_books]
 sources: [src/feed_handler/**, config/**, src/book_adapter/book_service.*, src/book_adapter/book_wiring.*, src/book_adapter/ring_sink.h]
-decisions: [decisions/0001-feed-source-selection.md, decisions/0004-raw-frame-sink-seam.md, decisions/0009-journal-content-and-format.md, decisions/0010-connection-thread-handoff.md, decisions/0011-desync-recovery.md, decisions/0012-failure-containment.md, decisions/0008-book-adapter-and-event-rings.md]
+decisions: [decisions/0001-feed-source-selection.md, decisions/0004-raw-frame-sink-seam.md, decisions/0009-journal-content-and-format.md, decisions/0010-connection-thread-handoff.md, decisions/0011-desync-recovery.md, decisions/0012-failure-containment.md, decisions/0008-book-adapter-layering.md]
 ---
 
 # Feed handler
@@ -188,7 +188,13 @@ captures. It is off by default because a capture tool's job is journaling.
   error and never a reason to stop.
 - **Deribit** needs both `price_decimals` and `quantity_decimals` on the connection
   when `order_books` is on, or the process refuses to start (exit 2, naming the
-  connection and the missing keys).
+  connection and the missing keys). Per-symbol scale was not added: more schema
+  for a case that does not exist at 5 to 10 symbols.
+- The two failures differ on purpose. A missing Deribit key is known from the
+  config before anything starts, so a capture asked to run books it cannot build
+  is refused. A missing Kraken symbol is known only after a network lookup, and
+  books are never a reason to fail a capture that otherwise works. Neither
+  guesses a scale: a wrong one desyncs every checksum without failing loudly.
 - The book thread starts after every connection has its ring, i.e. after
   `StartAll` returns. A Deribit connection starts before the `AssetPairs` lookup
   (up to about 30 s), so its ring buffers meanwhile; it is far from full at that

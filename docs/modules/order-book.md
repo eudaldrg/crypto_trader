@@ -1,7 +1,7 @@
 ---
 aliases: [order book, ob, l1, l2, l3, golden book, book adapter, journal replay, journal_replay, journal_slice]
 sources: [src/order_book/**, src/book_adapter/**]
-decisions: [decisions/0006-order-book-policies.md, decisions/0013-golden-reference-book.md, decisions/0011-desync-recovery.md, decisions/0008-book-adapter-and-event-rings.md]
+decisions: [decisions/0006-order-book-policies.md, decisions/0013-golden-reference-book.md, decisions/0011-desync-recovery.md, decisions/0008-book-adapter-layering.md, decisions/0010-connection-thread-handoff.md]
 ---
 
 # Order book
@@ -194,11 +194,53 @@ What it does, in the terms a reader of a log or a report needs:
   whole message so a book never applies half of one.
 - A dropped frame, a parse error, an apply exception or an integrity issue (gap,
   checksum mismatch, crossed book, unknown order or level) is counted, logged and
-  leaves the book desynced until the next connect or a fresh snapshot. Nothing
-  throws out of the adapter. `updates_before_snapshot` and `updates_while_desynced`
-  are updates that were received but not applied.
-- Order ids are `HashOrderId`, a 64-bit hash; interning is deferred
-  (`decisions/0008`).
+  leaves the book desynced until the next connect or a fresh snapshot
+  (`decisions/0011`). Nothing throws out of the adapter. `updates_before_snapshot`
+  and `updates_while_desynced` are updates that were received but not applied.
+- What desyncs: a drop desyncs every book of that connection, and so does an
+  unparsable Kraken payload (its symbol is unknown, and it may have carried
+  updates the books now miss). A Deribit FIX parse error that got as far as the
+  symbol desyncs only that book; without one, all of them. An exception out of a
+  book desyncs that book.
+- A disconnect keeps the books rather than erasing them, so the last known state
+  can still be inspected; erasing buys nothing, since a connect erases and
+  recreates them anyway.
+- Errors are logged for the first few of each kind and only counted after that,
+  and only the first drop per connect is logged, so a broken stream is not a
+  stream of log lines.
+- Order ids are `HashOrderId`, a 64-bit hash, so two orders could in principle be
+  conflated (odds estimated around 1e-9 at this scale, not measured). Interning
+  them into dense ids needs an eviction scheme to stay bounded on a long run
+  (`docs/questions/2026-09-23-order-id-interning.md`).
+
+### Live: `BookService`
+
+- One `RingSink` per connection copies each frame (its one payload copy) and
+  pushes it without blocking. The journal has its own ring and its own copy;
+  sharing one ring with two read cursors would copy once, but the ring library
+  does not offer it (`docs/questions/2026-09-23-ring-copies-and-slots.md`).
+- One book thread polls every connection's ring round-robin, at most 64 events
+  per ring per pass so one backlog cannot starve another connection. When the
+  rings are empty it spins, then yields, then sleeps 100 microseconds; it never
+  blocks on a lock or condition variable, so `Stop()` is a flag and a join and
+  there is no wakeup to lose.
+- **Each ring entry carries the ring's drop count at the moment it was pushed**,
+  and the consumer reports drops to the adapter before applying that entry.
+  Reading the live counter after a pop would be wrong: the producer can be a
+  whole ring ahead, so a drop after a connect could be seen before the connect
+  is popped, and the connect's reset would wipe the desync. `Stop()` reports
+  drops no later entry carried.
+- Whatever escapes the adapter is caught, logged, counted (`InternalErrors()`)
+  and the event skipped.
+- Shutdown: every connection is stopped and joined, then `BookService::Stop()`
+  drains every ring and joins the thread, then the summaries are logged. The
+  books are declared before the capture set in `main()` because the sessions hold
+  pointers to their sinks.
+- Per-connection order is FIFO by construction; that `capture_sequence` strictly
+  increases per connection is asserted by a test at the ring consumer, not
+  checked at runtime.
+- The Kraken fixture replays through the adapter with the same counts as the
+  order-book replay test (1 snapshot, 6361 updates, no issues).
 
 ### `journal_replay`
 
