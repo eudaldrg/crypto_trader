@@ -63,11 +63,6 @@ format. See `exchanges/README.md` for the index.
   cross-file navigation stops at an `import`, and reliable navigation is a hard
   requirement. Don't introduce modules until its revisit trigger fires. The
   dependency list and why each is there is `docs/architecture.md`.
-- `decisions/0003-dev-environment.md` — WSL2 (Ubuntu, native ext4, never
-  `/mnt/c/...`) for day-to-day dev now; native dual-boot Linux planned later
-  specifically because `perf c2c`/PMU access is unreliable under WSL2's
-  Hyper-V. Until dual-boot exists, any profiling that specifically needs
-  `perf c2c` should go to a disposable cloud VPS, not WSL2.
 - `decisions/0004-raw-frame-sink-seam.md` — exchange-facing code hands raw
   wire frames to `MessageSink`s as non-owning views; a sink copies what it keeps.
   This seam is what keeps strategy-facing code identical across
