@@ -4,15 +4,16 @@ A from-scratch, latency-focused tick-to-strategy pipeline for crypto markets:
 exchange feed capture → order book reconstruction → strategy hook, built the
 way a real HFT feed handler is built rather than a typical retail trading bot.
 
-**Status:** early stage — environment and design decisions are being locked in
-before any production code lands. See `decisions/` for the full rationale
-behind each choice below; this README is deliberately just the pitch.
+**Status:** early stage. Capture from Kraken and Deribit, the journal, a golden
+order book and journal replay exist; fast books, matching and strategies do not.
+This README is deliberately just the pitch; `AGENTS.md` has the detail.
 
 ## What this is
 
-- **Feed capture**: consumes Kraken's public L3 WebSocket order-book channel —
-  genuine order-by-order data (`add`/`modify`/`delete` by `order_id`), not the
-  aggregated price-level (L2) feeds most free crypto APIs offer.
+- **Feed capture**: Kraken's L3 WebSocket order-book channel (genuine
+  order-by-order data, `add`/`modify`/`delete` by `order_id`, not the
+  aggregated price-level feeds most free crypto APIs offer) and Deribit's FIX
+  market data over a hand-rolled FIX.4.4 session, journaled verbatim.
 - **Order book engine**: reconstructs a full L3 book from that stream,
   designed for O(1)-style price→tick-index lookups rather than naive map
   lookups, with an eye toward sharding by security if/when parallelism is
@@ -30,11 +31,13 @@ instead of a synthetic simulation.
 
 ## Design decisions
 
-See [`decisions/`](decisions/) for ADRs on feed source selection, the tooling
-stack, and the development environment. Start there for the "why" behind
-anything that looks like an unusual choice.
+[`decisions/`](decisions/) holds the ADRs, one per expensive-to-reverse
+decision (exchange feeds, the capture seam, the journal, threading, recovery and
+failure containment, order-book design). [`docs/architecture.md`](docs/architecture.md)
+covers how the pieces fit and the cheaper choices, and
+[`docs/questions/`](docs/questions/) what is still undecided.
 
 ## Building
 
-TBD — toolchain (CMake + Ninja + Clang, latest available) is being set up
-now; instructions land here once there's something to build.
+CMake presets with Clang 21 and Ninja; see the Commands section of
+[`AGENTS.md`](AGENTS.md).

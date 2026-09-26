@@ -36,15 +36,27 @@ book thread fed by a ring per connection, and offline through the
 `journal_replay` tool, which replays a captured journal through the same adapter
 for profiling (`decisions/0008`, `docs/modules/order-book.md`). The fast
 exchange-specific books, the matching engine, and strategy code all remain
-unwritten. `decisions/` holds the locked-in ADRs; the rest of the design is
-intentionally unspecified and will be worked out in future sessions — don't
-assume unwritten components exist.
+unwritten. Don't assume unwritten components exist.
 
-**Always read `decisions/*.md` before making an architectural call.** They
-are the actual design doc for this project (in place of scattered markdown
-files elsewhere) and record *why* choices were made, not just what they are.
-Add a new ADR there for any future non-obvious architectural decision instead
-of leaving the rationale only in a commit message or chat.
+**Where the design lives:**
+
+- `decisions/*.md`: ADRs, only for decisions that are expensive to reverse,
+  each with its options and trade-off. All are `proposed` (or `provisional`)
+  unless marked `accepted`: working assumptions to follow, and to challenge
+  with a proposal when work shows one wrong. Read them before an architectural
+  call.
+- `docs/architecture.md`: how the pieces fit, dependencies, and choices that
+  are cheap to change. Meant to change as the project learns.
+- `docs/modules/` (what each component is and how it behaves), `docs/tasks/`
+  (how to do things), `docs/investigations/` (dated evidence).
+- `docs/questions/`: one file per open question nobody has answered yet. A
+  session that hits one it cannot settle writes a file there, records what it
+  assumed meanwhile, and carries on.
+
+A new decision gets an ADR only if reversing it would be expensive (a contract
+between components, a stored format, a threading or ownership model, a pattern
+that spreads); anything else goes in `docs/architecture.md` or a module doc.
+Never leave the rationale only in a commit message or chat.
 
 **`exchanges/*.md` holds raw per-exchange protocol reference** (endpoints,
 auth flow, message shapes, confirmed wire quirks) — facts, not rationale.
@@ -67,6 +79,15 @@ format. See `exchanges/README.md` for the index.
   wire frames to `MessageSink`s as non-owning views; a sink copies what it keeps.
   This seam is what keeps strategy-facing code identical across
   LiveTrading/Replay/Simulation (`docs/architecture.md`).
+- `decisions/0006-order-book-policies.md` — books vary by granularity
+  (L1/L2/L3) and matching through concept-constrained policy templates, not
+  virtual dispatch or CRTP; exchange quirks (Kraken's checksum, depth
+  truncation, add ordering) live in exchange policies composing generic ones.
+  How the books behave in detail is `docs/modules/order-book.md`.
+- `decisions/0008-book-adapter-layering.md` — `order_book` and
+  `feed_handler` never depend on each other; `src/book_adapter/` depends on
+  both and is linked only by binaries that want books. `feed_handler` offers
+  generic hooks (`AddSink`, `BeforeStart`) instead of knowing about books.
 - `decisions/0009-journal-content-and-format.md` — the journal records inbound
   wire bytes verbatim, one file per connection and `connect_id`, versioned and
   crash-tolerant, never outbound traffic (credentials). Explicitly not settled:
@@ -86,18 +107,9 @@ format. See `exchanges/README.md` for the index.
   journal and alerts, it does not stop other connections; only disk/memory
   exhaustion escalates, into a maintenance mode. The code still stops every
   connection on any fatal.
-- `decisions/0006-order-book-policies.md` — books vary by granularity
-  (L1/L2/L3) and matching through concept-constrained policy templates, not
-  virtual dispatch or CRTP; exchange quirks (Kraken's checksum, depth
-  truncation, add ordering) live in exchange policies composing generic ones.
-  How the books behave in detail is `docs/modules/order-book.md`.
 - `decisions/0013-golden-reference-book.md` — a deliberately simple
   `std::map`-based golden book is the oracle: fast books are checked against it
   on the same inputs, and new features land in it first.
-- `decisions/0008-book-adapter-layering.md` — `order_book` and
-  `feed_handler` never depend on each other; `src/book_adapter/` depends on
-  both and is linked only by binaries that want books. `feed_handler` offers
-  generic hooks (`AddSink`, `BeforeStart`) instead of knowing about books.
 
 ## Commands
 

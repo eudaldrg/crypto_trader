@@ -2,7 +2,7 @@
 status: open
 component: quality gates, release process
 blocking: false
-raised-by: ADR cleanup, 2026-09-23 (was tier 3 of decisions/0005)
+raised-by: ADR cleanup, 2026-09-23 (was tier 3 of the former ADR 0005, quality gates)
 assumed: no release checks; dev goes into main when the owner asks (docs/tasks/pull-requests.md)
 ---
 
