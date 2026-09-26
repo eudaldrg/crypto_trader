@@ -86,13 +86,6 @@ format. See `exchanges/README.md` for the index.
   journal and alerts, it does not stop other connections; only disk/memory
   exhaustion escalates, into a maintenance mode. The code still stops every
   connection on any fatal.
-- `decisions/0005-quality-gates-and-release-process.md` — the commit-time
-  (must compile) and push-time (full suite under ASan+UBSan and TSan)
-  enforcement tiers, why MemorySanitizer is deferred rather than added, why a
-  local git hook isn't a real (unbypassable) gate, and the still-open
-  questions around a release process (branching strategy, coverage
-  thresholds, perf/simulation checks) — don't assume any of those were
-  decided, read the ADR's open-questions section first.
 - `decisions/0006-order-book-policies.md` — books vary by granularity
   (L1/L2/L3) and matching through concept-constrained policy templates, not
   virtual dispatch or CRTP; exchange quirks (Kraken's checksum, depth
@@ -101,10 +94,6 @@ format. See `exchanges/README.md` for the index.
 - `decisions/0013-golden-reference-book.md` — a deliberately simple
   `std::map`-based golden book is the oracle: fast books are checked against it
   on the same inputs, and new features land in it first.
-- `decisions/0007-fuzzing.md` — libFuzzer coverage-guided fuzzing, piloted on
-  the FIX `Framer` + `ParseMessage` pipeline (`ENABLE_FUZZER`,
-  `src/feed_handler/fix/fuzz/`); why it is a raw `add_executable` and not part
-  of the pre-push gate; Kraken `level3` and the journal reader are deferred.
 - `decisions/0008-book-adapter-layering.md` — `order_book` and
   `feed_handler` never depend on each other; `src/book_adapter/` depends on
   both and is linked only by binaries that want books. `feed_handler` offers
@@ -138,12 +127,19 @@ preset; `lld` is the linker). Toolchain versions are pinned to `-21` — see
 Useful CMake options (pass as `-D<OPTION>=ON` or add to a preset's
 `cacheVariables`): `ENABLE_ASAN`, `ENABLE_UBSAN`, `ENABLE_TCMALLOC`,
 `ENABLE_GPERFTOOLS` (already on in the `profile` preset), `ENABLE_COVERAGE`,
-`ENABLE_FUZZER` (libFuzzer targets, `decisions/0007`), `USE_CLOCK_MANAGER`.
+`ENABLE_FUZZER` (libFuzzer targets, `docs/tasks/fuzzing.md`), `USE_CLOCK_MANAGER`.
 
 ### Lint / format / quality gates
 
-Two `pre-commit` framework hook stages — see `decisions/0005` for the full
-reasoning behind the split and what's deliberately not enforced yet:
+**Rule for agents:** code must pass every automated check before it is
+committed or pushed. Never bypass a hook (`--no-verify`) and never weaken a
+check, a lint rule or a test to make something pass. Adding a check needs no
+permission; removing or loosening one needs the owner. Silencing a warning is
+allowed only at the line that triggers it (e.g. `// NOLINT(<check>)`), with a
+comment saying why, never file-wide or project-wide.
+
+Two `pre-commit` framework hook stages; `docs/tasks/testing.md` has what each
+runs, why, and what is deliberately not enforced yet:
 
 ```bash
 pre-commit install                      # commit-time hooks
@@ -202,7 +198,7 @@ in any order inside an anonymous namespace without tripping a spurious
 
 - Every executable target must go through the `add_project_executable()`
   CMake function (`CMakeLists.txt`; the libFuzzer target is the one exception,
-  `decisions/0007`) rather than raw `add_executable()` — it
+  `docs/tasks/fuzzing.md`) rather than raw `add_executable()` — it
   links `project_options`/`project_warnings` (and `gperftools_profiler` when
   `ENABLE_GPERFTOOLS` is on) so no target can accidentally skip warnings or
   the shared compiler/link flags. Add new targets this way.

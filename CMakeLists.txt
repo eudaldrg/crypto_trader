@@ -11,7 +11,7 @@ option(ENABLE_ASAN "Enable AddressSanitizer" OFF)
 option(ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
 # ThreadSanitizer instruments differently than ASan/UBSan and the two runtimes
 # cannot coexist in one binary, hence the separate option and the guard below
-# rather than folding it into ENABLE_ASAN's block. See decisions/0005.
+# rather than folding it into ENABLE_ASAN's block. See docs/tasks/testing.md.
 option(ENABLE_TSAN "Enable ThreadSanitizer" OFF)
 if(ENABLE_TSAN AND ENABLE_ASAN)
   message(FATAL_ERROR "ENABLE_TSAN and ENABLE_ASAN cannot be combined in one binary -- configure separate build directories (see scripts/run_sanitizers.sh)")
@@ -20,7 +20,7 @@ option(USE_CLOCK_MANAGER "Enable clock manager" OFF)
 option(ENABLE_COVERAGE "Enable code coverage instrumentation" OFF)
 option(ENABLE_TCMALLOC "Use tcmalloc" OFF)
 option(ENABLE_GPERFTOOLS "Link gperftools CPU profiler" OFF)
-option(ENABLE_FUZZER "Build libFuzzer fuzz targets (decisions/0007)" OFF)
+option(ENABLE_FUZZER "Build libFuzzer fuzz targets (docs/tasks/fuzzing.md)" OFF)
 
 # Get the branch name (returns "HEAD" if in detached HEAD state)
 execute_process(
@@ -466,7 +466,7 @@ add_project_executable(journal_slice
 )
 target_link_libraries(journal_slice PRIVATE feed_handler)
 
-# libFuzzer pilot (decisions/0007). A raw add_executable, not
+# libFuzzer pilot (docs/tasks/fuzzing.md). A raw add_executable, not
 # add_project_executable: -fsanitize=fuzzer supplies its own main, so its
 # flags stay on this one target. fix_message.cpp is compiled in directly
 # instead of linking feed_handler, whose copy has no coverage instrumentation

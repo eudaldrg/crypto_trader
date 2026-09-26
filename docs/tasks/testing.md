@@ -1,13 +1,12 @@
 ---
-aliases: [testing, tests, ctest, sanitizers, tsan, memory cap, oom]
-sources: [scripts/with_memory_cap.sh, scripts/run_sanitizers.sh]
-decisions: [decisions/0005-quality-gates-and-release-process.md]
+aliases: [testing, tests, ctest, sanitizers, tsan, memory cap, oom, quality gates, pre-commit, pre-push, msan]
+sources: [scripts/with_memory_cap.sh, scripts/run_sanitizers.sh, scripts/check_build.sh, .pre-commit-config.yaml]
 ---
 
 # Testing
 
-How to run the test suites and the sanitizer gate, and why every test runs under
-a memory cap.
+How to run the test suites, which automated checks run when, and why every test
+runs under a memory cap.
 
 ## Run
 
@@ -18,9 +17,47 @@ scripts/with_memory_cap.sh ./build/debug/bin/feed_handler_tests --gtest_filter='
 ```
 
 A test binary run directly has no cap; go through `scripts/with_memory_cap.sh`
-when running one by hand under a sanitizer. The gate itself and when it runs are
-in `decisions/0005`; the hook only exists after `pre-commit install --hook-type
-pre-push`, see [pull-requests](pull-requests.md).
+when running one by hand under a sanitizer.
+
+## The checks
+
+What runs today. The list is the current floor, not a limit: adding a check needs
+no ADR, removing or weakening one needs the owner (AGENTS.md).
+
+- **Every commit** (`.pre-commit-config.yaml`, default stage): clang-format,
+  clang-tidy, cppcheck, and `scripts/check_build.sh`, an incremental
+  `cmake --build build/debug`. The build is there because clang-tidy catches most
+  compile errors in a changed file but not a link error or a break in a file the
+  commit did not touch. Kept fast: one build directory, no sanitizers, no tests.
+- **Every push** (pre-push stage): `scripts/run_sanitizers.sh`, every test binary
+  under ASan+UBSan, then again under TSan, each in its own build directory (TSan
+  cannot share a binary with ASan). It builds only test binaries: the live
+  binaries need credentials and a network, and what they run is reached by the
+  loopback-socket tests.
+- **Occasionally**: fuzzing ([fuzzing](fuzzing.md)); it is open-ended, so it is
+  not a per-push cost.
+
+Both hook stages need installing once per clone (`pre-commit install`, and
+`pre-commit install --hook-type pre-push`); a fresh clone has none, see
+[pull-requests](pull-requests.md). Both scripts assume `cmake --preset debug` has
+run once; the sanitizer build directories configure themselves.
+
+A local hook is advisory, not a gate: it runs only where installed and
+`--no-verify` skips it. Only a CI check required by branch protection would be
+unbypassable, and there is no CI yet.
+
+These checks exist because of real bugs that went unnoticed until sanitizers
+actually ran: a dangling `std::string_view` across about 20 test call sites that
+was a genuine heap-use-after-free, `ENABLE_ASAN`/`ENABLE_UBSAN` silently inert
+because the flags sat on a library nothing linked, and a lost-wakeup race
+(`notify_all()` without the waiter's mutex) in both exchange clients.
+
+**MemorySanitizer is deferred, not rejected.** It catches reads of uninitialized
+memory, which nothing else here does, but it needs every linked translation unit,
+the C++ standard library included, built with `-fsanitize=memory`. This project
+uses GCC's libstdc++, which has no supported MSan build; the route is LLVM's
+libc++ plus a second, MSan-instrumented copy of it, a one-time preset and
+build-script job. Wanted, not only as a reaction to a bug.
 
 ## The memory cap
 
