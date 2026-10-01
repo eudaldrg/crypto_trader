@@ -13,7 +13,8 @@ This README is deliberately just the pitch; `AGENTS.md` has the detail.
 - **Feed capture**: Kraken's L3 WebSocket order-book channel (genuine
   order-by-order data, `add`/`modify`/`delete` by `order_id`, not the
   aggregated price-level feeds most free crypto APIs offer) and Deribit's FIX
-  market data over a hand-rolled FIX.4.4 session, journaled verbatim.
+  market data over a hand-rolled FIX.4.4 session, journaled verbatim. Bitso's
+  order-by-order feed is next, as a second, differently shaped L3 source.
 - **Order book engine**: reconstructs a full L3 book from that stream,
   designed for O(1)-style price→tick-index lookups rather than naive map
   lookups, with an eye toward sharding by security if/when parallelism is

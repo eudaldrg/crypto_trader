@@ -66,10 +66,11 @@ whenever a probe in `experiments/` confirms something new about the wire
 format. See `exchanges/README.md` for the index.
 
 - `decisions/0001-exchange-feeds.md` — why the project builds against
-  Kraken `level3` (genuine order-by-order L3, with a per-message checksum) and
-  Deribit FIX market data (L2 with FIX session sequencing, a second protocol
-  surface). Neither ranks above the other. Deribit SBE multicast is a stretch
-  goal; wire facts live in `exchanges/`.
+  Kraken `level3` (L3, per-message checksum, no sequence numbers), Bitso
+  `diff-orders` (a second L3 with +1 sequence numbers and REST-snapshot
+  recovery, not built yet, #18) and Deribit FIX market data (L2 with FIX
+  session sequencing, a second protocol surface). None ranks above the others.
+  Deribit SBE multicast is a stretch goal; wire facts live in `exchanges/`.
 - `decisions/0002-no-cxx-modules.md` — plain `.h`/`.cpp`, not C++20 modules
   (provisional): Clang 21 + CMake + Ninja build modules fine, but clangd's
   cross-file navigation stops at an `import`, and reliable navigation is a hard
