@@ -9,9 +9,13 @@ assumed: nothing is built; any fatal still stops the process
 # What does the process-wide maintenance mode do, and when does it start?
 
 `decisions/0012` commits only to the rule: shared-resource exhaustion (disk,
-memory) escalates to a maintenance mode rather than a stop, with market-data
-journaling shed first and order logs and portfolio-state saving protected. Low
+memory) escalates to a degraded maintenance mode rather than a stop. Low
 priority; it needs order entry (#11) and strategies (#10) to exist.
+
+The owner's current intent, moved out of 0012 on 2026-10-04 because nothing it
+governs exists yet: market-data journaling is shed first, before the disk is
+full; order and execution logs and saving portfolio state keep a reserve;
+trading is restricted to reducing risk; an operator is alerted.
 
 To decide:
 

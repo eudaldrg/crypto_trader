@@ -45,15 +45,16 @@ B.
 - **Connection:** a protocol loss reconnects that connection only
   (`decisions/0011`). A journal failure on one connection (ring overflow, failed
   write, file that cannot be opened) stops journaling for that connection and
-  raises an alert. The socket and its books keep running.
+  raises an alert. It never blocks the socket (`decisions/0010`) and never
+  silently drops a frame from a file it keeps writing. The socket and its books
+  keep running.
 - **Staleness is always announced** at the level that went stale
   (`OnDisconnect` per connection, `Desynced` per book), so consumers decide what
   partial data means for them.
 - **Process:** only shared-resource exhaustion (disk, memory) escalates, into a
-  maintenance mode with a priority order. Market-data journaling is shed first,
-  before the disk is full. Order and execution logs and saving portfolio state
-  keep their reserve. Trading is restricted to reducing risk, and an operator is
-  alerted.
+  degraded maintenance mode rather than a stop, which protects what matters more
+  than market data. What it sheds, protects and alerts is not decided
+  (`docs/questions/2026-09-23-maintenance-mode.md`).
 
 ## Consequences
 
@@ -65,6 +66,5 @@ B.
   fixed. Restarting its journal automatically is not decided; it waits until a
   real failure shows what is recoverable
   (`docs/questions/2026-09-23-journal-failure-recovery.md`).
-- The maintenance mode's threshold, alert channel and risk-reducing behavior are
-  not designed; they need order entry (#11) and strategies (#10) first
-  (`docs/questions/2026-09-23-maintenance-mode.md`).
+- The maintenance mode needs order entry (#11) and strategies (#10) before it
+  can be designed.

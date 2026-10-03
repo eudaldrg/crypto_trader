@@ -51,14 +51,18 @@ the payload view, a per-connection capture sequence number, a monotonic
 timestamp, and a `FrameSource` naming the wire encoding, set by the client that
 received it.
 
+`connect_id` is the boundary sinks reset on: it numbers the established
+connections of one configured connection, 1 for the first and plus one per
+reconnect, restarting each process run. Every stateful consumer (journal file,
+books, later strategies) starts over at a new one.
+
 ## Consequences
 
 - Replay is a journal reader driving the same calls in the captured order; the
   consumers do not change.
 - Parsing lives downstream of the seam, per consumer.
-- Kraken first, Deribit second was chosen to test that the seam is not
-  Kraken-shaped. It held: the two exchanges differ in transport, encoding,
-  recovery trigger and liveness mechanism, and share the capture layer.
+- That the seam is not Kraken-shaped has been tested by building Deribit on it
+  (`docs/modules/feed-handler.md`).
 - Not constrained here: whether dispatch is virtual or a compile-time policy
   (virtual today; `docs/questions/2026-09-23-sink-dispatch-mechanism.md`), and
   what the journal stores (`decisions/0009`).
@@ -69,6 +73,5 @@ received it.
   built seam was not the one described (nothing went through the interface, and
   a reconnect was invisible to sinks).
 - 2026-09-21: `OnDisconnect` added, so a book goes stale when its feed drops.
-- 2026-09-23: trimmed to the seam; journal format, threading and recovery split
-  into `decisions/0009`, `0010` and `0011`, implementation notes moved to
-  `docs/modules/`.
+- 2026-10-04: the `connect_id` definition moved here from `decisions/0011`,
+  since the seam is what carries it.

@@ -51,17 +51,13 @@ never branches on which policy it holds.
 
 Exchange-specific behavior goes in an exchange-specific policy that composes a
 generic one (`KrakenL3Policy` wraps `L3Policy`), never in the generic engine or
-policies. A policy with settings (a subscribed depth) is constructed configured
-and passed in by value.
+policies.
 
 ## Consequences
 
-- A listener must implement `OnTopOfBookChanged`; that one hook is enforced at
-  compile time so a typo cannot silently skip it. Every other hook is optional
-  and detected with `requires`.
-- A misuse the type system can catch is caught there: the sequenced L2 book
-  cannot be applied without its `change_id` and the unsequenced one cannot be
-  given one (`docs/modules/order-book.md`).
+- Misuse is caught at compile time where the concepts can express it (required
+  listener hooks, the sequenced L2 book's `change_id`); the specifics are in
+  `docs/modules/order-book.md`.
 - The matching axis is a placeholder concept with one implementation
   (`NoMatchingPolicy`); a real matching policy will need more of the concept
   and a second entry point (`docs/questions/2026-09-23-matching-seam.md`).

@@ -67,8 +67,7 @@ picked.
   encoding.
 
 None ranks above the others: they are exchanges posing different problems, and
-the capture layer treats them the same way. (Earlier "primary"/"secondary"
-wording meant only build order, which `decisions/0004` records.)
+the capture layer treats them the same way.
 
 ## Consequences
 
@@ -79,8 +78,6 @@ wording meant only build order, which `decisions/0004` records.)
 - Bitso is not built yet (#18).
 - None gives redundant A/B feeds; demonstrating dedup and merge would need
   two connections to the same channel, documented as simulated.
-- Deribit's WS `book` raw channel is used only as a recorded test fixture, for the
-  `change_id`-sequenced L2 policy; nothing captures it live.
 - Deribit SBE multicast is a stretch goal (`docs/architecture.md`).
 - Wire facts, including what the probes confirmed, are in `exchanges/kraken.md`,
   `exchanges/bitso.md` and `exchanges/deribit.md`; the research behind the

@@ -51,13 +51,14 @@ Detection and recovery are both scoped to one connection (`decisions/0012`):
   fresh snapshot, which in practice comes with the next `connect_id`.
 - A session-level loss (gap, framing loss, bad checksum, peer Logout) drops the
   connection.
+- A full book ring drops the frame and desyncs that connection's books; books
+  never fail a capture (`decisions/0010`).
 - Liveness is checked by an application-level staleness watchdog on every
   connection, independent of transport heartbeats: no message within the timeout
-  forces a reconnect.
-- `connect_id` numbers the established connections of one configured
-  connection: 1 for the first, plus one per reconnect, restarting each process
-  run. It is the boundary sinks reset on (`OnConnect`/`OnDisconnect`,
-  `decisions/0004`).
+  forces a reconnect. The timeout is per-client configuration, not part of this
+  decision (values in `docs/modules/`).
+- The next connection is the next `connect_id` (`decisions/0004`), and
+  everything downstream resets there.
 
 ## Consequences
 

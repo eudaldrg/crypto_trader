@@ -4,7 +4,9 @@
 - Date: 2026-09-23
 - Revisit when: replay is designed to reproduce the order in which live books
   applied updates across connections (#5, #6). That may call for journaling
-  normalized book events, instead of or besides wire bytes.
+  normalized book events, instead of or besides wire bytes. Also when Bitso is
+  built (#18): its snapshot arrives over REST, not the socket, and replay
+  needs it (`docs/questions/2026-10-04-rest-snapshot-in-journal.md`).
 
 ## Context
 
@@ -67,8 +69,6 @@ Whatever the content, these hold:
 - A reconnect is an explicit record, so a reader never infers it.
 - Instrument reference data fetched over REST at startup (Kraken `AssetPairs`)
   is not journaled; a replay is given each instrument's scale separately.
-- Timestamps are taken when the client callback runs, not at the kernel receive
-  (#7).
 - Replaying several connections in their live interleaving is not possible from
   this format alone.
 - Not constrained here: file rotation and a manifest (#5), or compression.

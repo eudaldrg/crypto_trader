@@ -275,7 +275,8 @@ three real captured sessions, stored compressed in
   messages only).
 - Deribit `book.BTC-PERPETUAL.raw`: captured with
   `experiments/deribit_ws_book_probe.py`, which does not write its auth
-  handshake into the output.
+  handshake into the output. It exists only to exercise the
+  `change_id`-sequenced `L2Policy`; nothing captures this channel live.
 - Deribit FIX `BTC-PERPETUAL` (`deribit_fix_capture.journal`, 266 KB): the first
   snapshot and 800 incrementals of a real `deribit_feed_handler` capture, cut
   with `journal_slice` and replayed by `deribit_fix_replay_test.cpp` in

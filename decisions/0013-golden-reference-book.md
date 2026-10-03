@@ -40,9 +40,7 @@ B, as a change policy:
   inputs, real captures included.
 - A new feature (hidden or iceberg volume, implied volume, pro-rata matching, a
   new exchange quirk) lands in the golden book first, then in fast books.
-- The golden book stays simple. Its level container is behind one alias
-  (`LevelMap`, currently `std::map`), so a faster container is a typedef change
-  if an optimization pass ever needs it there.
+- The golden book stays simple.
 
 ## Consequences
 

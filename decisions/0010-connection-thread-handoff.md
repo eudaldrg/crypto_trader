@@ -39,15 +39,9 @@ left to profiling.
 ## Decision
 
 B. A connection thread never blocks on a consumer and never does disk I/O or
-parsing. Each consumer states what a full ring means for it:
-
-- **Journal: stop journaling that connection, loudly.** It never blocks the
-  socket and never silently drops a frame from a file it keeps writing: a full
-  ring or a failed write ends that connection's journal and raises an alert,
-  and the connection and its books carry on (`decisions/0012`).
-- **Books: drop and desync.** Books never fail a capture: a full ring drops the
-  frame, and that connection's books stay desynced until they recover
-  (`decisions/0011`).
+parsing. Each consumer owns what a full ring means for it, and none of those
+policies may block the connection thread: for the journal see
+`decisions/0012`, for books `decisions/0011`.
 
 Connect and disconnect events go through an unbounded path on every ring and are
 never dropped, so a consumer never misses where a connection begins or ends.
@@ -70,11 +64,9 @@ The rings are the seam that stays the same across both stages.
 - A consumer's failure is asynchronous: clients register a handler rather than
   reading it from a return value. Today that handler stops every connection,
   which `decisions/0012` changes.
-- Closing a connection's journal is a barrier: it returns once the journal
-  thread has written and closed the file.
 - On one book thread, a slow connection's book work delays the other
   connections' books, never their journaling.
 - The order in which the book thread interleaves connections depends on timing
   and is not recorded (`decisions/0009`).
-- The per-frame allocation is accepted until `journal_replay` shows it matters;
-  the fix then is preallocated slots.
+- The copy per frame per ring is the cost of B; whether to cut it is
+  `docs/questions/2026-09-23-ring-copies-and-slots.md`.

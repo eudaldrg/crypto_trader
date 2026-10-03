@@ -103,7 +103,7 @@ book must reset.
   file happens only because a new connection was established.
 - Sinks are told both ends: `OnConnect(connect_id, reason)` once the new file is
   usable and `OnDisconnect(connect_id)` once per connect, after its file is closed
-  (`decisions/0011`). A book goes stale on the disconnect, not at the next connect.
+  (`decisions/0004`). A book goes stale on the disconnect, not at the next connect.
 
 ## The sink seam and the journal file
 
@@ -120,6 +120,9 @@ registered with `AddSink` (`decisions/0004`).
   so it takes its place in the capture sequence; `OnConnect` is a notification
   and needs no sequence number. Sinks are told about a `connect_id` only once it
   is usable, since a failed `BeginConnect` is fatal.
+- **The capture timestamp is taken when the client callback runs**, not at the
+  kernel receive, so it includes the time the frame waited in the socket buffer
+  and the transport library (#7).
 - **`FrameSource` is set by the client** at the call site, the only place that
   knows first-hand what it received, and is not stored per record: the journal
   header's exchange tag recovers it once per file.
@@ -284,6 +287,10 @@ SOH-delimited FIX field (Deribit). Loosening it means adding escaping first.
   in one process are told apart.
 
 ## Adding an exchange
+
+Kraken was built first and Deribit second to check that the capture layer is
+not Kraken-shaped. It held: the two differ in transport, encoding, recovery
+trigger and liveness mechanism, and share everything below.
 
 Everything exchange-specific is one enumerator, one data row and one small class;
 nothing else names an exchange:

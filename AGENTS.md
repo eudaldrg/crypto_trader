@@ -77,7 +77,8 @@ format. See `exchanges/README.md` for the index.
   requirement. Don't introduce modules until its revisit trigger fires. The
   dependency list and why each is there is `docs/architecture.md`.
 - `decisions/0004-raw-frame-sink-seam.md` — exchange-facing code hands raw
-  wire frames to `MessageSink`s as non-owning views; a sink copies what it keeps.
+  wire frames to `MessageSink`s as non-owning views; a sink copies what it keeps,
+  and every stateful sink resets at a new `connect_id`.
   This seam is what keeps strategy-facing code identical across
   LiveTrading/Replay/Simulation (`docs/architecture.md`).
 - `decisions/0006-order-book-policies.md` — books vary by granularity
@@ -93,21 +94,21 @@ format. See `exchanges/README.md` for the index.
   wire bytes verbatim, one file per connection and `connect_id`, versioned and
   crash-tolerant, never outbound traffic (credentials). Explicitly not settled:
   revisit once replay has to reproduce the live order of book updates across
-  connections (`docs/questions/`).
+  connections, or when Bitso's REST snapshot has to be journaled
+  (`docs/questions/`).
 - `decisions/0010-connection-thread-handoff.md` — connection threads never
-  block, parse or touch disk; one SPSC ring per consumer, each with its own
-  full-ring policy (journal stops for that connection, books drop and
-  desync); staged towards epoll thread groups, with IXWebSocket keeping
-  Kraken out until replaced.
+  block, parse or touch disk; one SPSC ring per consumer, each owning its
+  full-ring policy (set in 0011 and 0012); staged towards epoll thread groups,
+  with IXWebSocket keeping Kraken out until replaced.
 - `decisions/0011-desync-recovery.md` — any lost data (gap, checksum,
   silence, dropped frame, integrity issue) desyncs, and recovery is always a
-  reconnect plus a fresh snapshot of that connection only; what `connect_id`
-  means.
+  reconnect plus a fresh snapshot of that connection only (a full book ring
+  drops and desyncs). What `connect_id` means is in 0004.
 - `decisions/0012-failure-containment.md` — a failure stays at its own level
   (book < connection < process); a journal failure stops that connection's
   journal and alerts, it does not stop other connections; only disk/memory
-  exhaustion escalates, into a maintenance mode. The code still stops every
-  connection on any fatal.
+  exhaustion escalates, into a maintenance mode not designed yet. The code
+  still stops every connection on any fatal.
 - `decisions/0013-golden-reference-book.md` — a deliberately simple
   `std::map`-based golden book is the oracle: fast books are checked against it
   on the same inputs, and new features land in it first.
