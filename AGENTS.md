@@ -97,9 +97,10 @@ format. See `exchanges/README.md` for the index.
   connections, or when Bitso's REST snapshot has to be journaled
   (`docs/questions/`).
 - `decisions/0010-connection-thread-handoff.md` — connection threads never
-  block, parse or touch disk; one SPSC ring per consumer, each owning its
-  full-ring policy (set in 0011 and 0012); staged towards epoll thread groups,
-  with IXWebSocket keeping Kraken out until replaced.
+  block or touch disk, and do not parse until feed books move onto them; one
+  SPSC ring per consumer, each owning its full-ring policy (set in 0011 and
+  0012); staged towards epoll thread groups that run the feed books inline,
+  once fast feed books exist and IXWebSocket is replaced.
 - `decisions/0011-desync-recovery.md` — any lost data (gap, checksum,
   silence, dropped frame, integrity issue) desyncs, and recovery is always a
   reconnect plus a fresh snapshot of that connection only (a full book ring
@@ -112,6 +113,11 @@ format. See `exchanges/README.md` for the index.
 - `decisions/0013-golden-reference-book.md` — a deliberately simple
   `std::map`-based golden book is the oracle: fast books are checked against it
   on the same inputs, and new features land in it first.
+- `decisions/0014-normalization-boundary.md` — a validating feed book per
+  connection is where exchange data becomes normalized: exchange quirks and
+  integrity checks live in its exchange policies, and everything downstream
+  (strategy books, strategies, the simulator's consumers) sees only normalized
+  events.
 
 ## Commands
 
