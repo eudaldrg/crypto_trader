@@ -71,11 +71,9 @@ these rules:
   twice; both runs end with identical books and zero checksum or integrity
   failures, and the replayed books match the books the live run built.
 - **Depends on:** nothing.
-- **Design needed:** how live and replayed books are compared (a book digest
-  or dump); how much of #17 (journal failure containment)
-  belongs here.
-- **Design status:** not started (most components exist; the milestone was never
-  written down).
+- **Design needed:** settled: final-state book dump per connection; #17 stays in
+  the backlog (scope gate).
+- **Design status:** ready, `docs/design/m1-capture-books-replay.md`.
 
 ## M2: Normalized market data
 
