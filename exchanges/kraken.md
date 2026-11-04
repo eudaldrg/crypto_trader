@@ -1,6 +1,6 @@
 # Kraken
 
-See `decisions/0001-feed-source-selection.md` for why this feed was chosen.
+See `decisions/0001-exchange-feeds.md` for why this feed was chosen.
 
 ## Endpoints
 
@@ -64,8 +64,8 @@ as the same asset rather than trusting `wsname` verbatim.
    clear. The file is per (API key, machine): **two processes sharing one API
    key still need a shared mark** and are not made safe by this.
 4. **Never journal the token or any raw `subscribe` payload** — the token
-   travels inside the WS message body (see `decisions/0004`'s journal-format
-   section), not a header, so a naive "journal everything on this
+   travels inside the WS message body (see `decisions/0009`),
+   not a header, so a naive "journal everything on this
    connection" implementation would leak it into an archived file. Journal
    inbound messages only; if outbound traffic is ever logged for debugging,
    redact the token field first.
@@ -142,7 +142,7 @@ Captured by `kraken_feed_handler` over a 45s `BTC/USD` `level3` session
    detected from the message, not from a disconnect.
 3. `{"channel":"heartbeat"}` arrives about once a second (45 in 45s) and is
    the only traffic on an idle connection, which is what makes an
-   application-level staleness timeout usable at all (`decisions/0004`).
+   application-level staleness timeout usable at all (`decisions/0011`).
 4. Message rate for `BTC/USD` `level3` alone: roughly 50 messages/second
    (2158 update messages in 45s: 1692 `add`, 1053 `delete`, 36 `modify`
    events across them), around 800 KiB of journal for 45 seconds.
@@ -199,7 +199,7 @@ and verified against a real ~2-minute `BTC/USD` capture via the real
 `src/order_book/tests/kraken_capture_replay_test.cpp` — 6496 wire records
 captured, of which 6362 carry a `level3` checksum (1 snapshot + 6361
 updates; the rest is non-`level3` control traffic), zero checksum
-mismatches across all of them (see decisions/0006's plan, task T7).
+mismatches across all of them.
 
 **Algorithm**: for each side, take the top 10 price levels (asks
 ascending, bids descending), and within each level iterate its resting

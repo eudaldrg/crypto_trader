@@ -8,7 +8,7 @@ docs/modules/order-book.md for how to replace it.
 No probe for this channel existed yet -- deribit_fix_probe.py only covers
 FIX, which is also L2 but a different wire shape (see decisions/0001).
 
-ADR 0001 describes Deribit's `book` channel as public/no-auth -- that
+ADR 0001 originally described Deribit's `book` channel as public/no-auth -- that
 turned out to be true only for the grouped/interval channels. The `raw`
 channel (the one carrying change_id/prev_change_id, which is what this
 capture is actually after) requires being logged in

@@ -1,5 +1,5 @@
 // Round-trip and crash-tail behavior of the v1 capture journal
-// (decisions/0004-feed-handler-architecture.md, "Journal format v1").
+// (decisions/0009-journal-content-and-format.md).
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -36,7 +36,7 @@ std::string TextOf(std::span<const std::byte> payload) {
 }
 
 // A realistic-ish sample of what actually lands on the wire: Kraken level3
-// JSON, journaled verbatim with no re-encoding (decisions/0004).
+// JSON, journaled verbatim with no re-encoding (decisions/0009).
 constexpr std::string_view kSnapshot =
     R"({"channel":"level3","type":"snapshot","data":[{"symbol":"BTC/USD"}]})";
 constexpr std::string_view kUpdate =

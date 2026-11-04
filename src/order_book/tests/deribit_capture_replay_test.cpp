@@ -76,8 +76,8 @@ using L2Book = OrderBook<L2Policy, RecordingListener>;
 
 // Replays a real ~2-minute Deribit `book.BTC-PERPETUAL.raw` session
 // (captured via experiments/deribit_ws_book_probe.py) through
-// the golden L2 book. This is what settled decisions/0001's previously
-// open assumption about change_id/prev_change_id semantics: the capture
+// the golden L2 book. This is what settled the previously open
+// assumption (exchanges/deribit.md) about change_id/prev_change_id semantics: the capture
 // showed zero gaps across 2069 consecutive messages, and it also caught
 // a real bug -- the original L2Update design assumed a zero-quantity
 // wire encoding for deletes, but Deribit actually sends an explicit

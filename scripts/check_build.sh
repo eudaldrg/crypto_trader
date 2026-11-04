@@ -3,7 +3,7 @@
 # analysis pass catches most compile errors in a changed file already, but not
 # a link-time error or a break in a file the commit didn't touch directly, so
 # this is a real (incremental, fast) build rather than relying on that as a
-# side effect. See decisions/0005-quality-gates-and-release-process.md.
+# side effect. See docs/tasks/testing.md.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 

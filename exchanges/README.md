@@ -15,3 +15,4 @@ public API details without much notice.
 
 - [`kraken.md`](kraken.md)
 - [`deribit.md`](deribit.md)
+- [`bitso.md`](bitso.md)

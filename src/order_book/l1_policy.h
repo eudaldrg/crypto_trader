@@ -7,7 +7,7 @@
 
 namespace order_book {
 
-// Wire-shaped L1 update (decisions/0006, "Wire encoding vs. stored
+// Wire-shaped L1 update (docs/modules/order-book.md, "Wire encoding vs. stored
 // state"): a zero quantity means "no active level" at the wire level.
 // L1Policy translates that into std::nullopt internally -- callers of
 // Best() never see a sentinel.
@@ -26,7 +26,7 @@ struct L1Snapshot {
     std::optional<BookEntry> ask;
 };
 
-// L1's ChangeSet. The engine (decisions/0006, "Engine/policy contract")
+// L1's ChangeSet. The engine (docs/modules/order-book.md, "Engine and policy contract")
 // detects this bid/ask-flag shape via if-constexpr(requires{...}) rather
 // than L1Policy calling the listener directly -- the same shape is reused
 // by L2Policy (T5), since a single update or batch can touch either or
@@ -36,7 +36,7 @@ struct L1ChangeSet {
     bool ask_top_of_book_changed = false;
 };
 
-// The golden L1 book (decisions/0006): no map, no order ids -- an L1 feed
+// The golden L1 book (decisions/0013): no map, no order ids -- an L1 feed
 // only ever carries the current best price/quantity per side, so that is
 // exactly what this policy's state is, nothing more.
 class L1Policy {

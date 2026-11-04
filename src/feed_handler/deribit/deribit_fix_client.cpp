@@ -154,7 +154,7 @@ InboundDecision ClassifyInbound(const fix::ParsedMessage& message, const Inbound
 
     // The sequence verdict outranks the message type: a gap means the messages
     // in it are gone for good, so whatever this one says, the session is over
-    // (decisions/0004 -- detect and reconnect, no ResendRequest gap fill).
+    // (decisions/0011 -- detect and reconnect, no ResendRequest gap fill).
     if (check.SessionBroken()) {
         decision.action = InboundAction::kReconnect;
         decision.detail = check.Describe();
@@ -384,7 +384,7 @@ bool FixClient::DrainFramedMessages(int fd) {
 
         messages_received_.fetch_add(1, std::memory_order_relaxed);
 
-        // Journal first, classify second (decisions/0004): a message this build
+        // Journal first, classify second (decisions/0009): a message this build
         // does not understand must still reach the file verbatim, so nothing
         // about parsing may be able to cost a record.
         if (!JournalMessage(*framed)) {

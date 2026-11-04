@@ -1,5 +1,5 @@
 // A bounded single-producer single-consumer ring between two threads, a thin
-// wrapper over moodycamel::ReaderWriterQueue (decisions/0002).
+// wrapper over moodycamel::ReaderWriterQueue (docs/architecture.md).
 //
 // What the wrapper adds is the policy the queue leaves open: data is bounded
 // and lossy, control is unbounded and lossless.

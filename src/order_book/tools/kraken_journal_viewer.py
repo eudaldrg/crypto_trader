@@ -3,7 +3,7 @@
 frames dumped by the real C++ order book (kraken_journal_dump) -- this
 script does no order-book logic of its own, just renders what the real
 book already computed. That split exists specifically so the picture can
-never drift from what the real book does (see decisions/0006, and
+never drift from what the real book does (see decisions/0013, and
 exchanges/kraken.md for two real bugs that only ever showed up against a
 real captured session -- exactly the kind of thing a from-scratch Python
 reimplementation here could have silently gotten wrong all over again).

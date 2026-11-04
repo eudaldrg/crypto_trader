@@ -2,7 +2,7 @@
 // the private GetWebSocketsToken call (signed) and the public AssetPairs
 // instrument reference data (cached in memory). See exchanges/kraken.md.
 //
-// Deliberately synchronous and startup-path only -- decisions/0004 keeps
+// Deliberately synchronous and startup-path only -- decisions/0009 keeps
 // instrument reference data out of the streaming journal entirely.
 #pragma once
 
@@ -32,7 +32,7 @@ struct Credentials {
 
 /// A WebSocket auth token. `token` is a live credential with the same handling
 /// rules as the API key: it goes straight into the WS subscribe payload and
-/// nowhere else (exchanges/kraken.md, and decisions/0004's journal rules).
+/// nowhere else (exchanges/kraken.md, and decisions/0009's inbound-only rule).
 struct WebsocketsToken {
     std::string token;
     std::int64_t expires_seconds = 0;

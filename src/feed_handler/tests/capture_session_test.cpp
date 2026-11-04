@@ -1,5 +1,5 @@
 // Connect_id/journal-rotation bookkeeping and sink fan-out: the parts of the
-// reconnect path that can be tested without a socket. decisions/0004 requires
+// reconnect path that can be tested without a socket. decisions/0009 requires
 // one file per (exchange, connect_id), an explicit marker record at
 // the start of each, and per-connect capture sequence numbers; the sink
 // fan-out is what the order book will attach to.

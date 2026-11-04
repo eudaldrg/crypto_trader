@@ -19,7 +19,7 @@
 //
 // The loopback peer is deliberately single-purpose and lives here rather than
 // growing into a reusable fake exchange -- that is Simulation mode
-// (decisions/0004) and needs its own design, not an accretion of test helpers.
+// (docs/architecture.md) and needs its own design, not an accretion of test helpers.
 #include "feed_handler/deribit/deribit_fix_client.h"
 
 #include <gtest/gtest.h>
@@ -544,7 +544,7 @@ TEST(DeribitInboundDecision, APeerInitiatedLogoutEndsTheSession) {
 }
 
 TEST(DeribitInboundDecision, ASequenceGapOutranksWhateverTheMessageSays) {
-    // decisions/0004: no ResendRequest/SequenceReset gap fill. The messages in
+    // decisions/0011: no ResendRequest/SequenceReset gap fill. The messages in
     // the gap are gone, so the book this snapshot would seed cannot be trusted
     // either -- drop the session and start a fresh one.
     FixSession session(TestConfig());
@@ -688,7 +688,7 @@ TEST_F(DeribitFixLoopback, AnswersATestRequestWithAHeartbeatEchoingItsTestReqId)
 }
 
 TEST_F(DeribitFixLoopback, ASequenceGapDropsTheConnectionAndLogsOnAgain) {
-    // decisions/0004: no ResendRequest gap fill -- a gap means drop and
+    // decisions/0011: no ResendRequest gap fill -- a gap means drop and
     // re-logon. Proving that end to end needs the socket: the pure function
     // only says "reconnect", it cannot show that a second session happened.
     CaptureSession capture({.directory = dir_, .exchange = "deribit"});

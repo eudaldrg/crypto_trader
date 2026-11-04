@@ -11,8 +11,8 @@
 
 namespace order_book {
 
-// The shared engine every granularity plugs into (decisions/0006, "Shared
-// engine and the engine/policy contract"). It owns listener storage, the
+// The shared engine every granularity plugs into (decisions/0006;
+// docs/modules/order-book.md, "Engine and policy contract"). It owns listener storage, the
 // Uninitialized/Ready/Desynced readiness state machine, the
 // Apply()/ApplySnapshot() entry points, and the (currently unused)
 // MatchingPolicy seam. GranularityPolicy::Apply(...) returns a
@@ -82,7 +82,7 @@ class OrderBook {
     }
 
     // Applying an update on a not-Ready book is a defined no-op
-    // (decisions/0006, "Snapshot and readiness"), not undefined behavior --
+    // (docs/modules/order-book.md, "Readiness and errors"), not undefined behavior --
     // there is nothing valid to apply before a snapshot has established a
     // baseline.
     template <typename Update>
@@ -96,7 +96,7 @@ class OrderBook {
         Notify(change_set);
     }
 
-    // Message/batch boundary (decisions/0006): a batch's sequencing or
+    // Message/batch boundary (docs/modules/order-book.md): a batch's sequencing or
     // checksum is meaningful only once the whole message has been
     // applied, so this validates/applies as one unit rather than
     // update-by-update. Same not-Ready guard as Apply(): a batch on a

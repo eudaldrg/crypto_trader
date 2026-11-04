@@ -301,7 +301,7 @@ void WsClient::HandleOpen() {
 
     // Outbound only: never stamped, never journaled. The token lives in the
     // message body, so journaling this would archive a live credential
-    // (decisions/0004).
+    // (decisions/0009).
     const auto sent = ws_->send(BuildSubscribeMessage(cfg_.symbols, cfg_.depth, token->token));
     if (!sent.success) {
         log_.Error("failed to send level3 subscribe");
@@ -342,7 +342,7 @@ void WsClient::HandleMessage(const std::string& payload) {
     messages_received_.fetch_add(1, std::memory_order_relaxed);
 
     // Journal first, classify second: a message this build does not understand
-    // must still reach the file verbatim (decisions/0004, journal everything
+    // must still reach the file verbatim (decisions/0009, journal everything
     // inbound), and classification must never be able to cost a record.
     if (!session_.OnWireMessage(BytesOf(payload), kWireSource)) {
         const std::string_view reason = session_.Error();

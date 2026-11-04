@@ -15,7 +15,7 @@ namespace feed_handler::kraken {
 inline constexpr std::string_view kDefaultWsUrl = "wss://ws-l3.kraken.com/v2";
 
 /// Kraken refuses more than this many symbols on one WebSocket connection
-/// (docs.kraken.com; the capture-scope notes in decisions/0004).
+/// (docs.kraken.com; docs/investigations/2026-09-20-capture-volume.md).
 inline constexpr std::size_t kMaxSymbolsPerConnection = 200;
 
 /// The level3 subscribe depths Kraken documents, and the one it applies when

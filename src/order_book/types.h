@@ -34,14 +34,14 @@ using OrderId = Ordered<struct OrderIdTag, std::uint64_t>;
 // std::less<> for asks means map.begin() is always the best level on
 // either side, for any Value type (an aggregate Quantity for L2, a
 // per-order std::vector<OrderId> for L3). Kept as an alias
-// (decisions/0006, "Level container / comparator") so swapping to an
+// (docs/modules/order-book.md, "Level container") so swapping to an
 // Abseil/ankerl btree later is a typedef change, not a rewrite.
 template <typename Key, typename Value, typename Cmp>
 using LevelMap = std::map<Key, Value, Cmp>;
 
 // Quantities are aggregated (summing orders at a price level), so unlike
 // Price/OrderId this carries arithmetic. IsZero() names the wire-shaped
-// "zero quantity" encoding used by L1Update/L2Update (see decisions/0006,
+// "zero quantity" encoding used by L1Update/L2Update (see docs/modules/order-book.md,
 // "Wire encoding vs. stored state") without callers spelling out the raw
 // comparison at every call site.
 class Quantity {
@@ -67,7 +67,7 @@ class Quantity {
     std::int64_t lots_{};
 };
 
-// Feed-integrity anomalies (decisions/0006, "Error taxonomy"): reported
+// Feed-integrity anomalies (docs/modules/order-book.md, "Readiness and errors"): reported
 // through one shared listener hook plus a Desynced state transition,
 // never silently absorbed.
 enum class IntegrityIssue : std::uint8_t {
@@ -87,13 +87,13 @@ inline void ReportIssue(std::optional<IntegrityIssue>& slot, IntegrityIssue issu
     }
 }
 
-// decisions/0006, "Snapshot and readiness": a book only ever answers
+// docs/modules/order-book.md, "Readiness and errors": a book only ever answers
 // queries meaningfully in the Ready state. Desynced means a feed-integrity
 // anomaly was detected and the book requires a fresh snapshot to recover.
 enum class Readiness : std::uint8_t { kUninitialized, kReady, kDesynced };
 
 // One touched price level's new state, shared by L2 and L3's ChangeSet
-// (decisions/0006, "Engine/policy contract" -- the engine's Notify()
+// (docs/modules/order-book.md, "Engine and policy contract" -- the engine's Notify()
 // detects this shape generically via if-constexpr(requires{...})).
 // nullopt quantity means the level was deleted.
 struct LevelChange {

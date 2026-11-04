@@ -23,7 +23,7 @@ else here, including interactive sessions, still asks first.
 ## Before opening a PR
 
 The push-time hook runs the full suite under ASan+UBSan and TSan
-(`decisions/0005`). It exists only after `pre-commit install --hook-type
+([testing](testing.md)). It exists only after `pre-commit install --hook-type
 pre-push`, and a fresh clone has none, so a push can succeed without the suite
 having run. Check `ls .git/hooks/pre-push` before trusting it.
 

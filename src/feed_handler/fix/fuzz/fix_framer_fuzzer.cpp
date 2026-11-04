@@ -1,4 +1,4 @@
-// libFuzzer harness for Framer + ParseMessage (decisions/0007); crash/UB only, no oracle.
+// libFuzzer harness for Framer + ParseMessage (docs/tasks/fuzzing.md); crash/UB only, no oracle.
 #include <cstddef>
 #include <cstdint>
 #include <span>

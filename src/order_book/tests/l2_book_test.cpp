@@ -190,8 +190,8 @@ TEST(L2Book, DeleteOfUnknownPriceReportsUnknownLevel) {
     EXPECT_TRUE(listener.level_changes.empty());
 }
 
-// L2 without a change_id (FIX-fed books, decisions/0006, "L2 without a
-// change_id"): the same level rules with no gap check and no meta anywhere.
+// L2 without a change_id (FIX-fed books, docs/modules/order-book.md,
+// "L2 without a change_id"): the same level rules with no gap check and no meta anywhere.
 using UnsequencedBook = OrderBook<UnsequencedL2Policy, RecordingListener>;
 
 void ApplyUnsequenced(UnsequencedBook& book, const std::vector<L2Update>& updates) {

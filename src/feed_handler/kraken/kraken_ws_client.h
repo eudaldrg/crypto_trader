@@ -1,6 +1,6 @@
 // Kraken level3 WebSocket client: the live-socket end of the feed handler.
 //
-// Per decisions/0004 this connection runs on IXWebSocket's own thread (the
+// Per decisions/0010 this connection runs on IXWebSocket's own thread (the
 // library owns the fd and does not expose it, so it cannot join an epoll
 // group), hands every inbound message to a threaded CaptureSession (the journal
 // is written by its own thread, never this one), and treats every (re)connect
@@ -11,7 +11,7 @@
 // hand-rolled loop -- the library already implements exponential backoff with
 // jitter, which is exactly what exchanges/kraken.md asks for so token fetches
 // do not hammer the REST rate limit. What this class adds on top is the
-// application-level staleness watchdog decisions/0004 requires, since a
+// application-level staleness watchdog decisions/0011 requires, since a
 // half-open connection looks like silence, not an error.
 #pragma once
 
@@ -47,8 +47,8 @@ namespace feed_handler::kraken {
 inline constexpr FrameSource kWireSource = FrameSource::kKrakenJson;
 
 /// The bits of an inbound message this client cares about. Book content is
-/// deliberately not parsed: v1 journals raw bytes and the order book that
-/// would consume them does not exist yet (decisions/0004).
+/// deliberately not parsed here: parsing happens downstream of the capture
+/// seam, on the book thread (decisions/0004, decisions/0010).
 enum class MessageKind : std::uint8_t {
     kUnknown,
     /// A `"method"` response saying the subscribe succeeded.
