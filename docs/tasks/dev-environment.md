@@ -31,8 +31,9 @@ throttling is actually observed contaminating profiling runs.
 
 ## Storage
 
-- **Production machine**: cold archive for captured data (e.g. a year of ticks). It is
-  not a build or dev host.
+- **Production machine**: the always-on host where long captures will run, and
+  the cold archive for captured data (e.g. a year of ticks). It is not a build
+  or dev host.
 - **Local NVMe**: the working set for replay and profiling runs (e.g. a week of
   captures), so a profiling run is never slowed or confounded by the network.
 - A large capture kept for profiling lives outside the repo in `~/Temp`, not
