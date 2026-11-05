@@ -10,10 +10,9 @@ a portfolio piece to demonstrate HFT-style systems engineering — concurrent
 feed ingestion, deterministic replay/journaling, low-latency data structures,
 profiling discipline — against real exchange data rather than a simulation.
 
-**Status: early stage.** What exists: the CMake skeleton (`src/greeter.*`,
-`src/main.cpp`), throwaway Python protocol probes (`experiments/`), and the
-first vertical slice of the feed handler in `src/feed_handler/` — the
-`MessageSink` seam, the v1 capture journal (writer + reader), the Kraken REST
+**Status: early stage.** What exists: throwaway Python protocol probes
+(`experiments/`), the first vertical slice of the feed handler in
+`src/feed_handler/` — the `MessageSink` seam, the v1 capture journal (writer + reader), the Kraken REST
 auth / `AssetPairs` client, the Kraken `level3` WebSocket client, and the
 `feed_handler` binary that captures live market data to a journal. It takes
 `--config <path>`, a TOML file listing `[[connections]]`, one per socket and

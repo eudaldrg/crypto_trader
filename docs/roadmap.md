@@ -5,9 +5,10 @@ could not do before. The how is in `docs/architecture.md`, the expensive
 decisions in `decisions/`, one milestone's detailed design in
 `docs/design/<milestone>.md`.
 
-**Status: draft, 2026-10-04.** The milestones and their order are the owner's,
-from the first roadmap session, as is the v0 line after M5. M1's exit test is
-confirmed; the others are proposals.
+**Status: draft, 2026-11-05.** The milestones and their order are the owner's,
+from the first roadmap session, as is the v0 line after M5, and so are the
+non-goals. M1 is designed and ready to plan; the exit tests of M2 onward are
+proposals.
 
 ## Goal
 
@@ -28,7 +29,7 @@ v0.
   latency targets come after the loop is closed, measured against the golden
   book (`decisions/0013`). Correct first, then fast.
 
-## Non-goals (proposed, confirm)
+## Non-goals
 
 - Trading real money. Orders go to the simulator or to exchange test servers.
 - Making money. Strategies exist to exercise the engine, not to have an edge.
@@ -172,7 +173,7 @@ Real, not scheduled. Ordered roughly by how soon they matter after v0.
   per-component state. Pulled in by whichever milestone first needs it.
 - Journal rotation, format v2, manifest (#5).
 - RX timestamping (#7), backpressure instrumentation (#8).
-- Journal failure containment (#17), unless M1 needs it.
+- Journal failure containment (#17).
 - Zero clang-tidy warnings, enforced (#19): hygiene, can land anytime.
 - Strategies and the book in separate processes (shm ring, #10's deferred part).
 - More realistic strategies.

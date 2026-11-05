@@ -279,11 +279,6 @@ function(add_project_test name)
   gtest_discover_tests(${name})
 endfunction()
 
-add_project_executable(crypto_trader
-  src/greeter.cpp
-  src/main.cpp
-)
-
 #### Feed handler ####
 # OpenSSL and zlib both already arrive transitively through IXWebSocket
 # (USE_TLS/USE_ZLIB), but relying on that leakage from a subdirectory scope is
