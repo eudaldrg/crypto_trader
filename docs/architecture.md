@@ -7,7 +7,9 @@ This file is meant to change as the project learns.
 
 ## Execution modes
 
-The pipeline is built for three modes, of which only the first exists:
+The pipeline is built for three modes. Today capture with live books exists, and
+replay of one connection's journal through the same books; strategies, replay
+in live order across connections, and Simulation do not:
 
 1. **LiveTrading**: real exchange connections feed order books that strategies
    read. These books apply the exchange's diffs and never match; self-match

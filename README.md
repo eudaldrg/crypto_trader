@@ -15,13 +15,18 @@ This README is deliberately just the pitch; `AGENTS.md` has the detail.
   aggregated price-level feeds most free crypto APIs offer) and Deribit's FIX
   market data over a hand-rolled FIX.4.4 session, journaled verbatim. Bitso's
   order-by-order feed is next, as a second, differently shaped L3 source.
-- **Order book engine**: reconstructs a full L3 book from that stream,
-  designed for O(1)-style price→tick-index lookups rather than naive map
-  lookups, with an eye toward sharding by security if/when parallelism is
-  worth it.
-- **Strategy hook**: the book publishes state (poll or callback-driven, TBD)
-  for a strategy layer to consume — the strategy side itself is out of scope
-  for now; this project is about the capture→book pipeline.
+- **Order books**: a deliberately simple golden book (L2 and L3) that rebuilds
+  each exchange's book live from the feed and offline from a journal, and
+  validates it (Kraken's per-message checksum, gaps, crossed books). It is the
+  oracle that the fast, exchange-specific books will be checked against.
+- **Deterministic replay**: `journal_replay` feeds a captured session through
+  the same book code the live run used.
+
+Still to come, in order ([`docs/roadmap.md`](docs/roadmap.md)): one normalized
+market-data model across exchanges, a strategy that reads the books, order
+entry against a simulated exchange, and a strategy trading in simulation. That
+closed loop is v0. Fast books and latency work come after it, measured against
+the golden book: correct first, then fast.
 
 ## Why
 
@@ -36,7 +41,8 @@ instead of a synthetic simulation.
 decision (exchange feeds, the capture seam, the journal, threading, recovery and
 failure containment, order-book design). [`docs/architecture.md`](docs/architecture.md)
 covers how the pieces fit and the cheaper choices, and
-[`docs/questions/`](docs/questions/) what is still undecided.
+[`docs/questions/`](docs/questions/) what is still undecided. What gets built
+next, milestone by milestone, is [`docs/roadmap.md`](docs/roadmap.md).
 
 ## Building
 
