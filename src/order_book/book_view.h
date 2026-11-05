@@ -20,11 +20,11 @@ struct BookEntry {
     friend bool operator==(const BookEntry&, const BookEntry&) = default;
 };
 
-// The golden book's oracle surface (decisions/0006, "Query surface and the
-// BookView oracle"): a granularity-agnostic, comparable snapshot
-// of one side's visible entries, best-to-worst. Populated by whichever
-// GranularityPolicy is asked for it -- BookView itself has no opinion on
-// how many entries there are or what they represent.
+// The golden book's oracle surface (decisions/0013;
+// docs/modules/order-book.md, "Query surface and BookView"): a granularity-agnostic, comparable
+// snapshot of one side's visible entries, best-to-worst. Populated by whichever GranularityPolicy
+// is asked for it -- BookView itself has no opinion on how many entries there are or what they
+// represent.
 class BookView {
   public:
     BookView() = default;

@@ -1,5 +1,5 @@
 // Round-trip and crash-tail behavior of the v1 capture journal
-// (decisions/0004-feed-handler-architecture.md, "Journal format v1").
+// (decisions/0009-journal-content-and-format.md).
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -36,7 +36,7 @@ std::string TextOf(std::span<const std::byte> payload) {
 }
 
 // A realistic-ish sample of what actually lands on the wire: Kraken level3
-// JSON, journaled verbatim with no re-encoding (decisions/0004).
+// JSON, journaled verbatim with no re-encoding (decisions/0009).
 constexpr std::string_view kSnapshot =
     R"({"channel":"level3","type":"snapshot","data":[{"symbol":"BTC/USD"}]})";
 constexpr std::string_view kUpdate =
@@ -70,11 +70,11 @@ class JournalFile : public ::testing::Test {
     std::filesystem::path path_;
 };
 
-TEST_F(JournalFile, RoundTripsHeaderRecordsAndIncarnationMarker) {
+TEST_F(JournalFile, RoundTripsHeaderRecordsAndConnectMarker) {
     CaptureStamper stamper;
     {
-        JournalWriter writer(path_, {.exchange = "kraken", .incarnation = 7});
-        writer.WriteIncarnationMarker(stamper.Stamp(BytesOf("connect")));
+        JournalWriter writer(path_, {.exchange = "kraken", .connect_id = 7});
+        writer.WriteConnectMarker(stamper.Stamp(BytesOf("connect")));
         writer.OnFrame(stamper.Stamp(BytesOf(kSnapshot)));
         writer.OnFrame(stamper.Stamp(BytesOf(kUpdate)));
         writer.OnFrame(stamper.Stamp(BytesOf(kHeartbeat)));
@@ -87,7 +87,7 @@ TEST_F(JournalFile, RoundTripsHeaderRecordsAndIncarnationMarker) {
     ASSERT_TRUE(reader.has_value()) << reader.error();
     EXPECT_EQ(reader->Header().format_version, feed_handler::journal::kFormatVersion);
     EXPECT_EQ(reader->Header().exchange, "kraken");
-    EXPECT_EQ(reader->Header().incarnation, 7U);
+    EXPECT_EQ(reader->Header().connect_id, 7U);
     // The wall-clock anchor must actually be populated; monotonic alone cannot
     // be correlated across a restart.
     EXPECT_GT(reader->Header().realtime_ns, 0U);
@@ -95,7 +95,7 @@ TEST_F(JournalFile, RoundTripsHeaderRecordsAndIncarnationMarker) {
 
     auto marker = reader->Next();
     ASSERT_TRUE(marker.has_value());
-    EXPECT_EQ(marker->type, RecordType::kConnectionIncarnation);
+    EXPECT_EQ(marker->type, RecordType::kConnect);
     EXPECT_EQ(TextOf(marker->payload), "connect");
     EXPECT_EQ(marker->capture_sequence, 1U);
 

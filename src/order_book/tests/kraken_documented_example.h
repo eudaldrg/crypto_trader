@@ -14,7 +14,7 @@ namespace order_book {
 // (https://docs.kraken.com/api/docs/guides/spot-ws-l3-v2/, fetched and
 // independently re-verified against the documented asks/bids strings and
 // their standard CRC-32 before being transcribed here as integer
-// ticks/lots -- decisions/0006 explicitly calls out not trusting a
+// ticks/lots -- decisions/0013 explicitly calls out not trusting a
 // self-derived vector, so this one is Kraken's, not invented). It is an
 // independent oracle, unlike a checksum computed by our own code.
 //

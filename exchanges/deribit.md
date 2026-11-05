@@ -1,22 +1,31 @@
 # Deribit
 
-See `decisions/0001-feed-source-selection.md` for why this feed is a
-secondary/future target (real market data here is L2, not L3).
+See `decisions/0001-exchange-feeds.md` for why this project uses Deribit's FIX
+market data (L2, not L3).
 
 ## Surfaces
 
-- **WS `book.*` channel**: public, no auth/KYC. Aggregated L2
-  (`[operation, price, quantity]`). Carries real `change_id`/`prev_change_id`
-  sequence numbers — genuine gap-detection problem, closer to CME-style than
-  Kraken's feed.
-- **FIX API** (the one this project targets, per `decisions/0002` — hand-rolled,
+- **WS `book.*` channel**: aggregated L2, each entry an explicit
+  `[operation, price, quantity]` tuple with `operation` one of
+  `new`/`change`/`delete` (do not infer delete from a zero quantity). The
+  grouped/interval channels (e.g. `book.BTC-PERPETUAL.100ms`) are public; the
+  **raw channel (`book.<instrument>.raw`) requires authentication**:
+  unauthenticated, the subscribe fails with
+  `raw_subscriptions_not_available_for_unauthorized`; `public/auth` with the
+  same testnet client credentials as FIX fixes it. Only the raw channel carries
+  `change_id`/`prev_change_id` sequencing. Confirmed 2026-09-17 on a ~2-minute
+  testnet capture (`experiments/deribit_ws_book_probe.py`, 2072 records, now a
+  replay fixture): `prev_change_id` matched the previous `change_id` with zero
+  gaps across 2069 consecutive `change` messages, and `quantity` was 0 on every
+  `delete` and never otherwise.
+- **FIX API** (the one this project targets, per `decisions/0001` — hand-rolled,
   not QuickFIX, as a deliberate protocol-level exercise): testnet host
   `fix-test.deribit.com:9881`, FIX.4.4. Also L2, not L3 — same granularity
   as `book.*`, just a different protocol surface (tag=value, session
   sequence numbers/heartbeats).
 - **SBE over UDP multicast**: real L3-equivalent institutional feed, but
   gated behind Equinix LD4 colo or AWS Transit Gateway peering in specific
-  regions — stretch goal, not in scope yet (see `decisions/0001`).
+  regions — stretch goal, not in scope yet (`docs/architecture.md`).
 
 ## FIX session (testnet, confirmed by probe)
 
@@ -34,7 +43,13 @@ secondary/future target (real market data here is L2, not L3).
 - `263` (SubscriptionRequestType) = 1 (snapshot + updates).
 - `264` (MarketDepth) = 0 (full book).
 - `267`/`269` (NoMDEntryTypes / MDEntryType) = Bid (0) and Offer (1).
-- `146`/`55` (NoRelatedSym / Symbol) = e.g. `BTC-PERPETUAL`.
+- `146`/`55` (NoRelatedSym / Symbol) = e.g. `BTC-PERPETUAL`. `146` is a real
+  repeating group: `146=N` followed by N `55` fields requests N instruments in
+  one message. Confirmed on the testnet 2026-09-20 with `BTC-PERPETUAL` and
+  `ETH-PERPETUAL`: one `35=W` snapshot per symbol, then `35=X` incrementals for
+  both on the same session. What Deribit does when only one of several symbols
+  is invalid (a `35=Y` for the whole request, or a snapshot for the rest) has not
+  been tried.
 
 ### Responses
 
@@ -75,7 +90,7 @@ secondary/future target (real market data here is L2, not L3).
 Two independent sequencing layers to be aware of when building the real
 client: FIX session-level `MsgSeqNum` (transport reliability — standard FIX
 repairs gaps here with `ResendRequest`/`SequenceReset`, though this project
-deliberately does not; see `decisions/0004`) and the MD-level
+deliberately does not; see `decisions/0011`) and the MD-level
 snapshot/incremental structure above (business-level). Neither is the same
 mechanism as Kraken's checksum approach.
 

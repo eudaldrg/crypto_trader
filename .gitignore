@@ -37,10 +37,14 @@ Thumbs.db
 *.env
 secrets.*
 
-# Captured market data journals (real exchange data, written by
-# kraken_feed_handler into ./journal by default — never commit these)
+# Captured market data journals (real exchange data, written by feed_handler
+# into the config's journal_dir, ./journal by default — never commit these)
 journal/
 *.journal
+
+# Claude Code agent worktrees: each is a full checkout of its own branch,
+# per-machine, created by the tool under .claude/worktrees/
+.claude/worktrees/
 
 # Local runtime state (the Kraken nonce high-water mark, written into ./state
 # by default) — per-machine, per-API-key, never committed

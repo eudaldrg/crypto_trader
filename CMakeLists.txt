@@ -11,7 +11,7 @@ option(ENABLE_ASAN "Enable AddressSanitizer" OFF)
 option(ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
 # ThreadSanitizer instruments differently than ASan/UBSan and the two runtimes
 # cannot coexist in one binary, hence the separate option and the guard below
-# rather than folding it into ENABLE_ASAN's block. See decisions/0005.
+# rather than folding it into ENABLE_ASAN's block. See docs/tasks/testing.md.
 option(ENABLE_TSAN "Enable ThreadSanitizer" OFF)
 if(ENABLE_TSAN AND ENABLE_ASAN)
   message(FATAL_ERROR "ENABLE_TSAN and ENABLE_ASAN cannot be combined in one binary -- configure separate build directories (see scripts/run_sanitizers.sh)")
@@ -20,7 +20,7 @@ option(USE_CLOCK_MANAGER "Enable clock manager" OFF)
 option(ENABLE_COVERAGE "Enable code coverage instrumentation" OFF)
 option(ENABLE_TCMALLOC "Use tcmalloc" OFF)
 option(ENABLE_GPERFTOOLS "Link gperftools CPU profiler" OFF)
-option(ENABLE_FUZZER "Build libFuzzer fuzz targets (decisions/0007)" OFF)
+option(ENABLE_FUZZER "Build libFuzzer fuzz targets (docs/tasks/fuzzing.md)" OFF)
 
 # Get the branch name (returns "HEAD" if in detached HEAD state)
 execute_process(
@@ -190,7 +190,7 @@ if(ENABLE_GPERFTOOLS)
   set_target_properties(gperftools_profiler PROPERTIES IMPORTED_LOCATION "${GPERFTOOLS_PROFILER_LIBRARY}")
 endif()
 
-#### Third-party dependencies (decisions/0002, decisions/0004) ####
+#### Third-party dependencies (docs/architecture.md) ####
 include(FetchContent)
 
 # IXWebSocket: Kraken WSS transport. USE_TLS must be forced into the cache
@@ -213,19 +213,34 @@ FetchContent_Declare(
   SYSTEM
 )
 
-# JSON parsing: order_book_tests' capture-replay fixtures and the
-# kraken_journal_dump tool both need it to parse captured wire messages --
-# not a production dependency, decisions/0002 defers a real wire/journal
-# serialization format.
+# nlohmann_json: Kraken level3 book parsing (order_book/kraken_l3_wire.h, on the
+# live book thread), plus the capture-replay tests and kraken_journal_dump.
 FetchContent_Declare(
   nlohmann_json
   GIT_REPOSITORY https://github.com/nlohmann/json.git
   GIT_TAG v3.11.3
   SYSTEM
 )
-FetchContent_MakeAvailable(ixwebsocket simdjson nlohmann_json)
+# toml++: the feed-handler configuration file (src/feed_handler/config).
+# Header-only; TOML's array-of-tables is what maps onto "a list of connections".
+FetchContent_Declare(
+  tomlplusplus
+  GIT_REPOSITORY https://github.com/marzer/tomlplusplus.git
+  GIT_TAG v3.4.0
+  SYSTEM
+)
+# moodycamel readerwriterqueue: the bounded SPSC rings that carry frames from a
+# connection thread to the journal and book threads (docs/architecture.md,
+# src/feed_handler/spsc_ring.h). Header-only.
+FetchContent_Declare(
+  readerwriterqueue
+  GIT_REPOSITORY https://github.com/cameron314/readerwriterqueue.git
+  GIT_TAG v1.0.7
+  SYSTEM
+)
+FetchContent_MakeAvailable(ixwebsocket simdjson nlohmann_json tomlplusplus readerwriterqueue)
 
-# GoogleTest: TDD for feed-parsing/journal/order-book logic, per decisions/0002.
+# GoogleTest: TDD for feed-parsing/journal/order-book logic (docs/architecture.md).
 option(BUILD_TESTING "Build test targets" ON)
 if(BUILD_TESTING)
   set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
@@ -242,7 +257,7 @@ if(BUILD_TESTING)
 endif()
 
 # Wraps add_executable() + the standard project_options/project_warnings
-# linkage so future targets can't forget to link one -- see decisions/0002.
+# linkage so future targets can't forget to link one (AGENTS.md, Architecture notes).
 function(add_project_executable name)
   add_executable(${name} ${ARGN})
   target_link_libraries(${name} PRIVATE project_options project_warnings project_sanitizers)
@@ -251,19 +266,18 @@ function(add_project_executable name)
   endif()
 endfunction()
 
-# Same, but for a GTest-based test binary registered with ctest -- see
-# decisions/0002.
+# Same, but for a GTest-based test binary registered with ctest.
 function(add_project_test name)
   add_executable(${name} ${ARGN})
   target_link_libraries(${name} PRIVATE project_options project_warnings project_sanitizers
                                         GTest::gtest_main)
+  # Every discovered test runs under a cgroup memory cap (TEST_MEMORY_MAX, 4G by
+  # default), so a runaway test dies alone instead of taking the whole tmux
+  # session with it. scripts/with_memory_cap.sh has the why.
+  set_property(TARGET ${name} PROPERTY TEST_LAUNCHER
+                                       "${CMAKE_SOURCE_DIR}/scripts/with_memory_cap.sh")
   gtest_discover_tests(${name})
 endfunction()
-
-add_project_executable(crypto_trader
-  src/greeter.cpp
-  src/main.cpp
-)
 
 #### Feed handler ####
 # OpenSSL and zlib both already arrive transitively through IXWebSocket
@@ -274,14 +288,22 @@ find_package(ZLIB REQUIRED)
 
 add_library(feed_handler STATIC
   src/feed_handler/capture_session.cpp
+  src/feed_handler/capture_set.cpp
+  src/feed_handler/config/feed_handler_config.cpp
+  src/feed_handler/credentials.cpp
   src/feed_handler/journal_format.cpp
   src/feed_handler/journal_reader.cpp
+  src/feed_handler/journal_thread.cpp
   src/feed_handler/journal_writer.cpp
   src/feed_handler/logging.cpp
   src/feed_handler/message_sink.cpp
+  src/feed_handler/runner.cpp
+  src/feed_handler/selection.cpp
+  src/feed_handler/deribit/deribit_capture.cpp
   src/feed_handler/deribit/deribit_fix_client.cpp
   src/feed_handler/deribit/deribit_fix_session.cpp
   src/feed_handler/fix/fix_message.cpp
+  src/feed_handler/kraken/kraken_capture.cpp
   src/feed_handler/kraken/kraken_rest_client.cpp
   src/feed_handler/kraken/kraken_signing.cpp
   src/feed_handler/kraken/kraken_ws_client.cpp
@@ -289,23 +311,11 @@ add_library(feed_handler STATIC
 target_include_directories(feed_handler PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(feed_handler
   PUBLIC project_options project_warnings project_sanitizers
-  PRIVATE ixwebsocket::ixwebsocket simdjson::simdjson OpenSSL::Crypto ZLIB::ZLIB
+  PRIVATE ixwebsocket::ixwebsocket simdjson::simdjson tomlplusplus::tomlplusplus
+          OpenSSL::Crypto ZLIB::ZLIB
 )
-
-# The live Kraken level3 capture binary (decisions/0004's first vertical
-# slice). Credentials come from the environment; see the file's header comment.
-add_project_executable(kraken_feed_handler
-  src/feed_handler/kraken/kraken_feed_handler_main.cpp
-)
-target_link_libraries(kraken_feed_handler PRIVATE feed_handler)
-
-# The live Deribit FIX capture binary: decisions/0004's second exchange
-# backend, hand-rolled over a raw POSIX socket. Credentials come from the
-# environment; see the file's header comment.
-add_project_executable(deribit_feed_handler
-  src/feed_handler/deribit/deribit_feed_handler_main.cpp
-)
-target_link_libraries(deribit_feed_handler PRIVATE feed_handler)
+# spsc_ring.h includes the moodycamel header, so consumers of feed_handler need it.
+target_link_libraries(feed_handler PUBLIC readerwriterqueue)
 
 if(BUILD_TESTING)
   # Proves the FetchContent wiring for IXWebSocket/simdjson/GoogleTest
@@ -316,19 +326,32 @@ if(BUILD_TESTING)
   target_link_libraries(dependency_smoke_test PRIVATE ixwebsocket::ixwebsocket simdjson::simdjson)
 
   add_project_test(feed_handler_tests
+    src/feed_handler/tests/capture_connection_test.cpp
     src/feed_handler/tests/capture_session_test.cpp
+    src/feed_handler/tests/capture_set_test.cpp
+    src/feed_handler/tests/credentials_test.cpp
     src/feed_handler/tests/deribit_fix_client_test.cpp
     src/feed_handler/tests/deribit_fix_session_test.cpp
+    src/feed_handler/tests/feed_handler_config_test.cpp
     src/feed_handler/tests/fix_message_test.cpp
     src/feed_handler/tests/journal_test.cpp
+    src/feed_handler/tests/journal_thread_test.cpp
     src/feed_handler/tests/kraken_rest_client_test.cpp
     src/feed_handler/tests/kraken_ws_client_test.cpp
+    src/feed_handler/tests/runner_test.cpp
+    src/feed_handler/tests/selection_test.cpp
+    src/feed_handler/tests/spsc_ring_test.cpp
     src/feed_handler/tests/staleness_watchdog_test.cpp
+    src/feed_handler/tests/stop_signal_test.cpp
   )
   target_link_libraries(feed_handler_tests PRIVATE feed_handler)
+  # The committed default config is parsed by a test so it cannot rot.
+  target_compile_definitions(feed_handler_tests PRIVATE
+    FEED_HANDLER_CONFIG_DIR="${CMAKE_SOURCE_DIR}/config"
+  )
 endif()
 
-#### Order book (decisions/0006) ####
+#### Order book (decisions/0006, decisions/0013) ####
 # Mostly header-only (templates/concepts), but the Kraken checksum is
 # genuinely non-template logic, so this needs a compiled source, same
 # reasoning as feed_handler above.
@@ -383,7 +406,62 @@ add_project_executable(kraken_journal_dump
 )
 target_link_libraries(kraken_journal_dump PRIVATE order_book_kraken_wire feed_handler)
 
-# libFuzzer pilot (decisions/0007). A raw add_executable, not
+#### Book adapter (docs/investigations/2026-09-21-issue-14-architecture.md) ####
+# Frames in, books out: dispatches a connection's frames to per-symbol books. It
+# sits above both order_book and feed_handler, which is why it is not part of
+# order_book (decisions/0008 keeps that library free of feed_handler).
+add_library(book_adapter STATIC
+  src/book_adapter/book_adapter.cpp
+  src/book_adapter/book_service.cpp
+  src/book_adapter/book_wiring.cpp
+  src/book_adapter/deribit_fix_book_wire.cpp
+  src/book_adapter/journal_replay.cpp
+)
+target_link_libraries(book_adapter PUBLIC order_book_kraken_wire feed_handler)
+
+if(BUILD_TESTING)
+  add_project_test(book_adapter_tests
+    src/book_adapter/tests/book_adapter_test.cpp
+    src/book_adapter/tests/book_service_concurrency_test.cpp
+    src/book_adapter/tests/book_service_overflow_test.cpp
+    src/book_adapter/tests/book_service_test.cpp
+    src/book_adapter/tests/book_wiring_test.cpp
+    src/book_adapter/tests/deribit_fix_book_test.cpp
+    src/book_adapter/tests/deribit_fix_replay_test.cpp
+    src/book_adapter/tests/journal_replay_test.cpp
+  )
+  target_link_libraries(book_adapter_tests PRIVATE book_adapter)
+  target_compile_definitions(book_adapter_tests PRIVATE
+    TEST_DATA_DIR="${ORDER_BOOK_TEST_DATA_DIR}"
+  )
+endif()
+
+# The capture binary (docs/architecture.md): every configured connection, across
+# exchanges, from one process. Which ones is the --config file; credentials come
+# from the environment. See feed_handler_main.cpp and docs/modules/feed-handler.md.
+# It links book_adapter as well as feed_handler: the binary is where the live
+# books are wired in, because feed_handler itself must not depend on them.
+add_project_executable(feed_handler_capture
+  src/feed_handler/feed_handler_main.cpp
+)
+target_link_libraries(feed_handler_capture PRIVATE feed_handler book_adapter)
+set_target_properties(feed_handler_capture PROPERTIES OUTPUT_NAME feed_handler)
+
+# Replays journals through the adapter inline and prints counts plus parse and
+# apply wall time: the profiling harness for the book code.
+add_project_executable(journal_replay
+  src/book_adapter/tools/journal_replay.cpp
+)
+target_link_libraries(journal_replay PRIVATE book_adapter)
+
+# Cuts a small, Logon-free slice out of a real capture for use as a test
+# fixture. Prints counts only, never payload bytes (AGENTS.md).
+add_project_executable(journal_slice
+  src/book_adapter/tools/journal_slice.cpp
+)
+target_link_libraries(journal_slice PRIVATE feed_handler)
+
+# libFuzzer pilot (docs/tasks/fuzzing.md). A raw add_executable, not
 # add_project_executable: -fsanitize=fuzzer supplies its own main, so its
 # flags stay on this one target. fix_message.cpp is compiled in directly
 # instead of linking feed_handler, whose copy has no coverage instrumentation

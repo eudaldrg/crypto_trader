@@ -10,34 +10,52 @@ a portfolio piece to demonstrate HFT-style systems engineering — concurrent
 feed ingestion, deterministic replay/journaling, low-latency data structures,
 profiling discipline — against real exchange data rather than a simulation.
 
-**Status: early stage.** What exists: the CMake skeleton (`src/greeter.*`,
-`src/main.cpp`), throwaway Python protocol probes (`experiments/`), and the
-first vertical slice of the feed handler in `src/feed_handler/` — the
-`MessageSink` seam, the v1 capture journal (writer + reader), the Kraken REST
+**Status: early stage.** What exists: throwaway Python protocol probes
+(`experiments/`), the first vertical slice of the feed handler in
+`src/feed_handler/` — the `MessageSink` seam, the v1 capture journal (writer + reader), the Kraken REST
 auth / `AssetPairs` client, the Kraken `level3` WebSocket client, and the
-`kraken_feed_handler` binary that captures live market data to a journal
-(`KRAKEN_API_KEY`/`KRAKEN_API_SECRET` from the environment, journals into
-`./journal/`, runs until SIGINT). The second exchange backend is
+`feed_handler` binary that captures live market data to a journal. It takes
+`--config <path>`, a TOML file listing `[[connections]]`, one per socket and
+journal, each with its own symbols (`config/feed_handler.toml`,
+`docs/modules/feed-handler.md`), and runs every entry across both exchanges,
+optionally narrowed with `--exchange` and `--only`; credentials come from the
+environment and it runs until SIGINT. The second exchange backend is
 complete to the same depth: `src/feed_handler/fix/` (generic hand-rolled
-FIX.4.4 builder/parser/framer), `src/feed_handler/deribit/` (session
-mechanics plus a raw-POSIX-socket client on its own thread) and the
-`deribit_feed_handler` binary, which logs on to Deribit's FIX testnet
-(`DERIBIT_TESTNET_CLIENT_ID`/`DERIBIT_TESTNET_CLIENT_SECRET` from the
-environment), subscribes to `BTC-PERPETUAL` and journals into the same
-`./journal/` until SIGINT. A golden (deliberately simple, `std::map`-based)
-order book also exists in `src/order_book/` — L1/L2/L3 granularity, no
-matching yet (see `decisions/0006`) — but it is not yet wired to the feed
-handler's journal/`MessageSink` output; that integration, the fast
+FIX.4.4 builder/parser/framer) and `src/feed_handler/deribit/` (session
+mechanics plus a raw-POSIX-socket client on its own thread), which logs on to
+Deribit's FIX testnet, subscribes to the configured instruments and journals
+into the configured `journal_dir`. Each connection journals on its own
+thread behind an SPSC ring, so no connection thread touches the disk
+(`decisions/0010`). A golden
+(deliberately simple, `std::map`-based) order book also exists in
+`src/order_book/` (L1/L2/L3 granularity, no matching yet, see
+`decisions/0006`), and `src/book_adapter/` wires it to both exchanges' feeds:
+live in the capture binary behind `order_books = true` (default off), on one
+book thread fed by a ring per connection, and offline through the
+`journal_replay` tool, which replays a captured journal through the same adapter
+for profiling (`decisions/0008`, `docs/modules/order-book.md`). The fast
 exchange-specific books, the matching engine, and strategy code all remain
-unwritten. `decisions/` holds the locked-in ADRs; the rest of the design is
-intentionally unspecified and will be worked out in future sessions — don't
-assume unwritten components exist.
+unwritten. Don't assume unwritten components exist.
 
-**Always read `decisions/*.md` before making an architectural call.** They
-are the actual design doc for this project (in place of scattered markdown
-files elsewhere) and record *why* choices were made, not just what they are.
-Add a new ADR there for any future non-obvious architectural decision instead
-of leaving the rationale only in a commit message or chat.
+**Where the design lives:**
+
+- `decisions/*.md`: ADRs, only for decisions that are expensive to reverse,
+  each with its options and trade-off. All are `proposed` (or `provisional`)
+  unless marked `accepted`: working assumptions to follow, and to challenge
+  with a proposal when work shows one wrong. Read them before an architectural
+  call.
+- `docs/architecture.md`: how the pieces fit, dependencies, and choices that
+  are cheap to change. Meant to change as the project learns.
+- `docs/modules/` (what each component is and how it behaves), `docs/tasks/`
+  (how to do things), `docs/investigations/` (dated evidence).
+- `docs/questions/`: one file per open question nobody has answered yet. A
+  session that hits one it cannot settle writes a file there, records what it
+  assumed meanwhile, and carries on.
+
+A new decision gets an ADR only if reversing it would be expensive (a contract
+between components, a stored format, a threading or ownership model, a pattern
+that spreads); anything else goes in `docs/architecture.md` or a module doc.
+Never leave the rationale only in a commit message or chat.
 
 **`exchanges/*.md` holds raw per-exchange protocol reference** (endpoints,
 auth flow, message shapes, confirmed wire quirks) — facts, not rationale.
@@ -46,65 +64,59 @@ the *what* (exact fields, endpoints) belongs in `exchanges/`; update it
 whenever a probe in `experiments/` confirms something new about the wire
 format. See `exchanges/README.md` for the index.
 
-- `decisions/0001-feed-source-selection.md` — why Kraken's public L3 `level3`
-  WS feed (genuine order-by-order `add`/`modify`/`delete` by `order_id`) is
-  the primary feed, with Deribit's L2 `book` channel (real `change_id`/
-  `prev_change_id` sequencing) as the secondary/differently-shaped feed
-  problem. Also documents empirically-confirmed wire details worth knowing:
-  Kraken `level3` has no sequence numbers but *does* carry a per-message
-  `checksum` for desync detection; Deribit's WS `book` and FIX market data
-  are both L2, not L3, despite FIX being a genuinely different protocol
-  surface. A real Deribit SBE/UDP-multicast colo feed exists but is gated
-  behind infra/cost not worth taking on yet (stretch goal).
-- `decisions/0002-tooling-stack.md` — concurrency primitives
-  (moodycamel `concurrentqueue`/`readerwriterqueue`), containers (Abseil /
-  ankerl hash & btree maps), testing (GoogleTest, not Boost.Test), profiling
-  (`perf c2c`, Valgrind, gperftools/tcmalloc — Linux-only), serialization
-  (deliberately deferred until a concrete wire/journal format is needed).
-  Also: C++20 modules were prototyped and confirmed working in Clang 21 +
-  CMake + Ninja, but **de-scoped back to plain `.h`/`.cpp`** because clangd's
-  modules support is experimental and cross-TU Find-References/Go-to-Definition
-  doesn't work across an `import` boundary — reliable navigation is a hard
-  project requirement. Don't reintroduce modules until clangd support matures.
-- `decisions/0003-dev-environment.md` — WSL2 (Ubuntu, native ext4, never
-  `/mnt/c/...`) for day-to-day dev now; native dual-boot Linux planned later
-  specifically because `perf c2c`/PMU access is unreliable under WSL2's
-  Hyper-V. Until dual-boot exists, any profiling that specifically needs
-  `perf c2c` should go to a disposable cloud VPS, not WSL2.
-- `decisions/0004-feed-handler-architecture.md` — the three execution modes
-  (LiveTrading/Replay/Simulation) and the `MessageSink` interface (with its
-  frame-ownership contract) that keeps strategy-facing code identical across
-  them; the v1 journal format (raw wire bytes + capture metadata, framed and
-  versioned, one file per exchange+connection-incarnation — not per symbol);
-  the threading model (epoll-per-thread-group is the end-goal, but
-  IXWebSocket owning its own fd/thread keeps Kraken a standalone exception
-  until it's replaced) and where the future SPSC fan-in seam goes; and the
-  per-exchange snapshot/recovery/gap-handling recap (detailed wire facts
-  live in `exchanges/`, not here).
-- `decisions/0005-quality-gates-and-release-process.md` — the commit-time
-  (must compile) and push-time (full suite under ASan+UBSan and TSan)
-  enforcement tiers, why MemorySanitizer is deferred rather than added, why a
-  local git hook isn't a real (unbypassable) gate, and the still-open
-  questions around a release process (branching strategy, coverage
-  thresholds, perf/simulation checks) — don't assume any of those were
-  decided, read the ADR's open-questions section first.
-- `decisions/0006-order-book-design.md` — the L1/L2/L3 granularity axis and
-  the matching/non-matching axis (matching left as a concept-constrained
-  seam, not implemented); why polymorphism across both is resolved with
-  concepts and policy-based templates rather than CRTP or virtual dispatch;
-  the shared `OrderBook<GranularityPolicy, ListenerT, MatchingPolicy>`
-  engine/policy contract, readiness state machine, and error taxonomy; and
-  the golden-reference-first strategy (`src/order_book/`, `std::map`-based,
-  not Abseil/ankerl yet) that the eventual fast, exchange-specific books
-  get validated against. Two real captured exchange sessions back this: a
-  Deribit `book.raw` replay (`src/order_book/tests/`) that caught and fixed
-  a wire-shape assumption this ADR's first draft got wrong, and a Kraken
-  `level3` checksum verified against Kraken's own documented worked
-  example, not guessed from the field's existence alone.
-- `decisions/0007-fuzzing.md` — libFuzzer coverage-guided fuzzing, piloted on
-  the FIX `Framer` + `ParseMessage` pipeline (`ENABLE_FUZZER`,
-  `src/feed_handler/fix/fuzz/`); why it is a raw `add_executable` and not part
-  of the pre-push gate; Kraken `level3` and the journal reader are deferred.
+- `decisions/0001-exchange-feeds.md` — why the project builds against
+  Kraken `level3` (L3, per-message checksum, no sequence numbers), Bitso
+  `diff-orders` (a second L3 with +1 sequence numbers and REST-snapshot
+  recovery, not built yet, #18) and Deribit FIX market data (L2 with FIX
+  session sequencing, a second protocol surface). None ranks above the others.
+  Deribit SBE multicast is a stretch goal; wire facts live in `exchanges/`.
+- `decisions/0002-no-cxx-modules.md` — plain `.h`/`.cpp`, not C++20 modules
+  (provisional): Clang 21 + CMake + Ninja build modules fine, but clangd's
+  cross-file navigation stops at an `import`, and reliable navigation is a hard
+  requirement. Don't introduce modules until its revisit trigger fires. The
+  dependency list and why each is there is `docs/architecture.md`.
+- `decisions/0004-raw-frame-sink-seam.md` — exchange-facing code hands raw
+  wire frames to `MessageSink`s as non-owning views; a sink copies what it keeps,
+  and every stateful sink resets at a new `connect_id`.
+  This seam is what keeps strategy-facing code identical across
+  LiveTrading/Replay/Simulation (`docs/architecture.md`).
+- `decisions/0006-order-book-policies.md` — books vary by granularity
+  (L1/L2/L3) and matching through concept-constrained policy templates, not
+  virtual dispatch or CRTP; exchange quirks (Kraken's checksum, depth
+  truncation, add ordering) live in exchange policies composing generic ones.
+  How the books behave in detail is `docs/modules/order-book.md`.
+- `decisions/0008-book-adapter-layering.md` — `order_book` and
+  `feed_handler` never depend on each other; `src/book_adapter/` depends on
+  both and is linked only by binaries that want books. `feed_handler` offers
+  generic hooks (`AddSink`, `BeforeStart`) instead of knowing about books.
+- `decisions/0009-journal-content-and-format.md` — the journal records inbound
+  wire bytes verbatim, one file per connection and `connect_id`, versioned and
+  crash-tolerant, never outbound traffic (credentials). Explicitly not settled:
+  revisit once replay has to reproduce the live order of book updates across
+  connections, or when Bitso's REST snapshot has to be journaled
+  (`docs/questions/`).
+- `decisions/0010-connection-thread-handoff.md` — connection threads never
+  block or touch disk, and do not parse until feed books move onto them; one
+  SPSC ring per consumer, each owning its full-ring policy (set in 0011 and
+  0012); staged towards epoll thread groups that run the feed books inline,
+  once fast feed books exist and IXWebSocket is replaced.
+- `decisions/0011-desync-recovery.md` — any lost data (gap, checksum,
+  silence, dropped frame, integrity issue) desyncs, and recovery is always a
+  reconnect plus a fresh snapshot of that connection only (a full book ring
+  drops and desyncs). What `connect_id` means is in 0004.
+- `decisions/0012-failure-containment.md` — a failure stays at its own level
+  (book < connection < process); a journal failure stops that connection's
+  journal and alerts, it does not stop other connections; only disk/memory
+  exhaustion escalates, into a maintenance mode not designed yet. The code
+  still stops every connection on any fatal.
+- `decisions/0013-golden-reference-book.md` — a deliberately simple
+  `std::map`-based golden book is the oracle: fast books are checked against it
+  on the same inputs, and new features land in it first.
+- `decisions/0014-normalization-boundary.md` — a validating feed book per
+  connection is where exchange data becomes normalized: exchange quirks and
+  integrity checks live in its exchange policies, and everything downstream
+  (strategy books, strategies, the simulator's consumers) sees only normalized
+  events.
 
 ## Commands
 
@@ -134,12 +146,19 @@ preset; `lld` is the linker). Toolchain versions are pinned to `-21` — see
 Useful CMake options (pass as `-D<OPTION>=ON` or add to a preset's
 `cacheVariables`): `ENABLE_ASAN`, `ENABLE_UBSAN`, `ENABLE_TCMALLOC`,
 `ENABLE_GPERFTOOLS` (already on in the `profile` preset), `ENABLE_COVERAGE`,
-`ENABLE_FUZZER` (libFuzzer targets, `decisions/0007`), `USE_CLOCK_MANAGER`.
+`ENABLE_FUZZER` (libFuzzer targets, `docs/tasks/fuzzing.md`), `USE_CLOCK_MANAGER`.
 
 ### Lint / format / quality gates
 
-Two `pre-commit` framework hook stages — see `decisions/0005` for the full
-reasoning behind the split and what's deliberately not enforced yet:
+**Rule for agents:** code must pass every automated check before it is
+committed or pushed. Never bypass a hook (`--no-verify`) and never weaken a
+check, a lint rule or a test to make something pass. Adding a check needs no
+permission; removing or loosening one needs the owner. Silencing a warning is
+allowed only at the line that triggers it (e.g. `// NOLINT(<check>)`), with a
+comment saying why, never file-wide or project-wide.
+
+Two `pre-commit` framework hook stages; `docs/tasks/testing.md` has what each
+runs, why, and what is deliberately not enforced yet:
 
 ```bash
 pre-commit install                      # commit-time hooks
@@ -173,7 +192,7 @@ Push-time (`stages: [pre-push]`):
 
 ### Tests
 
-GoogleTest (`decisions/0002`), fetched via `FetchContent` and registered with
+GoogleTest (`docs/architecture.md`), fetched via `FetchContent` and registered with
 ctest:
 
 ```bash
@@ -198,7 +217,7 @@ in any order inside an anonymous namespace without tripping a spurious
 
 - Every executable target must go through the `add_project_executable()`
   CMake function (`CMakeLists.txt`; the libFuzzer target is the one exception,
-  `decisions/0007`) rather than raw `add_executable()` — it
+  `docs/tasks/fuzzing.md`) rather than raw `add_executable()` — it
   links `project_options`/`project_warnings` (and `gperftools_profiler` when
   `ENABLE_GPERFTOOLS` is on) so no target can accidentally skip warnings or
   the shared compiler/link flags. Add new targets this way.
@@ -215,8 +234,16 @@ in any order inside an anonymous namespace without tripping a spurious
   (`kraken_l3_probe.py`, `deribit_fix_probe.py`) used to verify real wire
   behavior against both exchanges before building the real C++ pipeline —
   they are explicitly **not** the real design, just probes; findings from
-  running them are captured back into the relevant ADR (see the "Empirical
-  validation" section of `0001`). They read exchange credentials from
+  running them are captured into `exchanges/` (the ADR keeps only the
+  reasoning). They read exchange credentials from
   `experiments/.env` (gitignored) via a minimal hand-rolled dotenv loader —
   **never open or read `experiments/.env`** (only `.env.example` is safe to
-  view). A private venv lives at `experiments/.venv`.
+  view). Captures from authenticated sessions can contain the auth handshake
+  too (the probes no longer write it): never print a capture's contents to
+  check it; look at its keys or count matches instead. A private venv lives at
+  `experiments/.venv`.
+- **Captured market data stays out of git.** Journals and JSON dumps from a
+  capture are gitignored (`journal/`, `*.journal`). A test fixture is the one
+  exception: it is committed compressed (`.tar.xz`) and small, then unpacked at
+  configure time (see `docs/modules/order-book.md`). A large capture, such as an
+  hour recorded for profiling, lives outside the repo in `~/Temp`, not `/tmp`.

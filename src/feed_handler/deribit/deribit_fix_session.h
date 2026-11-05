@@ -3,7 +3,7 @@
 // number bookkeeping on both directions of the session.
 //
 // Pure logic -- no socket, no journal. The next slice adds the raw-socket
-// client that drives this (decisions/0004: Deribit FIX is hand-rolled over its
+// client that drives this (decisions/0010: Deribit FIX is hand-rolled over its
 // own fd from day one, so unlike Kraken it can join an epoll group later).
 // Keeping the message construction and sequence tracking testable without a
 // connection is the same split that made the Kraken signing correct before it
@@ -14,7 +14,7 @@
 //
 // Credential handling follows the Kraken rules: `client_secret` exists only to
 // be hashed into the Logon password, and neither it nor the derived password
-// is ever logged or journaled. decisions/0004 keeps outbound traffic out of
+// is ever logged or journaled. decisions/0009 keeps outbound traffic out of
 // the journal structurally (JournalWriter has no outbound path), which is
 // what stops a Logon from ever reaching disk.
 #pragma once
@@ -118,8 +118,8 @@ struct InboundCheck {
 
 /// One FIX session's message construction and sequence state.
 ///
-/// One instance per connection incarnation, driven by that connection's own
-/// thread; not thread safe and does not need to be (decisions/0004).
+/// One instance per connection, driven by that connection's own
+/// thread; not thread safe and does not need to be (decisions/0010).
 ///
 /// Every build_* call consumes an outbound MsgSeqNum(34), so messages must be
 /// sent in the order they were built -- the exchange rejects a session whose
@@ -137,8 +137,15 @@ class FixSession {
     std::string BuildLogonWithNonce(std::uint64_t timestamp_ms, std::span<const std::byte> nonce);
 
     /// MarketDataRequest(35=V): snapshot + updates, full depth, Bid and Offer,
-    /// one symbol (exchanges/deribit.md).
-    std::string BuildMarketDataRequest(std::string_view md_req_id, std::string_view symbol);
+    /// for every symbol in `symbols` (exchanges/deribit.md). One request covers
+    /// them all through the NoRelatedSym(146) repeating group; Deribit answers
+    /// with one snapshot per symbol.
+    ///
+    /// The symbols go into SOH-delimited fields without escaping, so they must
+    /// already have passed the config layer's symbol check. Must not be empty:
+    /// a NoRelatedSym of 0 is not a request for anything.
+    std::string BuildMarketDataRequest(std::string_view md_req_id,
+                                       std::span<const std::string> symbols);
 
     /// Heartbeat(35=0) sent on our own timer.
     std::string BuildHeartbeat();
@@ -162,7 +169,7 @@ class FixSession {
     ///
     /// On a gap the expectation jumps to `msg_seq_num + 1` rather than staying
     /// put: v1's response to a gap is to drop the session and re-logon
-    /// (decisions/0004 -- no ResendRequest/SequenceReset gap fill), so holding
+    /// (decisions/0011 -- no ResendRequest/SequenceReset gap fill), so holding
     /// the old expectation would only turn one lost message into an endless
     /// stream of identical gap reports before the reconnect lands.
     InboundCheck OnInboundSeqNum(std::uint64_t msg_seq_num, bool possible_duplicate = false);

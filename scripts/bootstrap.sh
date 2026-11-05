@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Sets up a fresh Ubuntu box (WSL2 or bare-metal) to build and develop
-# crypto_trader. Safe to re-run. See decisions/0002-tooling-stack.md for why
-# each of these was chosen.
+# crypto_trader. Safe to re-run. See docs/architecture.md
+# (toolchain and dependencies) for why each of these is here.
 set -euo pipefail
 
 sudo apt-get update

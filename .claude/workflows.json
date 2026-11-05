@@ -1,5 +1,22 @@
 {
   "cpp": {
     "enabled": true
+  },
+  "implement": {
+    "checkTimeoutSeconds": 3600,
+    "checks": [
+      {
+        "id": "sanitizers",
+        "order": 40,
+        "cmd": "pre-commit run --all-files --hook-stage pre-push",
+        "when": "exists:scripts/run_sanitizers.sh",
+        "blocking": true
+      }
+    ]
+  },
+  "git": {
+    "protectedBranches+": ["dev"],
+    "askBeforePush": false,
+    "askBeforePR": false
   }
 }

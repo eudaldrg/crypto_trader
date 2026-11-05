@@ -41,7 +41,7 @@ struct L3ChangeSet {
     std::optional<IntegrityIssue> integrity_issue;
 };
 
-// The golden L3 book (decisions/0006): individual orders tracked per price
+// The golden L3 book (decisions/0013): individual orders tracked per price
 // level in arrival order (not aggregate-only counts), since a per-order
 // checksum such as Kraken's cannot be reconstructed from aggregates.
 // order_index_ gives O(log n) lookup by order_id for modify/delete; the

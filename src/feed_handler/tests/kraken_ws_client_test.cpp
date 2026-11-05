@@ -5,7 +5,7 @@
 // what it does when the journal write fails.
 //
 // The capture tests drive handle_message() directly rather than over a socket.
-// IXWebSocket owns its own thread and fd (decisions/0004), and a real
+// IXWebSocket owns its own thread and fd (decisions/0010), and a real
 // connection would also need a signed REST token call, so a live-socket
 // harness like the Deribit one is not available here; handle_message() is the
 // entry point that callback would reach anyway.
@@ -26,12 +26,14 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "feed_handler/capture_session.h"
 #include "feed_handler/journal_format.h"
 #include "feed_handler/kraken/kraken_rest_client.h"
 #include "feed_handler/message_sink.h"
 #include "feed_handler/tests/recording_sink.h"
+#include "feed_handler/tests/test_support.h"
 
 namespace {
 
@@ -82,6 +84,13 @@ constexpr std::uint64_t kLongWatchdogPollMs = 10'000;
 constexpr int kPromptStopMs = 2'000;
 constexpr int kStopRaceAttempts = 10;
 
+/// The overflow test's bounds: a two-event ring behind a journal thread that is
+/// not running overflows within a handful of frames, and the loop gives up long
+/// before a wrong build could make it expensive. Small payloads, so a hundred
+/// times this is still a few kilobytes.
+constexpr std::size_t kTinyJournalRing = 2;
+constexpr std::size_t kOverflowLoopBound = 1'000;
+
 /// Nothing listens on port 1, so IXWebSocket's connect is refused at once and
 /// no Open event -- hence no signed REST token call -- can ever happen.
 constexpr std::string_view kUnreachableUrl = "ws://127.0.0.1:1";
@@ -100,23 +109,53 @@ feed_handler::kraken::Credentials TestCredentials() {
 // cannot parse TEST macros that follow another definition inside one.
 
 TEST(KrakenSubscribeMessage, MatchesTheShapeKrakenDocuments) {
-    const std::string message = BuildSubscribeMessage("BTC/USD", "fake-token-not-a-credential");
+    const std::vector<std::string> symbols = {"BTC/USD"};
+    const std::string message = BuildSubscribeMessage(symbols, 10, "fake-token-not-a-credential");
     EXPECT_EQ(message, R"({"method":"subscribe","params":{"channel":"level3","symbol":["BTC/USD"],)"
-                       R"("snapshot":true,"token":"fake-token-not-a-credential"}})");
+                       R"("depth":10,"snapshot":true,"token":"fake-token-not-a-credential"}})");
+}
+
+TEST(KrakenSubscribeMessage, SendsTheConfiguredDepthExplicitly) {
+    // Never left to Kraken's default: the depth a book is built for and the depth
+    // subscribed are the same number only if the subscribe states it.
+    const std::vector<std::string> symbols = {"BTC/USD"};
+    for (const int depth : {10, 100, 1000}) {
+        const std::string message = BuildSubscribeMessage(symbols, depth, "fake-token");
+        EXPECT_NE(message.find("\"depth\":" + std::to_string(depth) + ","), std::string::npos)
+            << message;
+    }
 }
 
 TEST(KrakenSubscribeMessage, AsksForASnapshotBecauseThatIsTheRecoveryMechanism) {
     // exchanges/kraken.md: there is no resume-from-sequence-number request, so
     // every (re)subscribe has to ask for a fresh snapshot.
-    const std::string message = BuildSubscribeMessage("BTC/USD", "fake-token");
+    const std::vector<std::string> symbols = {"BTC/USD"};
+    const std::string message = BuildSubscribeMessage(symbols, 10, "fake-token");
     EXPECT_NE(message.find(R"("snapshot":true)"), std::string::npos);
     // WS v2 spells bitcoin BTC, not REST's XBT.
     EXPECT_NE(message.find(R"("BTC/USD")"), std::string::npos);
 }
 
+TEST(KrakenSubscribeMessage, ListsEverySymbolInOneSubscribeInConfigOrder) {
+    // One socket, one subscribe: Kraken's `symbol` param is documented as an
+    // array, so several symbols cost one message rather than one each.
+    const std::vector<std::string> symbols = {"BTC/USD", "ETH/USD", "SOL/EUR"};
+    EXPECT_EQ(BuildSubscribeMessage(symbols, 100, "fake-token"),
+              R"({"method":"subscribe","params":{"channel":"level3",)"
+              R"("symbol":["BTC/USD","ETH/USD","SOL/EUR"],"depth":100,"snapshot":true,)"
+              R"("token":"fake-token"}})");
+}
+
 TEST(KrakenMessageClassification, RecognizesASuccessfulSubscribeAck) {
     const auto classified = ClassifyMessage(kSubscribeAck);
     EXPECT_EQ(classified.kind, MessageKind::kSubscribeAck);
+}
+
+TEST(KrakenMessageClassification, ASubscribeAckNamesTheSymbolItAcknowledges) {
+    // A multi-symbol subscribe is answered with one ack per symbol.
+    EXPECT_EQ(ClassifyMessage(kSubscribeAck).symbol, "BTC/USD");
+    EXPECT_TRUE(ClassifyMessage(kSubscribeError).symbol.empty());
+    EXPECT_TRUE(ClassifyMessage(R"({"method":"subscribe","success":true})").symbol.empty());
 }
 
 TEST(KrakenMessageClassification, RecognizesARejectedSubscribeAndKeepsTheReason) {
@@ -191,7 +230,7 @@ TEST_F(KrakenCapture, StampsEveryCapturedFrameWithItsOwnWireShape) {
     CaptureSession session({.directory = dir_, .exchange = "kraken"});
     RecordingSink sink;
     session.AddSink(sink);
-    ASSERT_TRUE(session.BeginIncarnation("test", FrameSource::kUnknown).has_value());
+    ASSERT_TRUE(session.BeginConnect("test", FrameSource::kUnknown).has_value());
 
     WsClient client(rest_, TestCredentials(), session);
     client.HandleMessage(std::string(kHeartbeat));
@@ -199,41 +238,82 @@ TEST_F(KrakenCapture, StampsEveryCapturedFrameWithItsOwnWireShape) {
 
     const auto frames = sink.Frames();
     ASSERT_EQ(frames.size(), 2U);
-    EXPECT_EQ(frames[0].source, FrameSource::kRakenJson);
-    EXPECT_EQ(frames[1].source, FrameSource::kRakenJson);
+    EXPECT_EQ(frames[0].source, FrameSource::kKrakenJson);
+    EXPECT_EQ(frames[1].source, FrameSource::kKrakenJson);
     EXPECT_EQ(frames[1].payload, kUpdate);
     EXPECT_EQ(client.MessagesReceived(), 2U);
     EXPECT_FALSE(client.Fatal());
 }
 
-TEST_F(KrakenCapture, TreatsAFailedJournalWriteAsFatalToTheProcess) {
+TEST_F(KrakenCapture, TreatsAJournalRingOverflowAsFatalToTheProcess) {
     // The bug this covers: before, a failed journal write was logged and
     // nothing else, so after a full disk the main loop's `!client.fatal()`
     // stayed true forever and the process looked healthy while capturing
-    // nothing. Deribit's journal_message already ended the session here.
-    CaptureSession session({.directory = dir_, .exchange = "kraken"});
-    ASSERT_TRUE(session.BeginIncarnation("connected", FrameSource::kRakenJson).has_value());
-
-    // Latches the writer's sticky error the way a full disk would: the record
-    // is refused and the file is unreliable from that point on. Every later
-    // write into this session now fails the same way, which is the property
-    // that makes a journal failure worth ending the process over.
-    const std::string oversized(feed_handler::journal::kMaxPayloadBytes + 1U, 'x');
-    ASSERT_FALSE(session.OnWireMessage(BytesOf(oversized), FrameSource::kRakenJson));
-    ASSERT_FALSE(session.Error().empty());
+    // nothing. The journal now runs on its own thread, so the failure arrives
+    // through the session's fatal handler, not through a return value.
+    //
+    // The journal thread is left unstarted, so nothing drains the two-event ring
+    // and it overflows for certain on any build, instead of depending on a slow
+    // consumer.
+    CaptureSession session({.directory = dir_,
+                            .exchange = "kraken",
+                            .journal_mode = feed_handler::JournalMode::kThreaded,
+                            .journal_ring_events = kTinyJournalRing,
+                            .journal_start = false});
+    ASSERT_TRUE(session.BeginConnect("connected", FrameSource::kKrakenJson).has_value());
 
     WsClient client(rest_, TestCredentials(), session);
     ASSERT_FALSE(client.Fatal());
+    std::size_t sent = 0;
+    while (!client.Fatal() && sent < kOverflowLoopBound) {
+        client.HandleMessage(std::string(kUpdate));
+        ++sent;
+    }
+    ASSERT_LT(sent, kOverflowLoopBound) << "the journal ring never overflowed";
+    EXPECT_TRUE(client.Fatal());
+    EXPECT_NE(session.Error().find("overflow"), std::string_view::npos) << session.Error();
+
+    // Once fatal, later messages are still counted and do not undo it. Closing
+    // starts the journal thread, so the barrier completes and the session is
+    // idle before the client that its handler points at goes away.
     client.HandleMessage(std::string(kHeartbeat));
     EXPECT_TRUE(client.Fatal());
+    session.Close();
 }
 
-TEST_F(KrakenCapture, DoesNotEndTheProcessOverAMessageThatArrivedBeforeTheFirstIncarnation) {
+TEST_F(KrakenCapture, TreatsAFailedJournalWriteOnTheJournalThreadAsFatal) {
+    // The other way a journal fails: the write itself, which happens on the
+    // journal thread, so the latch is set from a thread the client does not own.
+    // A payload over the format's limit is refused by the writer, the way a full
+    // disk is: the record is not written and the file is unreliable from then on.
+    // Close() is a barrier, so the failure has been reported by the time it
+    // returns and nothing here waits on a clock.
+    CaptureSession session({.directory = dir_,
+                            .exchange = "kraken",
+                            .journal_mode = feed_handler::JournalMode::kThreaded});
+    ASSERT_TRUE(session.BeginConnect("connected", FrameSource::kKrakenJson).has_value());
+
+    WsClient client(rest_, TestCredentials(), session);
+    ASSERT_FALSE(client.Fatal());
+    {
+        const std::string oversized(feed_handler::journal::kMaxPayloadBytes + 1U, 'x');
+        // Accepted by the ring: it is the writer that refuses it.
+        ASSERT_TRUE(session.OnWireMessage(BytesOf(oversized), FrameSource::kKrakenJson));
+    }
+    session.Close();
+
+    EXPECT_TRUE(client.Fatal());
+    EXPECT_FALSE(session.Error().empty());
+}
+
+TEST_F(KrakenCapture, DoesNotEndTheProcessOverAMessageThatArrivedBeforeTheFirstConnect) {
     // The other half of the same branch, and the reason it is a branch: a
     // message arriving before handle_open() has opened a file is loud but
-    // recoverable -- the next incarnation captures normally -- so it must not
+    // recoverable -- the next connect captures normally -- so it must not
     // be confused with a journal that has failed.
-    CaptureSession session({.directory = dir_, .exchange = "kraken"});
+    CaptureSession session({.directory = dir_,
+                            .exchange = "kraken",
+                            .journal_mode = feed_handler::JournalMode::kThreaded});
 
     WsClient client(rest_, TestCredentials(), session);
     client.HandleMessage(std::string(kHeartbeat));
@@ -242,8 +322,72 @@ TEST_F(KrakenCapture, DoesNotEndTheProcessOverAMessageThatArrivedBeforeTheFirstI
     EXPECT_EQ(session.TotalRecordsWritten(), 0U);
 }
 
+TEST_F(KrakenCapture, DisconnectsTheSinkWhenTheSocketCloses) {
+    // Every way a Kraken socket is lost -- peer close, transport failure, the
+    // watchdog's ForceReconnect, shutdown -- reaches HandleClose() as
+    // IXWebSocket's Close event, so this is the one path to prove.
+    CaptureSession session({.directory = dir_, .exchange = "kraken"});
+    RecordingSink sink;
+    session.AddSink(sink);
+    ASSERT_TRUE(session.BeginConnect("connected", FrameSource::kKrakenJson).has_value());
+
+    WsClient client(rest_, TestCredentials(), session);
+    client.HandleMessage(std::string(kUpdate));
+    EXPECT_TRUE(sink.Disconnects().empty());
+
+    client.HandleClose(1006, "abnormal closure");
+    EXPECT_EQ(sink.Disconnects(), (std::vector<std::uint64_t>{1}));
+    const auto events = sink.Events();
+    ASSERT_EQ(events.size(), 3U);
+    EXPECT_EQ(events[2], "disconnect 1");
+
+    // A second Close for the same connect (the library reporting the shutdown
+    // after the watchdog already closed it) must not announce it again.
+    client.HandleClose(1000, "normal closure");
+    EXPECT_EQ(sink.Disconnects().size(), 1U);
+}
+
+TEST_F(KrakenCapture, DoesNotDisconnectTheSinkForASocketThatNeverGotAConnect) {
+    // A Close before HandleOpen reached BeginConnect (token fetch failed, say):
+    // the sink was never told about a connect, so it is not told about its end.
+    CaptureSession session({.directory = dir_, .exchange = "kraken"});
+    RecordingSink sink;
+    session.AddSink(sink);
+
+    WsClient client(rest_, TestCredentials(), session);
+    client.HandleClose(1006, "abnormal closure");
+    EXPECT_TRUE(sink.Disconnects().empty());
+    EXPECT_TRUE(sink.Events().empty());
+}
+
+TEST_F(KrakenCapture, RequestStopReturnsWithoutJoiningAndJoinThenCompletes) {
+    feed_handler::kraken::WsClientConfig cfg;
+    cfg.url = std::string(kUnreachableUrl);
+    cfg.watchdog_poll_ms = kLongWatchdogPollMs;
+    cfg.min_reconnect_wait_ms = 10;
+    cfg.max_reconnect_wait_ms = 50;
+
+    CaptureSession session({.directory = dir_, .exchange = "kraken"});
+    WsClient client(rest_, TestCredentials(), session, cfg);
+    client.Start();
+
+    const auto before = std::chrono::steady_clock::now();
+    client.RequestStop();
+    const auto request_ms = feed_handler::test_support::ElapsedSince(before).count();
+    EXPECT_LT(request_ms, kPromptStopMs) << "RequestStop() should not wait for the threads";
+
+    client.Join();
+    const auto joined_ms = feed_handler::test_support::ElapsedSince(before).count();
+    EXPECT_LT(joined_ms, kPromptStopMs) << "the watchdog waited out its poll interval";
+
+    // Every later call is harmless, and so is the destructor after them.
+    client.RequestStop();
+    client.Join();
+    client.Stop();
+}
+
 TEST_F(KrakenCapture, StopsPromptlyWhileTheWatchdogIsWaitingOutItsPollInterval) {
-    // A notify_all() issued without holding stop_mutex_ can land in the window
+    // A notify issued without the StopSignal's mutex held can land in the window
     // between the watchdog evaluating the predicate and its wait actually
     // registering, and the wakeup is then delivered to nobody -- shutdown
     // sleeps out the rest of the wait instead. A race cannot be hit on demand,

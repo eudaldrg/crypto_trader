@@ -1,6 +1,6 @@
 # Kraken
 
-See `decisions/0001-feed-source-selection.md` for why this feed was chosen.
+See `decisions/0001-exchange-feeds.md` for why this feed was chosen.
 
 ## Endpoints
 
@@ -64,8 +64,8 @@ as the same asset rather than trusting `wsname` verbatim.
    clear. The file is per (API key, machine): **two processes sharing one API
    key still need a shared mark** and are not made safe by this.
 4. **Never journal the token or any raw `subscribe` payload** — the token
-   travels inside the WS message body (see `decisions/0004`'s journal-format
-   section), not a header, so a naive "journal everything on this
+   travels inside the WS message body (see `decisions/0009`),
+   not a header, so a naive "journal everything on this
    connection" implementation would leak it into an archived file. Journal
    inbound messages only; if outbound traffic is ever logged for debugging,
    redact the token field first.
@@ -142,10 +142,36 @@ Captured by `kraken_feed_handler` over a 45s `BTC/USD` `level3` session
    detected from the message, not from a disconnect.
 3. `{"channel":"heartbeat"}` arrives about once a second (45 in 45s) and is
    the only traffic on an idle connection, which is what makes an
-   application-level staleness timeout usable at all (`decisions/0004`).
+   application-level staleness timeout usable at all (`decisions/0011`).
 4. Message rate for `BTC/USD` `level3` alone: roughly 50 messages/second
    (2158 update messages in 45s: 1692 `add`, 1053 `delete`, 36 `modify`
    events across them), around 800 KiB of journal for 45 seconds.
+
+## Multi-symbol subscribe (confirmed live 2026-09-20)
+
+`params.symbol` is an array, and one `subscribe` message carries all of them.
+Confirmed with `["BTC/USD", "ETH/USD"]` on the production feed (30 s, via the
+feed handler's `--config` mode):
+
+- **One method response per symbol**, each carrying that symbol in
+  `result.symbol` (`{"method":"subscribe","result":{"channel":"level3",
+  "snapshot":true,"symbol":"ETH/USD"},"success":true,...}`), not one response
+  for the whole request. A client counting acknowledgements has to expect N,
+  and can read the symbol from each to name the missing one.
+- **One snapshot per symbol**, then updates for both interleaved on the same
+  connection, each `data[]` entry carrying its own `symbol` and `checksum`.
+- Documented limits, not exercised: at most 200 symbols per connection, and a
+  depth-weighted subscribe budget (against 200/s on a standard account, 500/s on
+  pro): 5 points per symbol at depth 10, 25 at depth 100, 100 at depth 1000.
+
+## Subscribe `depth` (docs.kraken.com, checked 2026-09-21)
+
+`params.depth` on the level3 subscribe takes `10`, `100` or `1000` and defaults
+to `10`. Only the default has been observed live; `100` and `1000` are as
+documented and unexercised here. The feed handler validates the config's `depth`
+against those three values and sends it explicitly on every subscribe, so the
+depth a book is built for is the depth that was requested, not whatever Kraken's
+default happens to be.
 
 ## Recovery
 
@@ -173,7 +199,7 @@ and verified against a real ~2-minute `BTC/USD` capture via the real
 `src/order_book/tests/kraken_capture_replay_test.cpp` — 6496 wire records
 captured, of which 6362 carry a `level3` checksum (1 snapshot + 6361
 updates; the rest is non-`level3` control traffic), zero checksum
-mismatches across all of them (see decisions/0006's plan, task T7).
+mismatches across all of them.
 
 **Algorithm**: for each side, take the top 10 price levels (asks
 ascending, bids descending), and within each level iterate its resting
@@ -188,9 +214,10 @@ trusting it (`src/order_book/tests/kraken_checksum_test.cpp`).
 **Client-side depth truncation is mandatory, and Kraken does not do it
 for you.** Kraken's own docs: *"After each update, the book should be
 truncated to your subscribed depth, there will be no `delete` event for
-price levels that fall out of scope."* No `depth` parameter is sent on
-subscribe (`kraken_ws_client.cpp`), so the default (10) applies — the
-same window the checksum itself uses. Two consequences that only showed
+price levels that fall out of scope."* The subscribe sends `depth`
+explicitly (`kraken_ws_client.cpp`, from the connection's config, default 10,
+the same window the checksum itself uses); the capture this section was
+verified against was taken when no depth was sent, so the default of 10 applied. Two consequences that only showed
 up against real captured data, not in a hand-written unit test:
 
 1. **An order that drops out of the tracked window and later re-enters

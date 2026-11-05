@@ -11,6 +11,7 @@
 
 #include "feed_handler/logging.h"
 #include "feed_handler/message_sink.h"
+#include "feed_handler/symbols.h"
 
 namespace feed_handler::kraken {
 namespace {
@@ -72,6 +73,7 @@ MessageClassification ClassifyMessage(std::string_view json) {
     std::string channel;
     std::string type;
     std::string error;
+    std::string result_symbol;
     bool has_method = false;
     bool success = false;
     bool has_success = false;
@@ -93,6 +95,14 @@ MessageClassification ClassifyMessage(std::string_view json) {
                 success = flag;
                 has_success = true;
             }
+        } else if (key == "result") {
+            // Only a subscribe ack has a `result` object with a symbol; anything
+            // else there is left unread, which on-demand simply skips.
+            simdjson::ondemand::object result;
+            if (field.value().get_object().get(result) == simdjson::SUCCESS &&
+                result["symbol"].get_string().get(text) == simdjson::SUCCESS) {
+                result_symbol.assign(text);
+            }
         } else if (key == "error") {
             if (field.value().get_string().get(text) == simdjson::SUCCESS) {
                 error.assign(text);
@@ -113,7 +123,8 @@ MessageClassification ClassifyMessage(std::string_view json) {
         if (!failed) {
             return {
                 .kind = method == "subscribe" ? MessageKind::kSubscribeAck : MessageKind::kUnknown,
-                .detail = method};
+                .detail = method,
+                .symbol = std::move(result_symbol)};
         }
         return {.kind = method == "subscribe" ? MessageKind::kSubscribeError
                                               : MessageKind::kMethodError,
@@ -123,25 +134,44 @@ MessageClassification ClassifyMessage(std::string_view json) {
     return {.kind = ClassifyChannel(channel, type), .detail = type};
 }
 
-std::string BuildSubscribeMessage(std::string_view symbol, std::string_view token) {
+std::string BuildSubscribeMessage(std::span<const std::string> symbols, int depth,
+                                  std::string_view token) {
     // Hand-built rather than via a JSON writer: the payload is fixed shape and
-    // both interpolated values are constrained (a literal symbol and Kraken's
-    // own base64-ish token), so there is nothing here needing escaping.
+    // every interpolated value is constrained (config-validated symbols, an
+    // integer depth and Kraken's own base64-ish token), so there is nothing
+    // here needing escaping.
     std::string message;
-    message.reserve(160 + token.size());
-    message += R"({"method":"subscribe","params":{"channel":"level3","symbol":[")";
-    message += symbol;
-    message += R"("],"snapshot":true,"token":")";
+    message.reserve(160 + token.size() + symbols.size() * 16);
+    message += R"({"method":"subscribe","params":{"channel":"level3","symbol":[)";
+    for (std::size_t index = 0; index < symbols.size(); ++index) {
+        message += index == 0 ? "\"" : ",\"";
+        message += symbols[index];
+        message += '"';
+    }
+    message += R"(],"depth":)";
+    message += std::to_string(depth);
+    message += R"(,"snapshot":true,"token":")";
     message += token;
     message += R"("}})";
     return message;
 }
+
+namespace {
+
+/// "BTC/USD" for one symbol, "3 symbols" for several: the connection id already
+/// says which entry this is, and a 200-symbol list would drown the log line.
+std::string DescribeSymbols(const std::vector<std::string>& symbols) {
+    return symbols.size() == 1 ? symbols.front() : std::to_string(symbols.size()) + " symbols";
+}
+
+}  // namespace
 
 WsClient::WsClient(RestClient& rest, Credentials creds, CaptureSession& session, WsClientConfig cfg)
     : rest_(rest),
       creds_(std::move(creds)),
       session_(session),
       cfg_(std::move(cfg)),
+      log_(cfg_.id),
       ws_(std::make_unique<ix::WebSocket>()),
       watchdog_(cfg_.staleness_timeout_ns) {
     ws_->setUrl(cfg_.url);
@@ -153,6 +183,10 @@ WsClient::WsClient(RestClient& rest, Credentials creds, CaptureSession& session,
     ws_->setMaxWaitBetweenReconnectionRetries(cfg_.max_reconnect_wait_ms);
     ws_->setPingInterval(cfg_.ping_interval_seconds);
 
+    // Before the socket can deliver anything: the journal thread reports a write
+    // failure, and the connection thread a ring overflow, through this.
+    session_.RouteFatalToStopSignal(stop_signal_, log_);
+
     ws_->setOnMessageCallback([this](const ix::WebSocketMessagePtr& message) {
         switch (message->type) {
             case ix::WebSocketMessageType::Open:
@@ -162,18 +196,20 @@ WsClient::WsClient(RestClient& rest, Credentials creds, CaptureSession& session,
                 HandleMessage(message->str);
                 break;
             case ix::WebSocketMessageType::Close:
-                // Flush and close the incarnation's file here rather than
-                // waiting for the next connect: the reconnect may take a
-                // while, and a closed file is a complete, readable one.
-                watchdog_.Disarm();
-                session_.Close();
-                LogWarn("websocket closed (code " + std::to_string(message->closeInfo.code) +
-                        "): " + message->closeInfo.reason);
+                HandleClose(message->closeInfo.code, message->closeInfo.reason);
                 break;
             case ix::WebSocketMessageType::Error:
+                // Not a socket loss: IXWebSocket raises Error only for a failed
+                // connection attempt (handshake or refused connect), before any
+                // Open, so no connect is open here and there is nothing to
+                // close or announce. A socket that was up is always reported
+                // as Close, which is where the disconnect comes from. Closing
+                // the session here would be wrong, not just redundant: were an
+                // Error ever raised on a live socket, it would end the journal
+                // while frames kept arriving.
                 watchdog_.Disarm();
-                LogError("websocket error: " + message->errorInfo.reason + " (retry " +
-                         std::to_string(message->errorInfo.retries) + ")");
+                log_.Error("websocket error: " + message->errorInfo.reason + " (retry " +
+                           std::to_string(message->errorInfo.retries) + ")");
                 break;
             case ix::WebSocketMessageType::Ping:
             case ix::WebSocketMessageType::Pong:
@@ -191,29 +227,39 @@ WsClient::WsClient(RestClient& rest, Credentials creds, CaptureSession& session,
 
 WsClient::~WsClient() {
     Stop();
+    // The handler points at this object; the session outlives it.
+    session_.SetFatalHandler({});
 }
 
 void WsClient::Start() {
     started_.store(true, std::memory_order_release);
-    LogInfo("connecting to " + cfg_.url + " for " + cfg_.symbol);
+    log_.Info("connecting to " + cfg_.url + " for " + DescribeSymbols(cfg_.symbols));
     watchdog_thread_ = std::thread([this] { RunWatchdog(); });
     ws_->start();
 }
 
-void WsClient::Stop() {
-    {
-        // Under the mutex for the same reason latch_fatal() is: the watchdog
-        // thread checks this flag under it, and a store made outside it can be
-        // lost in the gap between that check and the wait, which would leave
-        // shutdown waiting out a whole poll interval or backoff. The join stays
-        // outside the lock -- the thread it waits for needs this mutex to
-        // notice.
-        const std::lock_guard<std::mutex> lock(stop_mutex_);
-        if (stopping_.exchange(true, std::memory_order_acq_rel)) {
-            return;
-        }
+void WsClient::RequestStop() {
+    // Joining stays in Join(): the threads it waits for need the signal's mutex
+    // to notice the request.
+    if (!stop_signal_.RequestStop()) {
+        return;
     }
-    stop_cv_.notify_all();
+    if (started_.load(std::memory_order_acquire)) {
+        // Reconnection off first, or the library's thread would treat this close
+        // like the watchdog's ForceReconnect() and set the connection up again.
+        // With it off, close() only sends the close frame and the thread ends
+        // its run loop once the handshake is done, so Join()'s stop() has
+        // little left to wait for.
+        ws_->disableAutomaticReconnection();
+        ws_->close();
+    }
+}
+
+void WsClient::Join() {
+    RequestStop();
+    if (joined_.exchange(true, std::memory_order_acq_rel)) {
+        return;
+    }
     if (watchdog_thread_.joinable()) {
         watchdog_thread_.join();
     }
@@ -222,6 +268,11 @@ void WsClient::Stop() {
         // permanent, so joining IXWebSocket's thread is exactly what we want.
         ws_->stop();
     }
+}
+
+void WsClient::Stop() {
+    RequestStop();
+    Join();
 }
 
 void WsClient::HandleOpen() {
@@ -237,11 +288,12 @@ void WsClient::HandleOpen() {
         return;
     }
     watchdog_.NoteActivity(MonotonicNowNs());
-    LogInfo("connected");
+    subscribe_acks_ = 0;
+    log_.Info("connected");
 
     const auto token = rest_.FetchWebsocketsToken(creds_);
     if (!token) {
-        LogError("token fetch failed: " + token.error());
+        log_.Error("token fetch failed: " + token.error());
         BackOffAfterSetupFailure();
         ForceReconnect("token fetch failed");
         return;
@@ -249,28 +301,40 @@ void WsClient::HandleOpen() {
 
     // Outbound only: never stamped, never journaled. The token lives in the
     // message body, so journaling this would archive a live credential
-    // (decisions/0004).
-    const auto sent = ws_->send(BuildSubscribeMessage(cfg_.symbol, token->token));
+    // (decisions/0009).
+    const auto sent = ws_->send(BuildSubscribeMessage(cfg_.symbols, cfg_.depth, token->token));
     if (!sent.success) {
-        LogError("failed to send level3 subscribe");
+        log_.Error("failed to send level3 subscribe");
         BackOffAfterSetupFailure();
         ForceReconnect("subscribe send failed");
         return;
     }
 
-    const auto path = session_.BeginIncarnation(
-        "kraken level3 " + cfg_.symbol + " connected to " + cfg_.url, kWireSource);
+    const auto path = session_.BeginConnect(
+        "kraken level3 " + JoinSymbols(cfg_.symbols) + " connected to " + cfg_.url, kWireSource);
     if (!path) {
         // Staying connected while unable to capture would silently throw away
         // the data this process exists to collect.
-        LogError("cannot start capture: " + path.error());
-        LatchFatal();
+        log_.Error("cannot start capture: " + path.error());
+        stop_signal_.LatchFatal();
         return;
     }
 
     consecutive_setup_failures_ = 0;
-    LogInfo("incarnation " + std::to_string(session_.Incarnation()) + " started, journaling to " +
-            path->string());
+    log_.Info("connect_id " + std::to_string(session_.ConnectId()) + " started, journaling to " +
+              path->string());
+}
+
+void WsClient::HandleClose(std::uint16_t code, const std::string& reason) {
+    // Flush and close the connect's file here rather than waiting for the next
+    // connect: the reconnect may take a while, and a closed file is a complete,
+    // readable one. Closing the session is also what tells its sinks the
+    // connection is gone, so a book goes stale now, not at the next connect.
+    // A no-op when nothing is open, e.g. the socket closed before HandleOpen
+    // got as far as BeginConnect.
+    watchdog_.Disarm();
+    session_.Close();
+    log_.Warn("websocket closed (code " + std::to_string(code) + "): " + reason);
 }
 
 void WsClient::HandleMessage(const std::string& payload) {
@@ -278,41 +342,45 @@ void WsClient::HandleMessage(const std::string& payload) {
     messages_received_.fetch_add(1, std::memory_order_relaxed);
 
     // Journal first, classify second: a message this build does not understand
-    // must still reach the file verbatim (decisions/0004, journal everything
+    // must still reach the file verbatim (decisions/0009, journal everything
     // inbound), and classification must never be able to cost a record.
     if (!session_.OnWireMessage(BytesOf(payload), kWireSource)) {
         const std::string_view reason = session_.Error();
         if (reason.empty()) {
-            // No open incarnation yet -- a message that arrived between the
+            // No open connect yet -- a message that arrived between the
             // socket opening and handle_open() finishing. Loud, but the next
-            // incarnation fixes it, so it is not a reason to end the process.
-            LogError("dropped a message: no journal file open");
-        } else {
-            // A sticky writer error (a full disk, say) never heals: every later
-            // message would be dropped just as silently. Same rule as a journal
-            // file that cannot be opened at all, and as Deribit's
-            // journal_message -- capturing nothing while looking healthy is the
-            // one outcome this process must not have.
-            LogError("journal write failed: " + std::string(reason));
-            LatchFatal();
+            // connect fixes it, so it is not a reason to end the process.
+            log_.Error("dropped a message: no journal file open");
         }
+        // Otherwise the journal has failed (a full disk, a ring overflow), which
+        // never heals. It is not decided here: the session already reported it
+        // through the fatal handler routed to stop_signal_ in the constructor
+        // (CaptureSession::RouteFatalToStopSignal), which is what latches the
+        // fatal and logs the reason. The journal is on its own thread, so this
+        // return value can no longer be the one place a write failure is
+        // noticed.
     }
 
     const MessageClassification classified = ClassifyMessage(payload);
     switch (classified.kind) {
         case MessageKind::kSubscribeAck:
-            LogInfo("subscribed to level3 " + cfg_.symbol);
+            ++subscribe_acks_;
+            log_.Info(
+                "subscribed to level3 " +
+                (classified.symbol.empty() ? DescribeSymbols(cfg_.symbols) : classified.symbol) +
+                " (" + std::to_string(subscribe_acks_) + "/" + std::to_string(cfg_.symbols.size()) +
+                ")");
             break;
         case MessageKind::kSubscribeError:
             // The connection stays open after a rejected subscribe and simply
             // never delivers data, so this has to be loud.
-            LogError("kraken rejected the level3 subscribe: " + classified.detail);
+            log_.Error("kraken rejected the level3 subscribe: " + classified.detail);
             break;
         case MessageKind::kMethodError:
-            LogError("kraken method error: " + classified.detail);
+            log_.Error("kraken method error: " + classified.detail);
             break;
         case MessageKind::kBookSnapshot:
-            LogInfo("received level3 snapshot");
+            log_.Info("received level3 snapshot");
             break;
         case MessageKind::kUnknown:
         case MessageKind::kHeartbeat:
@@ -326,8 +394,8 @@ void WsClient::RunWatchdog() {
     // Ends on a capture failure as well as on shutdown: once capture is dead
     // the process is on its way out, and forcing further reconnects would only
     // spend Kraken's REST rate limit on connections nothing can journal.
-    while (!stopping_.load(std::memory_order_acquire) && !Fatal()) {
-        if (WaitForStop(cfg_.watchdog_poll_ms)) {
+    while (!stop_signal_.Stopping()) {
+        if (stop_signal_.WaitFor(std::chrono::milliseconds(cfg_.watchdog_poll_ms))) {
             return;
         }
         if (!watchdog_.IsStale(MonotonicNowNs())) {
@@ -350,7 +418,8 @@ bool WsClient::ThrottleConnectionSetup() {
         // re-establishes instantly -- its reconnect bounds do not apply. Each
         // of those needs a fresh signed REST token, so the floor on how often
         // one connection can be set up has to live here.
-        if (WaitForStop(cfg_.min_reconnect_wait_ms - elapsed_ms)) {
+        if (stop_signal_.WaitFor(
+                std::chrono::milliseconds(cfg_.min_reconnect_wait_ms - elapsed_ms))) {
             return true;
         }
     }
@@ -362,7 +431,7 @@ void WsClient::ForceReconnect(std::string_view reason) {
     // Disarm first: the watchdog must not fire again on the silence between
     // this close and the next connection's first message.
     watchdog_.Disarm();
-    LogWarn("forcing reconnect: " + std::string(reason));
+    log_.Warn("forcing reconnect: " + std::string(reason));
     ws_->close();
 }
 
@@ -374,30 +443,8 @@ void WsClient::BackOffAfterSetupFailure() {
     // IXWebSocket only backs off when the *connection* fails; a connection
     // that succeeds and then fails at the token/subscribe step would otherwise
     // reconnect immediately and retry the signed REST call in a tight loop.
-    LogWarn("waiting " + std::to_string(delay_ms) + "ms before the next connection attempt");
-    WaitForStop(delay_ms);
-}
-
-bool WsClient::WaitForStop(std::uint64_t millis) {
-    std::unique_lock<std::mutex> lock(stop_mutex_);
-    // fatal() is part of the predicate, not just of the callers' loops: the
-    // fatal paths notify this condition variable, and a predicate that only
-    // looked at stopping_ would leave those notifications waking a waiter that
-    // immediately went back to sleep for the rest of its timeout.
-    return stop_cv_.wait_for(lock, std::chrono::milliseconds(millis), [this] {
-        return stopping_.load(std::memory_order_acquire) || Fatal();
-    });
-}
-
-void WsClient::LatchFatal() {
-    {
-        const std::lock_guard<std::mutex> lock(stop_mutex_);
-        fatal_.store(true, std::memory_order_release);
-    }
-    // Both callers run on IXWebSocket's thread, which holds stop_mutex_ only
-    // inside wait_for_stop() and never across one of these calls, so taking it
-    // here cannot self-deadlock.
-    stop_cv_.notify_all();
+    log_.Warn("waiting " + std::to_string(delay_ms) + "ms before the next connection attempt");
+    stop_signal_.WaitFor(std::chrono::milliseconds(delay_ms));
 }
 
 }  // namespace feed_handler::kraken

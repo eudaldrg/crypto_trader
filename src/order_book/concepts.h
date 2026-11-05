@@ -6,7 +6,7 @@
 #include "order_book/book_view.h"
 #include "order_book/types.h"
 
-// decisions/0006, "Polymorphism mechanism" and "Listener dispatch": every
+// decisions/0006 and docs/modules/order-book.md, "Listener hooks": every
 // axis of the order book (listener shape, matching capability) is resolved
 // through concepts, not virtual dispatch or CRTP. A type satisfies a
 // concept structurally -- a plain struct with the right method signatures
@@ -16,8 +16,8 @@ namespace order_book {
 
 // Mandatory baseline every ListenerT must satisfy, for every granularity.
 // A missing or wrong-signature on_top_of_book_changed is a hard compile
-// error here, not a silently-skipped call -- see decisions/0006's
-// mandatory-vs-optional hook split.
+// error here, not a silently-skipped call -- see
+// docs/modules/order-book.md, "Listener hooks".
 template <typename T>
 concept CoreListener = requires(T& listener, Side side, std::optional<BookEntry> best) {
     { listener.OnTopOfBookChanged(side, best) } -> std::same_as<void>;
@@ -35,7 +35,7 @@ concept LevelListener = requires(T& listener, Side side, Price price, Quantity q
 
 // Optional hook: the shared, feed-agnostic integrity-anomaly notification
 // used by both L2 and L3 (Gap, ChecksumMismatch, CrossedBook, UnknownOrder,
-// UnknownLevel) -- see decisions/0006's error taxonomy. Deliberately not
+// UnknownLevel) -- see docs/modules/order-book.md, "Readiness and errors". Deliberately not
 // Kraken- or Deribit-specific.
 template <typename T>
 concept IntegrityListener = requires(T& listener, IntegrityIssue issue) {
@@ -51,18 +51,18 @@ concept OrderListener =
         { listener.OnOrderDeleted(order_id) } -> std::same_as<void>;
     };
 
-// The read/query surface a GranularityPolicy must expose (decisions/0006,
-// "Query surface and the BookView oracle") -- independent of ListenerT.
+// The read/query surface a GranularityPolicy must expose (docs/modules/order-book.md,
+// "Query surface and BookView") -- independent of ListenerT.
 // Readiness is deliberately not part of this concept: the engine owns the
-// Uninitialized/Ready/Desynced state machine itself (decisions/0006,
-// "Engine/policy contract"), so a policy has nothing to report there.
+// Uninitialized/Ready/Desynced state machine itself (docs/modules/order-book.md,
+// "Engine and policy contract"), so a policy has nothing to report there.
 template <typename T>
 concept BookPolicy = requires(const T& policy, Side side) {
     { policy.Best(side) } -> std::same_as<std::optional<BookEntry>>;
 };
 
-// The minimal shape any MatchingPolicy must expose (decisions/0006,
-// "Matching axis"). NoMatchingPolicy is the only implementation for now;
+// The minimal shape any MatchingPolicy must expose (docs/modules/order-book.md,
+// "Matching"). NoMatchingPolicy is the only implementation for now;
 // a real matching engine is a follow-on plan, but the seam is
 // concept-constrained from the start so a future implementation -- or a
 // GoogleTest fake -- just has to satisfy this structurally, with no base

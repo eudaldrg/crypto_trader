@@ -2,7 +2,7 @@
 # Builds and runs every test binary under every sanitizer configuration this
 # project uses, each in its own build directory since ASan/UBSan and
 # ThreadSanitizer instrument differently and cannot share a binary (see
-# decisions/0005-quality-gates-and-release-process.md).
+# docs/tasks/testing.md).
 #
 # Used by the pre-push hook (.pre-commit-config.yaml) and safe to run by hand:
 #   scripts/run_sanitizers.sh
@@ -14,13 +14,18 @@
 # that drive the real client classes over real threads. All test binaries are
 # built explicitly (not just one of them) because ctest discovers every
 # registered test at configure time regardless of what got built -- leaving
-# any of them unbuilt turns into a spurious NOT_BUILT ctest failure, not a
-# skip. Keep this list in sync with add_project_test()/add_project_executable()
-# calls in CMakeLists.txt whenever a new test binary is added.
+# any of them unbuilt turns into a NOT_BUILT failure, or worse, runs a stale
+# binary left in the build directory by an earlier build. The list is read from
+# the add_project_test() calls in CMakeLists.txt so it cannot drift (it once
+# missed book_adapter_tests, which then ran stale).
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-TEST_TARGETS=(feed_handler_tests dependency_smoke_test order_book_tests)
+mapfile -t TEST_TARGETS < <(grep -oP '^\s*add_project_test\(\K[A-Za-z0-9_]+' CMakeLists.txt)
+if [ "${#TEST_TARGETS[@]}" -eq 0 ]; then
+    echo "run_sanitizers.sh: found no add_project_test() targets in CMakeLists.txt" >&2
+    exit 1
+fi
 
 run_variant() {
     local name="$1"

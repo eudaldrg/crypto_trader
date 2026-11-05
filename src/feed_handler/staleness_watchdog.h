@@ -1,6 +1,6 @@
 // Application-level "the feed has gone silent" timer.
 //
-// decisions/0004: a half-open TCP connection produces silence, not an error,
+// decisions/0011: a half-open TCP connection produces silence, not an error,
 // and relying on the transport library's own heartbeat means relying on an
 // off-by-default setting. This is the independent check: no inbound traffic
 // within the timeout means the connection is dead even if the socket still

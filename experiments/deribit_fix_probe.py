@@ -3,7 +3,7 @@
 market data, and print raw incoming FIX messages.
 
 NOT the real design -- this is purely to see the actual wire format before
-building anything real in C++. See decisions/0001 and 0002.
+building anything real in C++. See decisions/0001.
 
 Usage:
     source .env  # or export the vars another way
